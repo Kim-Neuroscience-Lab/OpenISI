@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "openisi"
+version = "0.1.0"
+description = "Open-source Intrinsic Signal Imaging"
+authors = ["OpenISI Contributors"]
+readme = "README.md"
+packages = [{ include = "daemon" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^1.24.0"
+opencv-python = "^4.8.0"
+pyserial = "^3.5"  # USB serial for photodiode timestamp devices
+pco = { version = "^2.2.0", optional = true }
+# macOS-only: AVFoundation camera backend with hardware timestamps
+pyobjc-framework-AVFoundation = { version = "^10.0", markers = "sys_platform == 'darwin'" }
+pyobjc-framework-CoreMedia = { version = "^10.0", markers = "sys_platform == 'darwin'" }
+pyobjc-framework-Quartz = { version = "^10.0", markers = "sys_platform == 'darwin'" }
+pyobjc-framework-libdispatch = { version = "^10.0", markers = "sys_platform == 'darwin'" }
+
+[tool.poetry.extras]
+pco = ["pco"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+ruff = "^0.1.0"
+pyinstaller = {version = ">=6.0,<7.0", python = ">=3.10,<3.15"}
+
+[tool.poetry.scripts]
+openisi-daemon = "daemon.main:main"
+openisi-setup = "daemon.setup_system:main"
+openisi-camera-test = "daemon.camera_test:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

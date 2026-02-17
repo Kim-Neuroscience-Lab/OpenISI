@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3 uid="uid://stimulus_window"]
+
+[ext_resource type="Script" path="res://src/stimulus/stimulus_window.gd" id="1_stimulus"]
+
+[node name="StimulusWindow" type="Window"]
+title = "Stimulus"
+initial_position = 2
+size = Vector2i(800, 600)
+script = ExtResource("1_stimulus")

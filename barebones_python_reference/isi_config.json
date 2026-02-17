@@ -1,0 +1,48 @@
+{
+  "display": {
+    "index": null,
+    "distance_cm": 10.0,
+    "width_cm": 34.89,
+    "height_cm": 13.74,
+    "angle_horizontal_deg": 0.0,
+    "angle_vertical_deg": 0.0,
+    "scale_factor": 0.5,
+    "target_fps_divisor": 2,
+    "fps_measured": 120.0
+  },
+  "stimulus": {
+    "stimulus_width_deg": 20.0,
+    "checker_size_deg": 25.0,
+    "luminance_min": 0.0,
+    "luminance_max": 1.0,
+    "background_luminance": 0.0,
+    "sweep_speed_deg_per_sec": 9.0,
+    "strobe_frequency_hz": 6.0,
+    "baseline_duration_sec": 5.0,
+    "interval_duration_sec": 0.0
+  },
+  "camera": {
+    "index": 0,
+    "width_px": 1920,
+    "height_px": 1080,
+    "exposure_us": null,
+    "gain": null,
+    "use_hardware_timestamps": true
+  },
+  "acquisition": {
+    "num_cycles": 10,
+    "directions": [
+      "LR",
+      "RL",
+      "TB",
+      "BT"
+    ],
+    "name": "session",
+    "save_directory": "data"
+  },
+  "analysis": {
+    "coherence_threshold": 0.3,
+    "smoothing_sigma": 3.0,
+    "vfs_threshold_multiplier": 1.5
+  }
+}

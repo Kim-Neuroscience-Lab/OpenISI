@@ -1,0 +1,14 @@
+{
+  "camera": {
+    "exposure_us": 33000,
+    "gain": -1
+  },
+  "display": {
+    "fps_divisor": 2
+  },
+  "daemon": {
+    "startup_delay_ms": 500,
+    "shm_name": "openisi_frames",
+    "shm_num_buffers": 4
+  }
+}

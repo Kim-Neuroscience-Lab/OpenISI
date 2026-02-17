@@ -1,0 +1,529 @@
+import React, { useState } from 'react';
+
+export default function OpenISICeramic() {
+const [phase, setPhase] = useState('setup');
+const [sliderValue, setSliderValue] = useState(20);
+const [inputValue, setInputValue] = useState('session_001');
+
+// Sleep Punk Night + Ceramic palette
+const colors = {
+// Foundation - warm plum-shifted darks
+background: '#13111a',
+surface: '#1c1824',
+surfaceElevated: '#241f2e',
+well: '#0f0d14',
+
+// Ceramic highlight - the light catching the rim
+rimLight: 'rgba(240, 230, 220, 0.08)',
+rimLightStrong: 'rgba(240, 230, 220, 0.12)',
+
+// Cream glows
+cream: '#f0e6dc',
+creamMuted: '#c4b8ab',
+creamDim: '#7a7067',
+
+// Ambient lavender
+lavender: '#b8a5c9',
+lavenderDim: '#8677a3',
+lavenderDeep: '#6b5a8a',
+
+// Warm amber
+amber: '#e8c49a',
+amberGlow: '#d4a574',
+
+// Status
+success: '#a8c4b0',
+warning: '#e8c49a',
+error: '#c9a9a9',
+info: '#b8a5c9',
+};
+
+// Ceramic-inspired styling
+const ceramic = {
+// Surface with gentle curvature - lighter at top like light on a bowl
+surface: `linear-gradient(180deg,
+${colors.surface} 0%,
+${adjustBrightness(colors.surface, -8)} 100%)`,
+
+elevated: `linear-gradient(180deg,
+${adjustBrightness(colors.surfaceElevated, 5)} 0%,
+${colors.surfaceElevated} 50%,
+${adjustBrightness(colors.surfaceElevated, -5)} 100%)`,
+
+well: `linear-gradient(180deg,
+${adjustBrightness(colors.well, -5)} 0%,
+${colors.well} 100%)`,
+
+// The ceramic rim light effect
+rimGlow: `inset 0 1px 0 ${colors.rimLight}, inset 0 -1px 0 rgba(0,0,0,0.2)`,
+rimGlowStrong: `inset 0 1px 0 ${colors.rimLightStrong}, inset 0 -1px 0 rgba(0,0,0,0.25)`,
+
+// Soft outer glow + rim light combined
+panel: `0 8px 32px rgba(19, 17, 26, 0.6),
+0 0 1px rgba(240, 230, 220, 0.05),
+inset 0 1px 0 ${colors.rimLight}`,
+
+panelElevated: `0 12px 40px rgba(19, 17, 26, 0.7),
+0 0 1px rgba(240, 230, 220, 0.08),
+inset 0 1px 0 ${colors.rimLightStrong}`,
+
+// Input wells - pressed ceramic
+input: `inset 0 2px 6px rgba(0, 0, 0, 0.4),
+inset 0 1px 2px rgba(0, 0, 0, 0.2),
+inset 0 -1px 0 ${colors.rimLight}`,
+
+// Button - convex ceramic with highlight
+button: `0 4px 16px rgba(0, 0, 0, 0.3),
+0 0 24px rgba(232, 196, 154, 0.25),
+inset 0 1px 0 rgba(255, 255, 255, 0.2),
+inset 0 -1px 0 rgba(0, 0, 0, 0.1)`,
+
+buttonHover: `0 6px 24px rgba(0, 0, 0, 0.35),
+0 0 32px rgba(232, 196, 154, 0.35),
+inset 0 1px 0 rgba(255, 255, 255, 0.25),
+inset 0 -1px 0 rgba(0, 0, 0, 0.1)`,
+};
+
+// Helper to adjust color brightness
+function adjustBrightness(hex, percent) {
+const num = parseInt(hex.replace('#', ''), 16);
+const amt = Math.round(2.55 * percent);
+const R = Math.max(0, Math.min(255, (num >> 16) + amt));
+const G = Math.max(0, Math.min(255, (num >> 8 & 0x00FF) + amt));
+const B = Math.max(0, Math.min(255, (num & 0x0000FF) + amt));
+return `#${(1 << 24 | R << 16 | G << 8 | B).toString(16).slice(1)}`; } const phases=[ { id: 'setup' , label: 'Setup' },
+    { id: 'focus' , label: 'Focus' }, { id: 'confirm' , label: 'Confirm' }, { id: 'run' , label: 'Run' }, { id: 'done' ,
+    label: 'Done' }, ]; // Shared ceramic panel style const ceramicPanel={ background: ceramic.elevated, boxShadow:
+    ceramic.panel, borderRadius: '20px' , border: `1px solid rgba(184, 165, 201, 0.06)`, }; // Shared ceramic input
+    style const ceramicInput={ backgroundColor: colors.well, background: ceramic.well, boxShadow: ceramic.input, border:
+    `1px solid rgba(184, 165, 201, 0.08)`, borderRadius: '12px' , color: colors.cream, outline: 'none' ,
+    transition: 'all 250ms ease' , }; return ( <div style={{ minHeight: '100vh' , backgroundColor: colors.background,
+    color: colors.cream, fontFamily: "'Plus Jakarta Sans', 'Nunito', system-ui, sans-serif" , padding: '20px' ,
+    boxSizing: 'border-box' , }}>
+    {/* Header */}
+    <div style={{ display: 'flex' , justifyContent: 'space-between' , alignItems: 'center' , marginBottom: '24px' ,
+        flexWrap: 'wrap' , gap: '16px' , }}>
+        {/* Logo */}
+        <div style={{ display: 'flex' , alignItems: 'center' , gap: '12px' }}>
+            <div style={{ width: '38px' , height: '38px' , borderRadius: '12px' , background: `linear-gradient(135deg,
+                ${colors.lavender} 0%, ${colors.lavenderDeep} 100%)`, display: 'flex' , alignItems: 'center' ,
+                justifyContent: 'center' , boxShadow: `0 4px 12px rgba(107, 90, 138, 0.4), inset 0 1px 0 rgba(255, 255,
+                255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.1)`, }}>
+                <span style={{ color: colors.background, fontSize: '18px' , fontWeight: '500' , }}>◎</span>
+            </div>
+            <span style={{ fontSize: '20px' , fontWeight: '600' , color: colors.cream,
+                textShadow: '0 0 30px rgba(240, 230, 220, 0.2)' , }}>OpenISI</span>
+        </div>
+
+        {/* Phase Pills - ceramic pill container */}
+        <div style={{ display: 'flex' , gap: '4px' , alignItems: 'center' , background: ceramic.surface, padding: '6px'
+            , borderRadius: '18px' , boxShadow: ceramic.panel, border: `1px solid rgba(184, 165, 201, 0.05)`, }}>
+            {phases.map((p) => (
+            <button key={p.id} onClick={()=> setPhase(p.id)}
+                style={{
+                padding: '8px 16px',
+                borderRadius: '12px',
+                border: 'none',
+                background: phase === p.id
+                ? `linear-gradient(180deg, ${adjustBrightness(colors.surfaceElevated, 8)} 0%, ${colors.surfaceElevated}
+                100%)`
+                : 'transparent',
+                color: phase === p.id ? colors.cream : colors.creamDim,
+                fontSize: '13px',
+                fontWeight: phase === p.id ? '500' : '400',
+                cursor: 'pointer',
+                transition: 'all 250ms ease',
+                boxShadow: phase === p.id
+                ? `0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 ${colors.rimLightStrong}`
+                : 'none',
+                }}
+                >
+                {p.label}
+            </button>
+            ))}
+        </div>
+
+        {/* Status - ceramic pill */}
+        <div style={{ display: 'flex' , alignItems: 'center' , gap: '10px' , background: ceramic.surface,
+            padding: '10px 16px' , borderRadius: '14px' , boxShadow: ceramic.panel, border: `1px solid rgba(184, 165,
+            201, 0.05)`, }}>
+            <div style={{ width: '8px' , height: '8px' , borderRadius: '50%' , backgroundColor: colors.success,
+                boxShadow: `0 0 10px ${colors.success}, inset 0 -1px 1px rgba(0,0,0,0.2)`, }} />
+            <span style={{ fontSize: '13px' , color: colors.creamMuted }}>Camera Connected</span>
+        </div>
+    </div>
+
+    {/* Main Content */}
+    <div style={{ display: 'grid' , gridTemplateColumns: '300px 1fr' , gap: '20px' , minHeight: 'calc(100vh - 120px)' ,
+        }}>
+        {/* Left Panel - Ceramic control surface */}
+        <div style={{ ...ceramicPanel, padding: '24px' , display: 'flex' , flexDirection: 'column' , gap: '24px' , }}>
+            {/* Experiment Section */}
+            <div>
+                <h3 style={{ fontSize: '11px' , fontWeight: '600' , color: colors.lavender, textTransform: 'uppercase' ,
+                    letterSpacing: '0.1em' , marginBottom: '16px' , textShadow: `0 0 20px ${colors.lavender}40`, }}>
+                    Experiment</h3>
+
+                {/* Session Name - ceramic input well */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block' , fontSize: '13px' , color: colors.creamMuted, marginBottom: '8px'
+                        , }}>Session Name</label>
+                    <input type="text" value={inputValue} onChange={(e)=> setInputValue(e.target.value)}
+                    style={{
+                    ...ceramicInput,
+                    width: '100%',
+                    padding: '14px 16px',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                    }}
+                    />
+                </div>
+
+                {/* Output Path */}
+                <div>
+                    <label style={{ display: 'block' , fontSize: '13px' , color: colors.creamMuted, marginBottom: '8px'
+                        , }}>Output Directory</label>
+                    <div style={{ ...ceramicInput, padding: '14px 16px' , fontSize: '13px' ,
+                        fontFamily: "'JetBrains Mono', monospace" , color: colors.creamDim, }}>
+                        ~/data/isi/
+                    </div>
+                </div>
+            </div>
+
+            {/* Ceramic divider - subtle ridge */}
+            <div style={{ height: '2px' , background: `linear-gradient(180deg, rgba(0,0,0,0.2) 0%, transparent 50%,
+                ${colors.rimLight} 100%)`, borderRadius: '1px' , }} />
+
+            {/* Stimulus Section */}
+            <div>
+                <h3 style={{ fontSize: '11px' , fontWeight: '600' , color: colors.lavender, textTransform: 'uppercase' ,
+                    letterSpacing: '0.1em' , marginBottom: '16px' , textShadow: `0 0 20px ${colors.lavender}40`, }}>
+                    Stimulus</h3>
+
+                {/* Period Slider */}
+                <div style={{ marginBottom: '20px' }}>
+                    <div style={{ display: 'flex' , justifyContent: 'space-between' , marginBottom: '12px' , }}>
+                        <label style={{ fontSize: '13px' , color: colors.creamMuted }}>Period</label>
+                        <span style={{ fontSize: '13px' , fontFamily: "'JetBrains Mono', monospace" , color:
+                            colors.amber, textShadow: `0 0 12px ${colors.amber}60`, }}>{sliderValue}s</span>
+                    </div>
+                    <div style={{ position: 'relative' , height: '24px' , display: 'flex' , alignItems: 'center' }}>
+                        {/* Track - ceramic channel */}
+                        <div style={{ position: 'absolute' , width: '100%' , height: '8px' , background: ceramic.well,
+                            borderRadius: '4px' , boxShadow: ceramic.input, }} />
+                        {/* Filled track - glazed ceramic */}
+                        <div style={{ position: 'absolute' , width: `${((sliderValue - 10) / 50) * 100}%`, height: '8px'
+                            , background: `linear-gradient(180deg, ${colors.lavender} 0%, ${colors.lavenderDeep} 100%)`,
+                            borderRadius: '4px' , boxShadow: `0 0 12px ${colors.lavender}40, inset 0 1px 0
+                            rgba(255,255,255,0.2)`, }} />
+                        <input type="range" min="10" max="60" value={sliderValue} onChange={(e)=>
+                        setSliderValue(parseInt(e.target.value))}
+                        style={{
+                        position: 'absolute',
+                        width: '100%',
+                        opacity: 0,
+                        cursor: 'pointer',
+                        height: '24px',
+                        }}
+                        />
+                        {/* Thumb - ceramic knob */}
+                        <div style={{ position: 'absolute' , left: `calc(${((sliderValue - 10) / 50) * 100}% - 11px)`,
+                            width: '22px' , height: '22px' , background: `linear-gradient(180deg,
+                            ${adjustBrightness(colors.lavender, 10)} 0%, ${colors.lavender} 50%, ${colors.lavenderDim}
+                            100%)`, borderRadius: '50%' , boxShadow: `0 2px 8px rgba(0,0,0,0.4), 0 0 12px
+                            ${colors.lavender}50, inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.2)`,
+                            pointerEvents: 'none' , border: `2px solid ${colors.surfaceElevated}`, }} />
+                    </div>
+                </div>
+
+                {/* Directions - ceramic toggle tiles */}
+                <div>
+                    <label style={{ display: 'block' , fontSize: '13px' , color: colors.creamMuted, marginBottom: '12px'
+                        , }}>Directions</label>
+                    <div style={{ display: 'grid' , gridTemplateColumns: '1fr 1fr' , gap: '8px' , }}>
+                        {['0°', '90°', '180°', '270°'].map((dir, i) => {
+                        const isSelected = i < 3; return ( <label key={dir} style={{ display: 'flex' ,
+                            alignItems: 'center' , gap: '10px' , padding: '12px 14px' , background: isSelected ?
+                            ceramic.elevated : ceramic.well, borderRadius: '12px' , boxShadow: isSelected ?
+                            ceramic.rimGlowStrong : ceramic.input, cursor: 'pointer' , fontSize: '13px' , border: `1px
+                            solid ${isSelected ? colors.lavenderDeep + '30' : 'rgba(0,0,0,0.1)' }`,
+                            transition: 'all 250ms ease' , }}>
+                            <div style={{ width: '20px' , height: '20px' , borderRadius: '6px' , background: isSelected
+                                ? `linear-gradient(180deg, ${colors.lavender} 0%, ${colors.lavenderDeep} 100%)`
+                                : 'transparent' , border: !isSelected ? `2px solid ${colors.creamDim}` : 'none' ,
+                                display: 'flex' , alignItems: 'center' , justifyContent: 'center' , color:
+                                colors.background, fontSize: '12px' , fontWeight: '600' , boxShadow: isSelected ? `0 2px
+                                6px rgba(107, 90, 138, 0.4), inset 0 1px 0 rgba(255,255,255,0.2)` : 'none' , }}>
+                                {isSelected && '✓'}
+                            </div>
+                            <span style={{ color: isSelected ? colors.cream : colors.creamDim }}>{dir}</span>
+                            </label>
+                            );
+                            })}
+                    </div>
+                </div>
+            </div>
+
+            {/* Ceramic divider */}
+            <div style={{ height: '2px' , background: `linear-gradient(180deg, rgba(0,0,0,0.2) 0%, transparent 50%,
+                ${colors.rimLight} 100%)`, borderRadius: '1px' , }} />
+
+            {/* Camera Section */}
+            <div>
+                <h3 style={{ fontSize: '11px' , fontWeight: '600' , color: colors.lavender, textTransform: 'uppercase' ,
+                    letterSpacing: '0.1em' , marginBottom: '16px' , textShadow: `0 0 20px ${colors.lavender}40`, }}>
+                    Camera</h3>
+
+                {/* Detected Info - ceramic card */}
+                <div style={{ background: ceramic.surface, borderRadius: '14px' , padding: '14px' , marginBottom: '16px'
+                    , boxShadow: ceramic.rimGlow, border: `1px solid rgba(184, 165, 201, 0.06)`, }}>
+                    {[
+                    { label: 'Device', value: 'pco.panda 4.2' },
+                    { label: 'Resolution', value: '2048 × 2048', mono: true },
+                    { label: 'Max FPS', value: '40 Hz', mono: true },
+                    ].map((item, i) => (
+                    <div key={item.label} style={{ display: 'flex' , justifyContent: 'space-between' , marginBottom: i <
+                        2 ? '8px' : 0, }}>
+                        <span style={{ fontSize: '12px' , color: colors.creamDim }}>{item.label}</span>
+                        <span style={{ fontSize: '12px' , color: colors.cream, fontFamily: item.mono
+                            ? "'JetBrains Mono', monospace" : 'inherit' , }}>{item.value}</span>
+                    </div>
+                    ))}
+                </div>
+
+                {/* FPS and Exposure */}
+                <div style={{ display: 'grid' , gridTemplateColumns: '1fr 1fr' , gap: '12px' }}>
+                    {[
+                    { label: 'FPS', value: '30' },
+                    { label: 'Exposure', value: '30' },
+                    ].map(field => (
+                    <div key={field.label}>
+                        <label style={{ display: 'block' , fontSize: '12px' , color: colors.creamMuted,
+                            marginBottom: '8px' , }}>{field.label}</label>
+                        <input type="number" defaultValue={field.value} style={{ ...ceramicInput, width: '100%' ,
+                            padding: '12px 14px' , fontSize: '14px' , fontFamily: "'JetBrains Mono', monospace" ,
+                            boxSizing: 'border-box' , }} />
+                    </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Spacer */}
+            <div style={{ flex: 1 }} />
+
+            {/* Action Button - warm ceramic button with glow */}
+            <button style={{ width: '100%' , padding: '18px 24px' , background: `linear-gradient(180deg,
+                ${adjustBrightness(colors.amber, 8)} 0%, ${colors.amber} 40%, ${colors.amberGlow} 100%)`, border: 'none'
+                , borderRadius: '14px' , color: colors.background, fontSize: '15px' , fontWeight: '600' ,
+                cursor: 'pointer' , boxShadow: ceramic.button, transition: 'all 250ms ease' , }} onMouseEnter={(e)=>
+                e.target.style.boxShadow = ceramic.buttonHover}
+                onMouseLeave={(e) => e.target.style.boxShadow = ceramic.button}
+                >
+                Continue to Focus
+            </button>
+        </div>
+
+        {/* Right Panel - Preview */}
+        <div style={{ ...ceramicPanel, padding: '24px' , display: 'flex' , flexDirection: 'column' , }}>
+            <div style={{ display: 'flex' , justifyContent: 'space-between' , alignItems: 'center' ,
+                marginBottom: '20px' , }}>
+                <h2 style={{ fontSize: '15px' , fontWeight: '500' , color: colors.creamMuted, }}>Stimulus Preview</h2>
+                <button style={{ padding: '10px 18px' , background: ceramic.surface, border: `1px solid rgba(184, 165,
+                    201, 0.1)`, borderRadius: '12px' , color: colors.creamMuted, fontSize: '12px' , cursor: 'pointer' ,
+                    boxShadow: ceramic.rimGlow, transition: 'all 250ms ease' , }}>
+                    Test Timing
+                </button>
+            </div>
+
+            {/* Preview Area - ceramic bowl shape */}
+            <div style={{ flex: 1, background: ceramic.well, borderRadius: '18px' , boxShadow: `${ceramic.input}, 0 0
+                1px rgba(240, 230, 220, 0.03)`, display: 'flex' , alignItems: 'center' , justifyContent: 'center' ,
+                position: 'relative' , minHeight: '300px' , border: `1px solid rgba(0, 0, 0, 0.2)`, }}>
+                {/* Simulated stimulus */}
+                <div style={{ width: '70%' , aspectRatio: '16/9' , backgroundColor: colors.background,
+                    borderRadius: '10px' , position: 'relative' , overflow: 'hidden' , boxShadow: `0 4px 24px rgba(0, 0,
+                    0, 0.5), inset 0 1px 0 ${colors.rimLight}`, }}>
+                    {/* Moving bar */}
+                    <div style={{ position: 'absolute' , width: '15%' , height: '100%' , background:
+                        `linear-gradient(90deg, transparent 0%, ${colors.cream}80 50%, transparent 100%)`, left: '42%' ,
+                        boxShadow: `0 0 40px ${colors.cream}20`, }} />
+                    <span style={{ position: 'absolute' , bottom: '10px' , right: '12px' , fontSize: '11px' , color:
+                        colors.creamDim, fontFamily: "'JetBrains Mono', monospace" , }}>
+                        1920 × 1080 @ 60Hz
+                    </span>
+                </div>
+
+                {/* Soft corner marks */}
+                {[
+                { top: 16, left: 16 },
+                { top: 16, right: 16 },
+                { bottom: 16, left: 16 },
+                { bottom: 16, right: 16 },
+                ].map((pos, i) => (
+                <div key={i} style={{ position: 'absolute' , width: '16px' , height: '16px' , ...pos, borderTop: pos.top
+                    !==undefined ? `2px solid ${colors.lavenderDeep}30` : 'none' , borderBottom: pos.bottom !==undefined
+                    ? `2px solid ${colors.lavenderDeep}30` : 'none' , borderLeft: pos.left !==undefined ? `2px solid
+                    ${colors.lavenderDeep}30` : 'none' , borderRight: pos.right !==undefined ? `2px solid
+                    ${colors.lavenderDeep}30` : 'none' , borderRadius: '3px' , }} />
+                ))}
+            </div>
+
+            {/* Status Bar */}
+            <div style={{ marginTop: '20px' , display: 'flex' , justifyContent: 'space-between' , alignItems: 'center' ,
+                flexWrap: 'wrap' , gap: '12px' , }}>
+                {/* Status Pill - ceramic */}
+                <div style={{ display: 'flex' , alignItems: 'center' , gap: '10px' , padding: '10px 16px' , background:
+                    ceramic.surface, borderRadius: '12px' , boxShadow: ceramic.rimGlow, border: `1px solid
+                    ${colors.success}20`, }}>
+                    <div style={{ width: '7px' , height: '7px' , borderRadius: '50%' , backgroundColor: colors.success,
+                        boxShadow: `0 0 8px ${colors.success}`, }} />
+                    <span style={{ fontSize: '13px' , color: colors.creamMuted }}>Ready</span>
+                </div>
+
+                {/* Stats */}
+                <div style={{ display: 'flex' , gap: '20px' , fontSize: '12px' ,
+                    fontFamily: "'JetBrains Mono', monospace" , }}>
+                    {[
+                    { label: 'Duration', value: '05:20' },
+                    { label: 'Frames', value: '9,600' },
+                    { label: 'Size', value: '~2.4 GB' },
+                    ].map(stat => (
+                    <span key={stat.label}>
+                        <span style={{ color: colors.creamDim }}>{stat.label}: </span>
+                        <span style={{ color: colors.cream }}>{stat.value}</span>
+                    </span>
+                    ))}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {/* Design System Reference */}
+    <div style={{ marginTop: '24px' , padding: '24px' , ...ceramicPanel, }}>
+        <h3 style={{ fontSize: '11px' , fontWeight: '600' , color: colors.lavender, textTransform: 'uppercase' ,
+            letterSpacing: '0.1em' , marginBottom: '20px' , textShadow: `0 0 20px ${colors.lavender}40`, }}>Sleep Punk
+            Night + Ceramic — Design System</h3>
+
+        <div style={{ display: 'flex' , gap: '32px' , flexWrap: 'wrap' }}>
+            {/* Foundation */}
+            <div>
+                <span style={{ fontSize: '12px' , color: colors.creamMuted, display: 'block' , marginBottom: '12px' }}>
+                    Foundation
+                </span>
+                <div style={{ display: 'flex' , gap: '8px' }}>
+                    {[
+                    { color: colors.background, name: 'Night', gradient: false },
+                    { color: colors.surface, name: 'Surface', gradient: true },
+                    { color: colors.surfaceElevated, name: 'Elevated', gradient: true },
+                    { color: colors.well, name: 'Well', gradient: true },
+                    ].map(c => (
+                    <div key={c.name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: '48px' , height: '48px' , background: c.gradient ? `linear-gradient(180deg,
+                            ${adjustBrightness(c.color, 5)} 0%, ${c.color} 50%, ${adjustBrightness(c.color, -5)} 100%)`
+                            : c.color, borderRadius: '12px' , marginBottom: '6px' , boxShadow: `inset 0 1px 0
+                            ${colors.rimLight}`, border: `1px solid rgba(184, 165, 201, 0.05)`, }} />
+                        <span style={{ fontSize: '10px' , color: colors.creamDim }}>{c.name}</span>
+                    </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Cream */}
+            <div>
+                <span style={{ fontSize: '12px' , color: colors.creamMuted, display: 'block' , marginBottom: '12px' }}>
+                    Cream (Light)
+                </span>
+                <div style={{ display: 'flex' , gap: '8px' }}>
+                    {[
+                    { color: colors.cream, name: 'Glow' },
+                    { color: colors.creamMuted, name: 'Soft' },
+                    { color: colors.creamDim, name: 'Dim' },
+                    ].map(c => (
+                    <div key={c.name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: '48px' , height: '48px' , backgroundColor: c.color, borderRadius: '12px' ,
+                            marginBottom: '6px' , boxShadow: c.name==='Glow' ? `0 0 16px rgba(240, 230, 220, 0.3), inset
+                            0 -2px 4px rgba(0,0,0,0.1)` : `inset 0 -2px 4px rgba(0,0,0,0.1)`, }} />
+                        <span style={{ fontSize: '10px' , color: colors.creamDim }}>{c.name}</span>
+                    </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Lavender */}
+            <div>
+                <span style={{ fontSize: '12px' , color: colors.creamMuted, display: 'block' , marginBottom: '12px' }}>
+                    Lavender (Ambient)
+                </span>
+                <div style={{ display: 'flex' , gap: '8px' }}>
+                    {[
+                    { color: colors.lavender, name: 'Glow' },
+                    { color: colors.lavenderDim, name: 'Muted' },
+                    { color: colors.lavenderDeep, name: 'Deep' },
+                    ].map(c => (
+                    <div key={c.name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: '48px' , height: '48px' , background: `linear-gradient(180deg,
+                            ${adjustBrightness(c.color, 10)} 0%, ${c.color} 100%)`, borderRadius: '12px' ,
+                            marginBottom: '6px' , boxShadow: c.name==='Glow' ? `0 0 12px ${c.color}60, inset 0 1px 0
+                            rgba(255,255,255,0.2)` : `inset 0 1px 0 rgba(255,255,255,0.15)`, }} />
+                        <span style={{ fontSize: '10px' , color: colors.creamDim }}>{c.name}</span>
+                    </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Amber */}
+            <div>
+                <span style={{ fontSize: '12px' , color: colors.creamMuted, display: 'block' , marginBottom: '12px' }}>
+                    Amber (Nightlight)
+                </span>
+                <div style={{ display: 'flex' , gap: '8px' }}>
+                    {[
+                    { color: colors.amber, name: 'Warm' },
+                    { color: colors.amberGlow, name: 'Glow' },
+                    ].map(c => (
+                    <div key={c.name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: '48px' , height: '48px' , background: `linear-gradient(180deg,
+                            ${adjustBrightness(c.color, 10)} 0%, ${c.color} 50%, ${adjustBrightness(c.color, -10)}
+                            100%)`, borderRadius: '12px' , marginBottom: '6px' , boxShadow: `0 4px 16px ${c.color}50,
+                            inset 0 1px 0 rgba(255,255,255,0.25)`, }} />
+                        <span style={{ fontSize: '10px' , color: colors.creamDim }}>{c.name}</span>
+                    </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Status */}
+            <div>
+                <span style={{ fontSize: '12px' , color: colors.creamMuted, display: 'block' , marginBottom: '12px' }}>
+                    Status
+                </span>
+                <div style={{ display: 'flex' , gap: '8px' }}>
+                    {[
+                    { color: colors.success, name: 'Good' },
+                    { color: colors.warning, name: 'Note' },
+                    { color: colors.error, name: 'Soft' },
+                    ].map(c => (
+                    <div key={c.name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: '48px' , height: '48px' , background: `linear-gradient(180deg,
+                            ${adjustBrightness(c.color, 8)} 0%, ${c.color} 100%)`, borderRadius: '12px' ,
+                            marginBottom: '6px' , boxShadow: `inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0
+                            rgba(0,0,0,0.1)`, }} />
+                        <span style={{ fontSize: '10px' , color: colors.creamDim }}>{c.name}</span>
+                    </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+
+        {/* Ceramic Note */}
+        <div style={{ marginTop: '24px' , padding: '16px' , background: ceramic.well, borderRadius: '12px' , boxShadow:
+            ceramic.input, fontSize: '12px' , color: colors.creamMuted, lineHeight: 1.6, }}>
+            <strong style={{ color: colors.lavender }}>Ceramic qualities:</strong> Subtle vertical gradients suggest
+            gentle curvature.
+            Rim highlights (<code style={{ color: colors.cream }}>inset 0 1px 0</code>) catch light like glazed edges.
+            Elements have mass but yield softly. The satisfying "thock" of soft ceramic keycaps, translated to pixels.
+        </div>
+    </div>
+    </div>
+    );
+    }

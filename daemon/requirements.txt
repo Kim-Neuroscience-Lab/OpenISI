@@ -1,0 +1,2 @@
+# OpenISI PoC Daemon Requirements
+numpy>=1.24.0

@@ -1,0 +1,28 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+*.import
+*.ai
+
+# Build artifacts
+build/
+dist/
+daemon/build/
+bin/
+extension/target/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Testing
+.pytest_cache/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

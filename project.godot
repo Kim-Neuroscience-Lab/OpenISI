@@ -1,0 +1,43 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
+[application]
+
+config/name="OpenISI"
+run/main_scene="res://src/ui/splash/splash.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[autoload]
+
+ErrorHandler="*res://src/autoload/error_handler.gd"
+Settings="*res://src/autoload/settings.gd"
+HardwareManager="*res://src/autoload/hardware_manager.gd"
+AppTheme="*res://src/autoload/theme.gd"
+Session="*res://src/autoload/session.gd"
+CameraClient="*res://src/autoload/camera_client.gd"
+DisplayValidator="*res://src/autoload/display_validator.gd"
+Version="*res://src/autoload/version.gd"
+UpdateChecker="*res://src/autoload/update_checker.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+window/stretch/scale_mode="integer"
+window/per_pixel_transparency/allowed=true
+
+[rendering]
+
+environment/defaults/default_clear_color=Color(0.0745098, 0.0666667, 0.101961, 1)

@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.2
+reloadable = false
+
+[libraries]
+macos.debug = "res://bin/libopenisi_shm.dylib"
+macos.release = "res://bin/libopenisi_shm.dylib"
+windows.debug.x86_64 = "res://bin/openisi_shm.dll"
+windows.release.x86_64 = "res://bin/openisi_shm.dll"
+linux.debug.x86_64 = "res://bin/libopenisi_shm.so"
+linux.release.x86_64 = "res://bin/libopenisi_shm.so"

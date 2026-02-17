@@ -1,0 +1,16 @@
+{
+  "last_save_directory": "",
+  "last_session_name": "",
+  "window_state": {
+    "maximized": false,
+    "position_x": 100,
+    "position_y": 100,
+    "width": 1280,
+    "height": 800
+  },
+  "ui": {
+    "show_debug_overlay": false,
+    "show_timing_info": true,
+    "target_fps": 60
+  }
+}

@@ -1,0 +1,331 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  GODOT_VERSION: "4.6"
+
+jobs:
+  # -----------------------------------------------------------
+  # macOS ARM64
+  # -----------------------------------------------------------
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        run: |
+          brew install --cask godot
+          echo "GODOT=$(brew --prefix)/bin/godot" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install Python & Poetry
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+
+      - name: Build Rust extension (arm64)
+        working-directory: extension
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build Python daemon
+        run: |
+          poetry install
+          cd daemon
+          poetry run pyinstaller openisi-daemon.spec --distpath ../dist --noconfirm
+
+      - name: Export Godot app
+        run: |
+          mkdir -p build/macos
+          $GODOT --headless --export-release "macOS" build/macos/OpenISI.app
+
+      - name: Assemble .app bundle
+        run: |
+          cp -R dist/openisi-daemon build/macos/OpenISI.app/Contents/MacOS/openisi-daemon-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: |
+            build/macos/OpenISI.app
+            extension/target/aarch64-apple-darwin/release/libopenisi_shm.dylib
+
+  # -----------------------------------------------------------
+  # macOS x86_64
+  # -----------------------------------------------------------
+  build-macos-x86_64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        run: |
+          brew install --cask godot
+          echo "GODOT=$(brew --prefix)/bin/godot" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Install Python & Poetry
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+
+      - name: Build Rust extension (x86_64)
+        working-directory: extension
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build Python daemon
+        run: |
+          poetry install
+          cd daemon
+          poetry run pyinstaller openisi-daemon.spec --distpath ../dist --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: |
+            dist/openisi-daemon
+            extension/target/x86_64-apple-darwin/release/libopenisi_shm.dylib
+
+  # -----------------------------------------------------------
+  # macOS merge (universal binary)
+  # -----------------------------------------------------------
+  merge-macos:
+    needs: [build-macos-arm64, build-macos-x86_64]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: artifacts/arm64
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64
+          path: artifacts/x86_64
+
+      - name: Create universal dylib
+        run: |
+          lipo -create \
+            artifacts/arm64/extension/target/aarch64-apple-darwin/release/libopenisi_shm.dylib \
+            artifacts/x86_64/extension/target/x86_64-apple-darwin/release/libopenisi_shm.dylib \
+            -output universal_libopenisi_shm.dylib
+
+      - name: Assemble universal .app
+        run: |
+          # Start with arm64 .app (has arm64 daemon already)
+          cp -R artifacts/arm64/build/macos/OpenISI.app OpenISI.app
+
+          # Add x86_64 daemon
+          cp -R artifacts/x86_64/dist/openisi-daemon OpenISI.app/Contents/MacOS/openisi-daemon-x86_64
+
+          # Replace GDExtension with universal binary
+          find OpenISI.app -name "libopenisi_shm*dylib" -exec cp universal_libopenisi_shm.dylib {} \;
+
+      - name: Code sign
+        run: |
+          # Create entitlements
+          cat > entitlements.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.device.camera</key>
+              <true/>
+              <key>com.apple.security.cs.disable-library-validation</key>
+              <true/>
+              <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+              <true/>
+              <key>com.apple.security.network.client</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+          # Strip leading whitespace from plist
+          sed -i 's/^          //' entitlements.plist
+
+          # Sign daemon libraries (both archs)
+          find OpenISI.app/Contents/MacOS/openisi-daemon-arm64/_internal -type f \( -name "*.so" -o -name "*.dylib" \) \
+            -exec codesign --force --sign - --timestamp {} \; 2>/dev/null || true
+          find OpenISI.app/Contents/MacOS/openisi-daemon-x86_64/_internal -type f \( -name "*.so" -o -name "*.dylib" \) \
+            -exec codesign --force --sign - --timestamp {} \; 2>/dev/null || true
+
+          # Sign daemon executables
+          codesign --force --sign - --timestamp OpenISI.app/Contents/MacOS/openisi-daemon-arm64/openisi-daemon
+          codesign --force --sign - --timestamp OpenISI.app/Contents/MacOS/openisi-daemon-x86_64/openisi-daemon
+
+          # Sign GDExtension
+          find OpenISI.app -name "*.dylib" -not -path "*/openisi-daemon*" \
+            -exec codesign --force --sign - --timestamp {} \; 2>/dev/null || true
+
+          # Sign .app
+          codesign --force --deep --sign - --entitlements entitlements.plist --timestamp OpenISI.app
+
+          # Verify
+          codesign --verify --deep OpenISI.app
+
+      - name: Create zip
+        run: zip -r -y OpenISI-macos.zip OpenISI.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenISI-macos
+          path: OpenISI-macos.zip
+
+  # -----------------------------------------------------------
+  # Windows
+  # -----------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        run: |
+          choco install godot --yes
+          echo "GODOT=godot" >> $env:GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python & Poetry
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+
+      - name: Build Rust extension
+        working-directory: extension
+        run: cargo build --release
+
+      - name: Copy extension DLL
+        run: Copy-Item extension\target\release\openisi_shm.dll bin\openisi_shm.dll
+
+      - name: Build Python daemon (with PCO)
+        run: |
+          poetry install --extras pco
+          cd daemon
+          poetry run pyinstaller openisi-daemon.spec --distpath ..\dist --noconfirm
+
+      - name: Export Godot app
+        run: |
+          New-Item -ItemType Directory -Force -Path build\windows
+          & $env:GODOT --headless --export-release "Windows Desktop" build\windows\OpenISI.exe
+
+      - name: Assemble package
+        run: Copy-Item -Recurse dist\openisi-daemon build\windows\openisi-daemon
+
+      - name: Create zip
+        run: Compress-Archive -Path build\windows\* -DestinationPath OpenISI-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenISI-windows
+          path: OpenISI-windows.zip
+
+  # -----------------------------------------------------------
+  # Linux
+  # -----------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libvulkan-dev
+
+      - name: Install Godot
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_linux.x86_64.zip
+          unzip -q Godot_v4.6-stable_linux.x86_64.zip
+          chmod +x Godot_v4.6-stable_linux.x86_64
+          sudo mv Godot_v4.6-stable_linux.x86_64 /usr/local/bin/godot
+          echo "GODOT=godot" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python & Poetry
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+
+      - name: Build Rust extension
+        working-directory: extension
+        run: cargo build --release
+
+      - name: Copy extension .so
+        run: cp extension/target/release/libopenisi_shm.so bin/libopenisi_shm.so
+
+      - name: Build Python daemon (with PCO)
+        run: |
+          poetry install --extras pco
+          cd daemon
+          poetry run pyinstaller openisi-daemon.spec --distpath ../dist --noconfirm
+
+      - name: Export Godot app
+        run: |
+          mkdir -p build/linux
+          godot --headless --export-release "Linux" build/linux/OpenISI
+
+      - name: Assemble package
+        run: cp -R dist/openisi-daemon build/linux/openisi-daemon
+
+      - name: Create tarball
+        run: tar czf OpenISI-linux.tar.gz -C build/linux .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenISI-linux
+          path: OpenISI-linux.tar.gz
+
+  # -----------------------------------------------------------
+  # Create GitHub Release
+  # -----------------------------------------------------------
+  release:
+    needs: [merge-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file CHANGELOG.md \
+            artifacts/OpenISI-macos/OpenISI-macos.zip \
+            artifacts/OpenISI-windows/OpenISI-windows.zip \
+            artifacts/OpenISI-linux/OpenISI-linux.tar.gz
