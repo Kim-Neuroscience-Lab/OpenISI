@@ -1,0 +1,38 @@
+[geometry]
+horizontal_offset_deg = 0.0
+vertical_offset_deg = 0.0
+projection = "spherical"
+
+[stimulus]
+envelope = "bar"
+carrier = "checkerboard"
+
+[stimulus.params]
+contrast = 1.0
+mean_luminance = 0.5
+background_luminance = 0.0
+check_size_deg = 25.0
+check_size_cm = 1.0
+strobe_frequency_hz = 6.0
+stimulus_width_deg = 20.0
+sweep_speed_deg_per_sec = 90.0
+rotation_speed_deg_per_sec = 15.0
+expansion_speed_deg_per_sec = 5.0
+rotation_deg = 0.0
+
+[presentation]
+conditions = [
+    "LR",
+    "RL",
+    "TB",
+    "BT",
+]
+repetitions = 1
+structure = "blocked"
+order = "sequential"
+
+[timing]
+baseline_start_sec = 5.0
+baseline_end_sec = 5.0
+inter_stimulus_sec = 0.0
+inter_direction_sec = 5.0

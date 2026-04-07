@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickhartjes/tauri2/tauri-v2/crates/tauri-schema-generator/schemas/config.schema.json",
+  "productName": "OpenISI",
+  "version": "0.1.0",
+  "identifier": "com.openisi.app",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "OpenISI",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "maximizable": true,
+        "maximized": true
+      }
+    ]
+  },
+  "bundle": {
+    "resources": {
+      "../config/*": "config/"
+    },
+    "active": true,
+    "targets": ["msi"],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    },
+    "shortDescription": "Intrinsic Signal Imaging - Acquisition & Analysis",
+    "longDescription": "OpenISI is an open-source intrinsic signal imaging system for retinotopic mapping in mice."
+  }
+}

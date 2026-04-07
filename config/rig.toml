@@ -1,0 +1,71 @@
+[camera]
+exposure_us = 1000
+gain = -1
+target_fps = 0.0
+binning = 4
+
+[geometry]
+viewing_distance_cm = 10.0
+
+[ring_overlay]
+enabled = true
+radius_px = 500
+center_x_px = 986
+center_y_px = 970
+
+[display]
+target_stimulus_fps = 60
+monitor_rotation_deg = 180.0
+
+[analysis]
+smoothing_sigma = 2.0
+rotation_k = 0
+azi_angular_range = 100.0
+alt_angular_range = 100.0
+offset_azi = 0.0
+offset_alt = 0.0
+epsilon = 0.0000000001
+
+[analysis.segmentation]
+sign_map_filter_sigma = 9.0
+sign_map_threshold = 0.35
+open_radius = 2
+close_radius = 10
+dilate_radius = 3
+pad_border = 30
+spur_iterations = 4
+split_overlap_threshold = 1.1
+merge_overlap_threshold = 0.1
+merge_dilate_radius = 3
+merge_close_radius = 5
+eccentricity_radius = 30.0
+
+[system]
+camera_frame_send_interval_ms = 33
+camera_poll_interval_ms = 1
+camera_first_frame_timeout_ms = 5000
+camera_first_frame_poll_ms = 10
+display_validation_sample_count = 150
+preview_width_px = 320
+preview_interval_ms = 100
+preview_cycle_sec = 10.0
+idle_sleep_ms = 16
+fps_window_frames = 10
+drop_detection_warmup_frames = 10
+drop_detection_threshold = 1.5
+
+[ui]
+show_debug_overlay = false
+show_timing_info = true
+
+[window]
+maximized = false
+x = 100
+y = 100
+width = 1280
+height = 800
+
+[paths]
+data_directory = 'C:\Users\ISI User\Documents\ISI Data'
+experiments_directory = ""
+last_experiment_path = ""

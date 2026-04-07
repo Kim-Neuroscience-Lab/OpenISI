@@ -1,0 +1,36 @@
+# Build artifacts
+target/
+*.exe
+*.dll
+*.pdb
+
+# Data files
+*.oisi
+*.h5
+*.hdf5
+*.mat
+*.png
+!src-tauri/icons/*.ico
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tauri build artifacts
+src-tauri/WixTools/
+
+# Local config overrides (user-specific paths)
+settings.local.json
+
+# Test data
+test_data/
+
+# Claude artifacts
+.claude/

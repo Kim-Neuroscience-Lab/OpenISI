@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenISI</title>
+    <link rel="stylesheet" href="styles/app.css">
+</head>
+<body>
+    <!-- Icon bar — left edge, always visible -->
+    <nav id="icon-bar">
+        <button id="nav-library" class="icon-btn active" title="Library" data-view="library">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+        </button>
+        <button id="nav-session" class="icon-btn disabled" title="Session" data-view="session">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+            </svg>
+        </button>
+        <button id="nav-analysis" class="icon-btn disabled" title="Analysis" data-view="analysis">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="20" x2="18" y2="10"/>
+                <line x1="12" y1="20" x2="12" y2="4"/>
+                <line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+        </button>
+    </nav>
+
+    <!-- Main content area -->
+    <main id="content">
+        <!-- Populated by view modules -->
+    </main>
+
+    <!-- Preview panel — right side, layered visualization -->
+    <aside id="preview-panel" class="hidden">
+        <div class="preview-card">
+            <div class="preview-label">Camera</div>
+            <div class="preview-container" id="cam-container">
+                <canvas id="layer-base"></canvas>
+                <canvas id="layer-map"></canvas>
+                <canvas id="layer-borders"></canvas>
+                <canvas id="layer-ring"></canvas>
+                <div id="no-camera-msg" class="preview-placeholder">No camera</div>
+            </div>
+        </div>
+        <div class="preview-card">
+            <div class="preview-label">Stimulus</div>
+            <div class="preview-container" id="stim-container">
+                <canvas id="stimulus-canvas"></canvas>
+                <div id="no-stimulus-msg" class="preview-placeholder">No stimulus</div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Layer control bar — right edge, icon buttons with popup menus -->
+    <nav id="layer-bar">
+        <div class="layer-icon-wrap">
+            <button class="layer-icon" id="lbtn-base" title="Base layer">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><circle cx="12" cy="12" r="4"/></svg>
+            </button>
+            <div class="layer-popup" id="popup-base">
+                <div class="popup-title">Base Layer</div>
+                <button class="popup-opt active" data-val="camera">Camera</button>
+                <button class="popup-opt" data-val="anatomical">Anatomical</button>
+                <button class="popup-opt" data-val="none">None</button>
+            </div>
+        </div>
+        <div class="layer-icon-wrap">
+            <button class="layer-icon" id="lbtn-map" title="Map overlay">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v18H3z"/><path d="M3 15l6-6 4 4 8-8"/></svg>
+            </button>
+            <div class="layer-popup" id="popup-map">
+                <div class="popup-title">Map Overlay</div>
+                <button class="popup-opt active" data-val="none">None</button>
+                <!-- Remaining buttons built dynamically by setAnalysisFile() -->
+                <div class="popup-title" style="margin-top:6px">Opacity</div>
+                <div style="display:flex;align-items:center;gap:4px">
+                    <input type="range" id="ctrl-map-opacity" min="0" max="100" value="70" style="flex:1">
+                    <span id="ctrl-map-opacity-val" class="mono-value" style="font-size:10px">70%</span>
+                </div>
+                <div class="popup-title" style="margin-top:6px">Blend Mode</div>
+                <select id="ctrl-blend-mode" style="width:100%; font-size:11px; padding:2px 4px;">
+                    <option value="source-over">Normal</option>
+                    <option value="multiply">Multiply</option>
+                    <option value="screen">Screen</option>
+                    <option value="overlay">Overlay</option>
+                    <option value="darken">Darken</option>
+                    <option value="lighten">Lighten</option>
+                    <option value="color-dodge">Color Dodge</option>
+                    <option value="color-burn">Color Burn</option>
+                    <option value="hard-light">Hard Light</option>
+                    <option value="soft-light">Soft Light</option>
+                    <option value="difference">Difference</option>
+                    <option value="exclusion">Exclusion</option>
+                    <option value="hue">Hue</option>
+                    <option value="saturation">Saturation</option>
+                    <option value="color">Color</option>
+                    <option value="luminosity">Luminosity</option>
+                </select>
+            </div>
+        </div>
+        <div class="layer-icon-wrap">
+            <button class="layer-icon" id="lbtn-borders" title="Borders (future)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+            </button>
+            <div class="layer-popup" id="popup-borders">
+                <div class="popup-title">VFS Borders</div>
+                <button class="popup-opt" data-val="show">Show</button>
+                <button class="popup-opt active" data-val="hide">Hide</button>
+            </div>
+        </div>
+        <div class="layer-icon-wrap">
+            <button class="layer-icon" id="lbtn-ring" title="Ring overlay">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+            <div class="layer-popup" id="popup-ring">
+                <div class="popup-title">Ring Overlay</div>
+                <button class="popup-opt" data-val="show">Show</button>
+                <button class="popup-opt active" data-val="hide">Hide</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Status bar — bottom edge, always visible -->
+    <footer id="status-bar">
+        <span id="status-display">Display: —</span>
+        <span class="sep">|</span>
+        <span id="status-camera">Camera: —</span>
+        <span class="sep">|</span>
+        <span id="status-activity">Idle</span>
+    </footer>
+
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>

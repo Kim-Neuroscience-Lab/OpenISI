@@ -1,0 +1,15 @@
+[package]
+name = "openisi-stimulus"
+version = "0.1.0"
+edition = "2024"
+description = "Pure stimulus library: sequencer, geometry, dataset — no windowing, no threading"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+approx = "0.5"
