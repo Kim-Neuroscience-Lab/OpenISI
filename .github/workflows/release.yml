@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Run tests
+        run: cargo test --workspace
+        env:
+          CMAKE_GENERATOR: "Visual Studio 17 2022"
+
+      - name: Build release binaries
+        run: cargo build --release
+        env:
+          CMAKE_GENERATOR: "Visual Studio 17 2022"
+
+      - name: Build MSI installer
+        run: cargo tauri build
+        env:
+          CMAKE_GENERATOR: "Visual Studio 17 2022"
+
+      - name: Prepare release artifacts
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+
+          # Portable zip (exe + config + headless)
+          mkdir -p OpenISI-${VERSION}-windows-x64/config
+          cp target/release/openisi.exe "OpenISI-${VERSION}-windows-x64/"
+          cp target/release/headless.exe "OpenISI-${VERSION}-windows-x64/"
+          cp config/* "OpenISI-${VERSION}-windows-x64/config/"
+          cp src-tauri/icons/icon.ico "OpenISI-${VERSION}-windows-x64/"
+          cd "OpenISI-${VERSION}-windows-x64" && 7z a "../release-artifacts/OpenISI-${VERSION}-windows-x64.zip" * && cd ..
+
+          # MSI installer
+          cp target/release/bundle/msi/*.msi "release-artifacts/" 2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
