@@ -11,13 +11,10 @@ jobs:
         include:
           - os: windows-latest
             target: windows
-            cmake-generator: "Visual Studio 17 2022"
           - os: macos-latest
             target: macos
-            cmake-generator: ""
           - os: ubuntu-latest
             target: linux
-            cmake-generator: ""
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -48,20 +45,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Set CMake generator (Windows)
+        if: runner.os == 'Windows'
+        run: echo "CMAKE_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
+
       - name: Run tests
         run: cargo test --workspace
-        env:
-          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
       - name: Build release binaries
         run: cargo build --release
-        env:
-          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
       - name: Build installer
         run: cargo tauri build
-        env:
-          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
       - name: Prepare Windows artifacts
         if: matrix.target == 'windows'
