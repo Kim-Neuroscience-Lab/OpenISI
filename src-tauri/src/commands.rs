@@ -140,6 +140,154 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> Result<St
     Ok(path_str)
 }
 
+const SNLC_SAMPLE_DATA_URL: &str =
+    "https://github.com/SNLC/ISI/raw/master/Sample%20Data.zip";
+
+/// Download SNLC sample data from GitHub, extract, and import each subject.
+/// Returns the list of created .oisi file paths.
+#[tauri::command]
+pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> Result<Vec<String>, String> {
+    // Determine output directory (same logic as import_snlc).
+    let out_dir = {
+        let app = state.lock().unwrap();
+        let cfg = app.config.lock().unwrap();
+        let data_dir = &cfg.rig.paths.data_directory;
+        if data_dir.is_empty() {
+            return Err("Set a data directory before downloading sample data.".into());
+        }
+        std::path::PathBuf::from(data_dir)
+    };
+    let _ = std::fs::create_dir_all(&out_dir);
+
+    // Create temp directory for extraction (cleaned up on all paths).
+    let temp_dir = std::env::temp_dir().join("openisi_sample_data");
+    let _ = std::fs::remove_dir_all(&temp_dir); // clean any previous attempt
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp directory: {e}"))?;
+
+    // Guard: ensure temp_dir is cleaned up even on early return.
+    struct CleanupGuard(std::path::PathBuf);
+    impl Drop for CleanupGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = CleanupGuard(temp_dir.clone());
+
+    let zip_path = temp_dir.join("sample_data.zip");
+
+    // Download the zip.
+    eprintln!("[commands] downloading SNLC sample data from {SNLC_SAMPLE_DATA_URL}");
+    let response = ureq::get(SNLC_SAMPLE_DATA_URL)
+        .call()
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    let mut zip_file = std::fs::File::create(&zip_path)
+        .map_err(|e| format!("Failed to create temp zip: {e}"))?;
+    std::io::copy(&mut response.into_body().as_reader(), &mut zip_file)
+        .map_err(|e| format!("Failed to write zip: {e}"))?;
+    drop(zip_file);
+    eprintln!("[commands] download complete, extracting...");
+
+    // Extract the zip.
+    let extract_dir = temp_dir.join("extracted");
+    {
+        let file = std::fs::File::open(&zip_path)
+            .map_err(|e| format!("Failed to open zip: {e}"))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| format!("Failed to read zip: {e}"))?;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i)
+                .map_err(|e| format!("Zip entry error: {e}"))?;
+            let entry_path = match entry.enclosed_name() {
+                Some(p) => extract_dir.join(p),
+                None => continue,
+            };
+            if entry.is_dir() {
+                let _ = std::fs::create_dir_all(&entry_path);
+            } else {
+                if let Some(parent) = entry_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut out = std::fs::File::create(&entry_path)
+                    .map_err(|e| format!("Failed to extract {}: {e}", entry.name()))?;
+                std::io::copy(&mut entry, &mut out)
+                    .map_err(|e| format!("Failed to write {}: {e}", entry.name()))?;
+            }
+        }
+    }
+    // Remove the zip now that it's extracted.
+    let _ = std::fs::remove_file(&zip_path);
+
+    // Find subject directories — any directory that contains .mat files.
+    let mut subject_dirs = Vec::new();
+    fn find_mat_dirs(dir: &std::path::Path, results: &mut Vec<std::path::PathBuf>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let mut has_mat = false;
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                subdirs.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("mat") {
+                has_mat = true;
+            }
+        }
+        if has_mat {
+            results.push(dir.to_path_buf());
+        }
+        for sub in subdirs {
+            find_mat_dirs(&sub, results);
+        }
+    }
+    find_mat_dirs(&extract_dir, &mut subject_dirs);
+    subject_dirs.sort();
+
+    if subject_dirs.is_empty() {
+        return Err("No subject directories with .mat files found in the sample data.".into());
+    }
+
+    eprintln!("[commands] found {} subject directories", subject_dirs.len());
+
+    // Import each subject directory.
+    let mut imported: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for dir in &subject_dirs {
+        let folder_name = dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "import".into());
+        let output_path = out_dir.join(format!("{folder_name}.oisi"));
+
+        match isi_analysis::io::import_snlc_directory(dir, &output_path) {
+            Ok(()) => {
+                let path_str = output_path.to_string_lossy().to_string();
+                eprintln!("[commands] imported sample subject {folder_name} to {path_str}");
+                imported.push(path_str);
+            }
+            Err(e) => {
+                let msg = format!("{folder_name}: {e}");
+                eprintln!("[commands] failed to import sample subject {msg}");
+                errors.push(msg);
+            }
+        }
+    }
+
+    if imported.is_empty() {
+        return Err(format!("All subjects failed to import:\n{}", errors.join("\n")));
+    }
+    if !errors.is_empty() {
+        eprintln!("[commands] {} subjects failed: {}", errors.len(), errors.join("; "));
+    }
+
+    // Cleanup is handled by the CleanupGuard drop.
+    eprintln!("[commands] sample data import complete: {} imported, {} failed",
+        imported.len(), errors.len());
+    Ok(imported)
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Analysis
 // ════════════════════════════════════════════════════════════════════════
@@ -424,103 +572,112 @@ pub fn select_display(state: State<'_, SharedState>, monitor_index: usize) -> Re
 /// This blocks the calling thread but the frontend can await it.
 #[tauri::command]
 pub fn validate_display(state: State<'_, SharedState>) -> Result<crate::session::DisplayValidation, String> {
-    let app = state.lock().unwrap();
-    let monitor = app.session.selected_display.as_ref()
-        .ok_or("No display selected")?;
-
-    let monitor_index = monitor.index;
-    let expected_refresh = monitor.refresh_hz as f64;
-    let sample_count = app.config.lock().unwrap().rig.system.display_validation_sample_count;
-    drop(app); // Release lock during measurement
-
-    let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)?;
-
-    let mut qpc_freq = 0i64;
-    unsafe {
-        let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc_freq);
-    }
-    if qpc_freq == 0 {
-        return Err("QueryPerformanceFrequency failed".into());
+    #[cfg(not(windows))]
+    {
+        let _ = state;
+        return Err("Display validation requires Windows (DXGI WaitForVBlank)".into());
     }
 
-    // Collect raw timestamps (including warmup).
-    let warmup_count = 30u32;
-    let total_samples = sample_count + warmup_count;
-    let mut timestamps = Vec::with_capacity(total_samples as usize);
+    #[cfg(windows)]
+    {
+        let app = state.lock().unwrap();
+        let monitor = app.session.selected_display.as_ref()
+            .ok_or("No display selected")?;
 
-    for _ in 0..total_samples {
+        let monitor_index = monitor.index;
+        let expected_refresh = monitor.refresh_hz as f64;
+        let sample_count = app.config.lock().unwrap().rig.system.display_validation_sample_count;
+        drop(app); // Release lock during measurement
+
+        let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)?;
+
+        let mut qpc_freq = 0i64;
         unsafe {
-            dxgi_output.WaitForVBlank().map_err(|e| format!("WaitForVBlank: {e}"))?;
+            let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc_freq);
         }
-        let mut qpc = 0i64;
-        unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc); }
-        timestamps.push(qpc);
+        if qpc_freq == 0 {
+            return Err("QueryPerformanceFrequency failed".into());
+        }
+
+        // Collect raw timestamps (including warmup).
+        let warmup_count = 30u32;
+        let total_samples = sample_count + warmup_count;
+        let mut timestamps = Vec::with_capacity(total_samples as usize);
+
+        for _ in 0..total_samples {
+            unsafe {
+                dxgi_output.WaitForVBlank().map_err(|e| format!("WaitForVBlank: {e}"))?;
+            }
+            let mut qpc = 0i64;
+            unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc); }
+            timestamps.push(qpc);
+        }
+
+        // Skip warmup samples, compute deltas on the rest.
+        let valid_timestamps = &timestamps[warmup_count as usize..];
+        let deltas_us: Vec<f64> = valid_timestamps
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as f64 * 1_000_000.0 / qpc_freq as f64)
+            .collect();
+
+        let n = deltas_us.len() as f64;
+        let mean_delta_us = deltas_us.iter().sum::<f64>() / n;
+        let measured_refresh_hz = 1_000_000.0 / mean_delta_us;
+        let variance = deltas_us.iter()
+            .map(|d| (d - mean_delta_us).powi(2))
+            .sum::<f64>() / n;
+        let jitter_us = variance.sqrt();
+
+        // 95% confidence interval: mean ± z * (std / sqrt(n))
+        let z_score = 1.96;
+        let ci_delta_us = z_score * jitter_us / n.sqrt();
+        let ci_hz_low = 1_000_000.0 / (mean_delta_us + ci_delta_us);
+        let ci_hz_high = 1_000_000.0 / (mean_delta_us - ci_delta_us);
+        let ci95_hz = (ci_hz_high - ci_hz_low) / 2.0;
+
+        // Mismatch detection: does measured match reported within 5%?
+        let tolerance = 0.05;
+        let matches_reported = (measured_refresh_hz - expected_refresh).abs() / expected_refresh < tolerance;
+
+        let mut warnings = Vec::new();
+
+        // CI width > 2% of mean → measurement is noisy.
+        if ci95_hz / measured_refresh_hz > 0.02 {
+            warnings.push(format!(
+                "High measurement uncertainty: 95% CI is ±{:.2}Hz ({:.1}% of {:.1}Hz)",
+                ci95_hz, ci95_hz / measured_refresh_hz * 100.0, measured_refresh_hz
+            ));
+        }
+
+        if !matches_reported {
+            warnings.push(format!(
+                "Measured {:.2}Hz differs from reported {:.0}Hz by {:.1}%",
+                measured_refresh_hz, expected_refresh,
+                (measured_refresh_hz - expected_refresh).abs() / expected_refresh * 100.0
+            ));
+        }
+
+        let validation = crate::session::DisplayValidation {
+            measured_refresh_hz,
+            sample_count,
+            jitter_us,
+            ci95_hz,
+            matches_reported,
+            reported_refresh_hz: expected_refresh,
+            warnings: warnings.clone(),
+        };
+
+        eprintln!(
+            "[validate] measured {:.2}Hz (reported {:.0}Hz), jitter={:.1}µs, CI95=±{:.2}Hz, {} samples ({}warmup skipped){}",
+            measured_refresh_hz, expected_refresh, jitter_us, ci95_hz, sample_count, warmup_count,
+            if warnings.is_empty() { String::new() } else { format!(" WARNINGS: {}", warnings.join("; ")) }
+        );
+
+        let mut app = state.lock().unwrap();
+        app.session.set_display_validation(validation.clone());
+
+        Ok(validation)
     }
-
-    // Skip warmup samples, compute deltas on the rest.
-    let valid_timestamps = &timestamps[warmup_count as usize..];
-    let deltas_us: Vec<f64> = valid_timestamps
-        .windows(2)
-        .map(|w| (w[1] - w[0]) as f64 * 1_000_000.0 / qpc_freq as f64)
-        .collect();
-
-    let n = deltas_us.len() as f64;
-    let mean_delta_us = deltas_us.iter().sum::<f64>() / n;
-    let measured_refresh_hz = 1_000_000.0 / mean_delta_us;
-    let variance = deltas_us.iter()
-        .map(|d| (d - mean_delta_us).powi(2))
-        .sum::<f64>() / n;
-    let jitter_us = variance.sqrt();
-
-    // 95% confidence interval: mean ± z * (std / sqrt(n))
-    let z_score = 1.96;
-    let ci_delta_us = z_score * jitter_us / n.sqrt();
-    let ci_hz_low = 1_000_000.0 / (mean_delta_us + ci_delta_us);
-    let ci_hz_high = 1_000_000.0 / (mean_delta_us - ci_delta_us);
-    let ci95_hz = (ci_hz_high - ci_hz_low) / 2.0;
-
-    // Mismatch detection: does measured match reported within 5%?
-    let tolerance = 0.05;
-    let matches_reported = (measured_refresh_hz - expected_refresh).abs() / expected_refresh < tolerance;
-
-    let mut warnings = Vec::new();
-
-    // CI width > 2% of mean → measurement is noisy.
-    if ci95_hz / measured_refresh_hz > 0.02 {
-        warnings.push(format!(
-            "High measurement uncertainty: 95% CI is ±{:.2}Hz ({:.1}% of {:.1}Hz)",
-            ci95_hz, ci95_hz / measured_refresh_hz * 100.0, measured_refresh_hz
-        ));
-    }
-
-    if !matches_reported {
-        warnings.push(format!(
-            "Measured {:.2}Hz differs from reported {:.0}Hz by {:.1}%",
-            measured_refresh_hz, expected_refresh,
-            (measured_refresh_hz - expected_refresh).abs() / expected_refresh * 100.0
-        ));
-    }
-
-    let validation = crate::session::DisplayValidation {
-        measured_refresh_hz,
-        sample_count,
-        jitter_us,
-        ci95_hz,
-        matches_reported,
-        reported_refresh_hz: expected_refresh,
-        warnings: warnings.clone(),
-    };
-
-    eprintln!(
-        "[validate] measured {:.2}Hz (reported {:.0}Hz), jitter={:.1}µs, CI95=±{:.2}Hz, {} samples ({}warmup skipped){}",
-        measured_refresh_hz, expected_refresh, jitter_us, ci95_hz, sample_count, warmup_count,
-        if warnings.is_empty() { String::new() } else { format!(" WARNINGS: {}", warnings.join("; ")) }
-    );
-
-    let mut app = state.lock().unwrap();
-    app.session.set_display_validation(validation.clone());
-
-    Ok(validation)
 }
 
 /// Validate timing relationship between camera and stimulus clocks.
@@ -530,6 +687,14 @@ pub fn validate_display(state: State<'_, SharedState>) -> Result<crate::session:
 /// from the ring buffer, computes TimingCharacterization, stores in session.
 #[tauri::command]
 pub fn validate_timing(state: State<'_, SharedState>) -> Result<crate::timing::TimingCharacterization, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = state;
+        return Err("Timing validation requires Windows (DXGI WaitForVBlank)".into());
+    }
+
+    #[cfg(windows)]
+    {
     let app = state.lock().unwrap();
 
     // Prerequisites.
@@ -677,6 +842,7 @@ pub fn validate_timing(state: State<'_, SharedState>) -> Result<crate::timing::T
     app.session.timing_characterization = Some(tc.clone());
 
     Ok(tc)
+    } // #[cfg(windows)]
 }
 
 /// Set the physical rotation of the stimulus monitor (degrees around viewing axis).

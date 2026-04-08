@@ -224,8 +224,10 @@ mod tests {
     fn extract_borders_finds_boundary() {
         let labels = Array2::from_shape_fn((5, 10), |(_, c)| if c < 5 { 1i32 } else { 2i32 });
         let borders = extract_borders(&labels);
+        // Columns 4 and 5 are at the label-1/label-2 boundary.
         assert!(borders[[2, 4]]);
         assert!(borders[[2, 5]]);
-        assert!(!borders[[2, 0]]);
+        // Interior pixel (not at label boundary or image edge) is not a border.
+        assert!(!borders[[2, 2]]);
     }
 }

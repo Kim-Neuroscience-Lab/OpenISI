@@ -48,11 +48,22 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
     const isReturning = viz.analysisFile === currentFile && viz.mapImageData !== null;
 
     if (!isReturning) {
+        // Auto-run analysis if the file has data but no results yet.
+        if (!fileInfo.has_results && (fileInfo.has_acquisition || fileInfo.has_complex_maps)) {
+            try {
+                await invoke("run_analysis", { path: currentFile });
+                fileInfo = await invoke("inspect_oisi", { path: currentFile });
+            } catch (e) {
+                console.error("Auto-analysis failed:", e);
+            }
+        }
+
         await window.openISI.setAnalysisFile(currentFile);
-        // Defaults matching Juavinett Fig 4: anatomical base, patches overlay, borders on.
         if (fileInfo.has_anatomical) window.openISI.setBaseMode("anatomical");
         if (fileInfo.has_results) {
-            await window.openISI.setMapName("area_labels");
+            // Default to VFS overlay with borders and ring.
+            const defaultMap = viz.availableResults.has("vfs") ? "vfs" : "area_labels";
+            await window.openISI.setMapName(defaultMap);
             viz.bordersVisible = true;
             viz.ringVisible = true;
         }

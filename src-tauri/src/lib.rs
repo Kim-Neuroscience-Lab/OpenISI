@@ -136,6 +136,7 @@ fn start_tauri(config: ConfigManager) {
             commands::set_data_directory,
             // Import
             commands::import_snlc,
+            commands::import_snlc_sample_data,
             // Analysis
             commands::inspect_oisi,
             commands::run_analysis,

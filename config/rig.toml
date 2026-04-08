@@ -8,10 +8,10 @@ binning = 4
 viewing_distance_cm = 10.0
 
 [ring_overlay]
-enabled = true
-radius_px = 500
-center_x_px = 986
-center_y_px = 970
+enabled = false
+radius_px = 200
+center_x_px = 512
+center_y_px = 512
 
 [display]
 target_stimulus_fps = 60
@@ -66,6 +66,6 @@ width = 1280
 height = 800
 
 [paths]
-data_directory = 'C:\Users\ISI User\Documents\ISI Data'
+data_directory = ""
 experiments_directory = ""
 last_experiment_path = ""

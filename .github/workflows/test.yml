@@ -8,7 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            cmake-generator: "Visual Studio 17 2022"
+          - os: macos-latest
+            cmake-generator: ""
+          - os: ubuntu-latest
+            cmake-generator: ""
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +36,13 @@ jobs:
       - name: Install CMake
         uses: lukka/get-cmake@latest
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - name: Run tests
         run: cargo test --workspace
         env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
+          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}

@@ -5,8 +5,20 @@ on:
     tags: ["v*"]
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+            cmake-generator: "Visual Studio 17 2022"
+          - os: macos-latest
+            target: macos
+            cmake-generator: ""
+          - os: ubuntu-latest
+            target: linux
+            cmake-generator: ""
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -27,28 +39,38 @@ jobs:
       - name: Install CMake
         uses: lukka/get-cmake@latest
 
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - name: Run tests
         run: cargo test --workspace
         env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
+          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
       - name: Build release binaries
         run: cargo build --release
         env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
+          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
-      - name: Build MSI installer
+      - name: Build installer
         run: cargo tauri build
         env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
+          CMAKE_GENERATOR: ${{ matrix.cmake-generator }}
 
-      - name: Prepare release artifacts
+      - name: Prepare Windows artifacts
+        if: matrix.target == 'windows'
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           mkdir -p release-artifacts
 
-          # Portable zip (exe + config + headless)
+          # Portable zip
           mkdir -p OpenISI-${VERSION}-windows-x64/config
           cp target/release/openisi.exe "OpenISI-${VERSION}-windows-x64/"
           cp target/release/headless.exe "OpenISI-${VERSION}-windows-x64/"
@@ -59,10 +81,46 @@ jobs:
           # MSI installer
           cp target/release/bundle/msi/*.msi "release-artifacts/" 2>/dev/null || true
 
+      - name: Prepare macOS artifacts
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+          cp target/release/bundle/dmg/*.dmg "release-artifacts/" 2>/dev/null || true
+          cp target/release/bundle/macos/*.app.tar.gz "release-artifacts/" 2>/dev/null || true
+
+      - name: Prepare Linux artifacts
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p release-artifacts
+          cp target/release/bundle/deb/*.deb "release-artifacts/" 2>/dev/null || true
+          cp target/release/bundle/appimage/*.AppImage "release-artifacts/" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release-artifacts/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/*
+          files: artifacts/**/*
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}

@@ -22,6 +22,8 @@ pollster = "0.4"
 raw-window-handle = "0.6"
 png = "0.17"
 tauri-plugin-dialog = "2"
+ureq = "3"
+zip = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.59", features = [
@@ -48,3 +50,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "openisi"
 path = "src/main.rs"
+
+[[bin]]
+name = "headless"
+path = "src/bin/headless.rs"

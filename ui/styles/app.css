@@ -37,7 +37,7 @@ body {
     color: var(--text-primary);
     background: var(--bg-base);
     display: grid;
-    grid-template-columns: 48px 1fr auto 40px;
+    grid-template-columns: 48px 1fr auto 48px;
     grid-template-rows: 1fr 28px;
     grid-template-areas:
         "iconbar content preview layerbar"
@@ -62,8 +62,8 @@ body {
 }
 
 .icon-btn {
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -73,6 +73,11 @@ body {
     color: var(--text-secondary);
     cursor: pointer;
     transition: background 0.1s, color 0.1s;
+}
+
+.icon-btn svg {
+    width: 36px;
+    height: 36px;
 }
 
 .icon-btn:hover:not(.disabled) {
@@ -196,8 +201,8 @@ body {
 }
 
 .layer-icon {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -206,6 +211,11 @@ body {
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+}
+
+.layer-icon svg {
+    width: 36px;
+    height: 36px;
 }
 
 .layer-icon:hover {

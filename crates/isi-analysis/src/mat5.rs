@@ -212,7 +212,7 @@ fn extract_2d_image(data: &MatrixData) -> Option<Array2<u8>> {
             }
             None
         }
-        MatrixData::Struct { fields, .. } => {
+        MatrixData::Struct { fields } => {
             // Search struct fields for the largest 2D numeric array
             let mut best: Option<Array2<u8>> = None;
             for field in fields {
@@ -244,7 +244,6 @@ fn extract_2d_image(data: &MatrixData) -> Option<Array2<u8>> {
 enum MatrixData {
     Cell(Vec<MatrixData>),
     Struct {
-        field_names: Vec<String>,
         fields: Vec<MatrixData>,
     },
     Double {
@@ -405,16 +404,6 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
             // Sub-element: concatenated field names (miINT8), each `field_name_len` bytes
             let (_, fn_data) = read_tag_data(r)?;
             let num_fields = if field_name_len > 0 { fn_data.len() / field_name_len } else { 0 };
-            let mut field_names = Vec::with_capacity(num_fields);
-            for i in 0..num_fields {
-                let start = i * field_name_len;
-                let end = start + field_name_len;
-                let name_bytes = &fn_data[start..end.min(fn_data.len())];
-                let fname = String::from_utf8_lossy(name_bytes)
-                    .trim_end_matches('\0')
-                    .to_string();
-                field_names.push(fname);
-            }
 
             // Read field values (for each struct element × each field)
             let n_elements: usize = dims.iter().product();
@@ -434,7 +423,7 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
                 }
             }
 
-            Ok((name, MatrixData::Struct { field_names, fields }))
+            Ok((name, MatrixData::Struct { fields }))
         }
         MX_DOUBLE_CLASS | MX_SINGLE_CLASS |
         MX_INT8_CLASS | MX_UINT8_CLASS |
@@ -464,53 +453,6 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
 /// Parse for the `parse_matrix_with_name` path (used when we've already read a tag).
 fn parse_matrix_with_name<R: Read + Seek>(r: &mut R, size: usize) -> Result<(String, MatrixData), AnalysisError> {
     parse_matrix_contents(r, size)
-}
-
-/// Try to parse a numeric matrix from current position (for anatomical reader).
-fn try_parse_numeric_matrix<R: Read + Seek>(r: &mut R) -> Result<MatrixData, AnalysisError> {
-    let _end_pos = r.stream_position()? as usize + 10_000_000; // safety limit
-
-    // Array Flags
-    let (_, flags_data) = read_tag_data(r)?;
-    if flags_data.len() < 4 {
-        return Ok(MatrixData::Unknown);
-    }
-    let flags = u32::from_le_bytes([flags_data[0], flags_data[1], flags_data[2], flags_data[3]]);
-    let array_class = (flags & 0xFF) as u8;
-    let is_complex = (flags & 0x0800) != 0;
-
-    // Dimensions
-    let (_, dims_data) = read_tag_data(r)?;
-    let n_dims = dims_data.len() / 4;
-    let dims: Vec<usize> = (0..n_dims)
-        .map(|i| {
-            let off = i * 4;
-            i32::from_le_bytes([
-                dims_data[off], dims_data[off + 1],
-                dims_data[off + 2], dims_data[off + 3],
-            ]) as usize
-        })
-        .collect();
-
-    // Name
-    let (_, _name_data) = read_tag_data(r)?;
-
-    match array_class {
-        MX_DOUBLE_CLASS | MX_SINGLE_CLASS |
-        MX_INT8_CLASS | MX_UINT8_CLASS |
-        MX_INT16_CLASS | MX_UINT16_CLASS |
-        MX_INT32_CLASS | MX_UINT32_CLASS |
-        MX_INT64_CLASS | MX_UINT64_CLASS => {
-            let real = read_numeric_subelement(r)?;
-            let imag = if is_complex {
-                Some(read_numeric_subelement(r)?)
-            } else {
-                None
-            };
-            Ok(MatrixData::Double { dims, real, imag })
-        }
-        _ => Ok(MatrixData::Unknown),
-    }
 }
 
 /// Read a numeric sub-element as f64 values.
@@ -742,16 +684,23 @@ mod tests {
     }
 
     /// Integration test: read actual SNLC R43 sample data if present.
+    /// Set OPENISI_TEST_DATA to the test_data directory path to run this test,
+    /// e.g. OPENISI_TEST_DATA=/path/to/test_data cargo test
     #[test]
     fn test_read_r43_horizontal() {
-        let path = std::path::Path::new(
-            r"C:\Program Files\Kim-Neuroscience-Lab\OpenISI\test_data\snlc_sample_data\R43\R43_000_004.mat"
-        );
+        let base = match std::env::var("OPENISI_TEST_DATA") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => {
+                eprintln!("Skipping test_read_r43_horizontal: OPENISI_TEST_DATA not set");
+                return;
+            }
+        };
+        let path = base.join("snlc_sample_data/R43/R43_000_004.mat");
         if !path.exists() {
             eprintln!("Skipping test_read_r43_horizontal: sample data not found");
             return;
         }
-        let cells = read_snlc_f1m(path).expect("failed to read R43_000_004.mat");
+        let cells = read_snlc_f1m(&path).expect("failed to read R43_000_004.mat");
         assert_eq!(cells.len(), 2, "expected 2 complex matrices (fwd + rev)");
 
         let (h0, w0) = cells[0].data.dim();
@@ -768,16 +717,21 @@ mod tests {
 
     #[test]
     fn test_read_r43_anatomical() {
-        let path = std::path::Path::new(
-            r"C:\Program Files\Kim-Neuroscience-Lab\OpenISI\test_data\snlc_sample_data\R43\grab_r43_000_006_26_Jul_2012_19_02_23.mat"
-        );
+        let base = match std::env::var("OPENISI_TEST_DATA") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => {
+                eprintln!("Skipping test_read_r43_anatomical: OPENISI_TEST_DATA not set");
+                return;
+            }
+        };
+        let path = base.join("snlc_sample_data/R43/grab_r43_000_006_26_Jul_2012_19_02_23.mat");
         if !path.exists() {
             eprintln!("Skipping test_read_r43_anatomical: sample data not found");
             return;
         }
 
         // Debug: use f1m reader to just see what variables are in the file
-        let bytes = std::fs::read(path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
         let mut cursor = Cursor::new(&bytes[..]);
         cursor.seek(SeekFrom::Start(128)).unwrap();
         while (cursor.position() as usize) < bytes.len() {
@@ -808,8 +762,8 @@ mod tests {
                         MatrixData::Cell(cells) => {
                             eprintln!("  Cell '{}': {} cells", name, cells.len());
                         }
-                        MatrixData::Struct { field_names, fields } => {
-                            eprintln!("  Struct '{}': fields={:?}, {} values", name, field_names, fields.len());
+                        MatrixData::Struct { fields } => {
+                            eprintln!("  Struct '{}': {} fields", name, fields.len());
                         }
                         MatrixData::Unknown => {
                             eprintln!("  Unknown '{}' (class={})", name, class_code);
@@ -821,7 +775,7 @@ mod tests {
             }
         }
 
-        let anat = read_snlc_anatomical(path).expect("failed to read grab_ file");
+        let anat = read_snlc_anatomical(&path).expect("failed to read grab_ file");
         let (h, w) = anat.dim();
         assert!(h > 0 && w > 0, "anatomical should be non-empty");
         eprintln!("R43 anatomical: ({h}, {w})");

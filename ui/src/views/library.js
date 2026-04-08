@@ -35,6 +35,7 @@ export async function render(container) {
             <div class="library-actions">
                 <button class="primary" id="btn-new-session">New Session</button>
                 <button id="btn-import-snlc">Import SNLC Data</button>
+                <button id="btn-download-sample">Download Sample Data</button>
                 <button id="btn-set-data-dir">Set Data Directory</button>
                 <span class="mono-value" style="align-self:center; font-size: 11px;">${hasDataDir ? dataDir : "No directory set"}</span>
             </div>
@@ -132,6 +133,28 @@ export async function render(container) {
             const btn = document.getElementById("btn-import-snlc");
             if (btn) { btn.textContent = "Import SNLC Data"; btn.disabled = false; }
             alert(`Import failed: ${e}`);
+        }
+    });
+
+    // Download SNLC sample data.
+    document.getElementById("btn-download-sample").addEventListener("click", async () => {
+        const btn = document.getElementById("btn-download-sample");
+        try {
+            btn.disabled = true;
+            btn.textContent = "Downloading...";
+            const paths = await invoke("import_snlc_sample_data");
+            btn.textContent = "Download Sample Data";
+            btn.disabled = false;
+            await render(container);
+            if (paths.length > 0) {
+                window.openISI._analysisFile = paths[0];
+                window.openISI.enableView("analysis");
+                window.openISI.showView("analysis");
+            }
+        } catch (e) {
+            btn.textContent = "Download Sample Data";
+            btn.disabled = false;
+            alert(`Sample data download failed: ${e}`);
         }
     });
 

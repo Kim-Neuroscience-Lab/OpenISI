@@ -89,12 +89,18 @@ fn do_enumerate(sdk: &Sdk, evt_tx: &Sender<CameraEvt>) {
 /// Handle a camera connection session. Returns when disconnected.
 fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u16, sys_cfg: &SystemTuning, cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
     // Get QPC frequency for system timestamp conversion.
-    let mut qpc_freq = 0i64;
-    unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc_freq); }
-    if qpc_freq == 0 {
-        let _ = evt_tx.send(CameraEvt::Error("QueryPerformanceFrequency returned 0".into()));
-        return;
-    }
+    #[cfg(windows)]
+    let qpc_freq = {
+        let mut freq = 0i64;
+        unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut freq); }
+        if freq == 0 {
+            let _ = evt_tx.send(CameraEvt::Error("QueryPerformanceFrequency returned 0".into()));
+            return;
+        }
+        freq
+    };
+    #[cfg(not(windows))]
+    let qpc_freq = 0i64; // unused on non-Windows (SDK won't load), but needed for compilation
 
     // Open camera.
     let mut camera = match sdk.open_camera(camera_index) {
@@ -298,13 +304,22 @@ fn configure_camera(camera: &mut pco_sdk::Camera<'_>, exposure_us: u32, binning:
     Ok(())
 }
 
-fn send_frame(evt_tx: &Sender<CameraEvt>, frame: &Frame, last_sent: &mut Instant, qpc_freq: i64) {
+fn send_frame(evt_tx: &Sender<CameraEvt>, frame: &Frame, last_sent: &mut Instant, _qpc_freq: i64) {
     *last_sent = Instant::now();
     // Read system QPC at the moment we receive this frame — for clock sync with stimulus.
+    #[cfg(windows)]
     let system_us = {
         let mut qpc = 0i64;
         unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc); }
-        ((qpc as i128 * 1_000_000) / qpc_freq as i128) as i64
+        ((qpc as i128 * 1_000_000) / _qpc_freq as i128) as i64
+    };
+    #[cfg(not(windows))]
+    let system_us = {
+        // Use SystemTime as a fallback (won't actually execute since SDK won't load on non-Windows).
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0)
     };
     let _ = evt_tx.send(CameraEvt::Frame(CameraFrameData {
         pixels: frame.pixels.clone(),

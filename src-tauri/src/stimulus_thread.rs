@@ -2,41 +2,104 @@
 //!
 //! Runs on its own thread, communicates via crossbeam channels.
 //! Owns a fullscreen window on the stimulus monitor and renders at vsync rate.
+//!
+//! On non-Windows platforms, the stimulus thread reports that hardware stimulus
+//! display is not available and waits for shutdown.
 
+#[cfg(not(windows))]
+use crossbeam_channel::{Receiver, Sender};
+#[cfg(not(windows))]
+use crate::messages::{StimulusCmd, StimulusEvt};
+
+#[cfg(windows)]
 use std::num::NonZeroIsize;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use crossbeam_channel::{Receiver, Sender};
+#[cfg(windows)]
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
 };
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::IDXGIOutput;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DWM_TIMING_INFO};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+#[cfg(windows)]
 use openisi_stimulus::dataset::{DatasetConfig, EnvelopeType, FrameRecord, FrameState, StimulusDataset};
+#[cfg(windows)]
 use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};
+#[cfg(windows)]
 use openisi_stimulus::renderer::{direction_to_int, RendererConfig, StimulusRenderer};
+#[cfg(windows)]
 use openisi_stimulus::sequencer::{Sequencer, SequencerConfig};
 
+#[cfg(windows)]
 use crate::config::{Envelope, Experiment, Projection, RigGeometry};
+#[cfg(windows)]
 use crate::messages::{
     AcquisitionCommand, AcquisitionResult, StimulusCmd, StimulusEvt,
     StimulusFrameRecord, StimulusPreviewFrame,
 };
+#[cfg(windows)]
 use crate::monitor::find_dxgi_output;
+
+// =============================================================================
+// Non-Windows stub
+// =============================================================================
+
+#[cfg(not(windows))]
+pub fn run(
+    cmd_rx: Receiver<StimulusCmd>,
+    evt_tx: Sender<StimulusEvt>,
+    _monitor_index: usize,
+    _monitor_width_px: u32,
+    _monitor_height_px: u32,
+    _monitor_position: (i32, i32),
+    _system_cfg: crate::config::SystemTuning,
+    _initial_bg_luminance: f64,
+) {
+    eprintln!("[stimulus_thread] Stimulus display is not available on this platform (requires Windows)");
+    let _ = evt_tx.send(StimulusEvt::Error(
+        "Stimulus display requires Windows (Win32 + DXGI)".into(),
+    ));
+    // Wait for shutdown command so the thread doesn't exit prematurely.
+    loop {
+        match cmd_rx.recv() {
+            Ok(StimulusCmd::Shutdown) | Err(_) => return,
+            _ => {
+                let _ = evt_tx.send(StimulusEvt::Error(
+                    "Stimulus display is not available on this platform".into(),
+                ));
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Windows implementation
+// =============================================================================
 
 // =============================================================================
 // QPC helpers
 // =============================================================================
 
+#[cfg(windows)]
 fn qpc_to_us(qpc: i64, freq: i64) -> i64 {
     ((qpc as i128 * 1_000_000) / freq as i128) as i64
 }
 
+#[cfg(windows)]
 fn query_qpc() -> i64 {
     let mut qpc = 0i64;
     unsafe {
@@ -45,10 +108,7 @@ fn query_qpc() -> i64 {
     qpc
 }
 
-/// Query the DWM for the hardware vsync timestamp and present count.
-/// Returns (qpc_vblank, frame_displayed_count).
-/// `qpc_vblank` is the actual QPC at the most recent vsync interrupt — true hardware timing.
-/// `frame_displayed_count` is the DWM's frame counter — gaps indicate dropped frames.
+#[cfg(windows)]
 fn query_dwm_vsync() -> Option<(i64, u64)> {
     unsafe {
         let mut info: DWM_TIMING_INFO = std::mem::zeroed();
@@ -66,6 +126,7 @@ fn query_dwm_vsync() -> Option<(i64, u64)> {
 // Win32 window
 // =============================================================================
 
+#[cfg(windows)]
 unsafe extern "system" fn stimulus_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -75,6 +136,7 @@ unsafe extern "system" fn stimulus_wnd_proc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+#[cfg(windows)]
 fn create_fullscreen_window(
     x: i32,
     y: i32,
@@ -120,6 +182,7 @@ fn create_fullscreen_window(
     }
 }
 
+#[cfg(windows)]
 fn create_wgpu_surface(
     instance: &wgpu::Instance,
     hwnd: HWND,
@@ -145,6 +208,7 @@ fn create_wgpu_surface(
     }
 }
 
+#[cfg(windows)]
 /// Pump win32 messages. Returns false if WM_QUIT received.
 fn pump_messages() -> bool {
     unsafe {
@@ -164,6 +228,7 @@ fn pump_messages() -> bool {
 // Rendering (Phase 2: solid color only)
 // =============================================================================
 
+#[cfg(windows)]
 fn render_clear(
     surface: &wgpu::Surface,
     device: &wgpu::Device,
@@ -179,6 +244,7 @@ fn render_clear(
     Ok(())
 }
 
+#[cfg(windows)]
 fn render_clear_view(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -211,6 +277,7 @@ fn render_clear_view(
 // Preview frame capture
 // =============================================================================
 
+#[cfg(windows)]
 /// Render the current stimulus to the small preview texture (without monitor rotation),
 /// copy to staging buffer, read back pixels, and send as PreviewFrame event.
 fn capture_preview_frame(
@@ -299,6 +366,7 @@ fn capture_preview_frame(
 // Enum conversion helpers
 // =============================================================================
 
+#[cfg(windows)]
 fn to_projection_type(p: Projection) -> ProjectionType {
     match p {
         Projection::Cartesian => ProjectionType::Cartesian,
@@ -307,6 +375,7 @@ fn to_projection_type(p: Projection) -> ProjectionType {
     }
 }
 
+#[cfg(windows)]
 fn to_envelope_type(e: Envelope) -> EnvelopeType {
     match e {
         Envelope::Bar => EnvelopeType::Bar,
@@ -320,6 +389,7 @@ fn to_envelope_type(e: Envelope) -> EnvelopeType {
 // Config mapping
 // =============================================================================
 
+#[cfg(windows)]
 fn build_sequencer_config(cfg: &AcquisitionCommand) -> SequencerConfig {
     let order = cfg.experiment.presentation.order.to_sequencer_order();
 
@@ -338,6 +408,7 @@ fn build_sequencer_config(cfg: &AcquisitionCommand) -> SequencerConfig {
     }
 }
 
+#[cfg(windows)]
 fn compute_sweep_duration(cfg: &AcquisitionCommand) -> f64 {
     let params = &cfg.experiment.stimulus.params;
     let envelope = cfg.experiment.stimulus.envelope;
@@ -379,6 +450,7 @@ fn compute_sweep_duration(cfg: &AcquisitionCommand) -> f64 {
     }
 }
 
+#[cfg(windows)]
 fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
     use std::collections::HashMap;
 
@@ -428,6 +500,7 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
     }
 }
 
+#[cfg(windows)]
 /// Build renderer config for preview mode.
 /// Requires a selected monitor — preview cannot run without display geometry.
 /// Preview shows the mouse's perspective (no monitor rotation applied).
@@ -489,6 +562,7 @@ fn build_preview_renderer_config(
     }
 }
 
+#[cfg(windows)]
 fn build_renderer_config(cfg: &AcquisitionCommand) -> RendererConfig {
     let projection = to_projection_type(cfg.experiment.geometry.projection);
 
@@ -547,6 +621,7 @@ fn build_renderer_config(cfg: &AcquisitionCommand) -> RendererConfig {
 // Thread entry point
 // =============================================================================
 
+#[cfg(windows)]
 pub fn run(
     cmd_rx: Receiver<StimulusCmd>,
     evt_tx: Sender<StimulusEvt>,
@@ -572,6 +647,7 @@ pub fn run(
     }
 }
 
+#[cfg(windows)]
 fn run_inner(
     cmd_rx: Receiver<StimulusCmd>,
     evt_tx: &Sender<StimulusEvt>,

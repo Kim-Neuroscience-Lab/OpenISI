@@ -429,23 +429,6 @@ fn compute_complex_maps_new_format(
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera timestamps_sec: {e}")))?
         .to_vec();
 
-    // Read unified stimulus timestamps (seconds from t=0).
-    let stim_ts_sec: Vec<f64> = file.dataset("acquisition/stimulus/timestamps_sec")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening stimulus timestamps_sec: {e}")))?
-        .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading stimulus timestamps_sec: {e}")))?
-        .to_vec();
-    let stim_states: Vec<u8> = file.dataset("acquisition/stimulus/state_ids")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening stimulus state_ids: {e}")))?
-        .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading stimulus state_ids: {e}")))?
-        .to_vec();
-    let stim_conditions: Vec<u8> = file.dataset("acquisition/stimulus/condition_indices")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening stimulus condition_indices: {e}")))?
-        .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading stimulus condition_indices: {e}")))?
-        .to_vec();
-
     // Read sweep schedule to get condition names.
     let schedule_group = file.group("acquisition/schedule")
         .map_err(|_| AnalysisError::MissingData("acquisition/schedule".into()))?;

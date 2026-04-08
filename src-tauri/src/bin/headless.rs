@@ -2,15 +2,32 @@
 //!
 //! Uses the same backend code as the Tauri app: same config, same threads,
 //! same export pipeline. For testing, validation, and scripted acquisition.
+//!
+//! This binary requires Windows (DXGI, QPC, PCO SDK). On other platforms
+//! it prints a message and exits.
 
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("The OpenISI headless CLI requires Windows (DXGI WaitForVBlank, QPC, PCO SDK).");
+    eprintln!("Use the GUI application for analysis and data exploration on this platform.");
+    std::process::exit(1);
+}
+
+#[cfg(windows)]
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use openisi_lib::config::{ConfigManager, Experiment};
+#[cfg(windows)]
 use openisi_lib::export::SweepSchedule;
+#[cfg(windows)]
 use openisi_lib::messages::*;
+#[cfg(windows)]
 use openisi_lib::monitor;
 
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -37,6 +54,7 @@ fn main() {
     }
 }
 
+#[cfg(windows)]
 fn print_usage() {
     eprintln!("OpenISI Headless CLI");
     eprintln!();
@@ -56,6 +74,7 @@ fn print_usage() {
 // Config loading
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn load_config() -> (ConfigManager, Experiment) {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -88,6 +107,7 @@ fn load_config() -> (ConfigManager, Experiment) {
 // info
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_info() {
     let (config, experiment) = load_config();
 
@@ -150,6 +170,7 @@ fn cmd_info() {
 // validate-display
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_validate_display(args: &[String]) {
     let (config, _) = load_config();
 
@@ -216,6 +237,7 @@ fn cmd_validate_display(args: &[String]) {
 // validate-timing
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_validate_timing(args: &[String]) {
     let measure_sec: f64 = args.first()
         .and_then(|s| s.parse().ok())
@@ -464,6 +486,7 @@ fn cmd_validate_timing(args: &[String]) {
 // acquire
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_acquire(args: &[String]) {
     let duration_sec: f64 = args.first()
         .and_then(|s| s.parse().ok())
@@ -695,6 +718,7 @@ fn cmd_acquire(args: &[String]) {
 // analyze
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_analyze(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless analyze <file.oisi>");
@@ -745,6 +769,7 @@ fn cmd_analyze(args: &[String]) {
 // inspect
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_inspect(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless inspect <file.oisi>");
@@ -862,6 +887,7 @@ fn cmd_inspect(args: &[String]) {
 // import
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(windows)]
 fn cmd_import(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless import <mat-directory> [output.oisi]");
@@ -904,6 +930,7 @@ fn cmd_import(args: &[String]) {
     }
 }
 
+#[cfg(windows)]
 fn cmd_test_read(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless test-read <file.oisi>");
@@ -970,6 +997,7 @@ fn cmd_test_read(args: &[String]) {
     }
 }
 
+#[cfg(windows)]
 fn cmd_import_session(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless import-session <session-dir> [output.oisi]");
@@ -1070,6 +1098,7 @@ fn cmd_import_session(args: &[String]) {
     }
 }
 
+#[cfg(windows)]
 /// Decode a PNG file to a grayscale Array2<u8>.
 fn image_to_gray_array(png_bytes: &[u8]) -> Result<ndarray::Array2<u8>, String> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
@@ -1115,6 +1144,7 @@ fn image_to_gray_array(png_bytes: &[u8]) -> Result<ndarray::Array2<u8>, String> 
     ndarray::Array2::from_shape_vec((h, w), gray).map_err(|e| format!("Shape: {e}"))
 }
 
+#[cfg(windows)]
 fn cmd_dump_h5(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless dump-h5 <file.h5>");
@@ -1128,6 +1158,7 @@ fn cmd_dump_h5(args: &[String]) {
     dump_group(&file, "", 0);
 }
 
+#[cfg(windows)]
 fn dump_group(loc: &hdf5::Group, prefix: &str, depth: usize) {
     let indent = "  ".repeat(depth);
     let names = loc.member_names().unwrap_or_default();

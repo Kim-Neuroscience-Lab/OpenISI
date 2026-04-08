@@ -9,7 +9,10 @@ target/
 *.h5
 *.hdf5
 *.mat
+
+# Image files (data output, not source assets)
 *.png
+!src-tauri/icons/*.png
 !src-tauri/icons/*.ico
 
 # OS files
@@ -25,8 +28,24 @@ Desktop.ini
 
 # Tauri build artifacts
 src-tauri/WixTools/
+src-tauri/gen/
 
-# Local config overrides (user-specific paths)
+# Godot editor artifacts (legacy, not part of 1.0)
+.godot/
+*.import
+
+# Legacy directories (not part of Rust rewrite)
+/bin/
+/build/
+/daemon/
+/dist/
+/extension/
+
+# Runtime data
+data/
+*.log
+
+# Local config overrides
 settings.local.json
 
 # Test data

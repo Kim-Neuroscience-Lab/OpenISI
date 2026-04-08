@@ -25,9 +25,10 @@
       "../config/*": "config/"
     },
     "active": true,
-    "targets": ["msi"],
+    "targets": "all",
     "icon": [
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.png"
     ],
     "windows": {
       "wix": {

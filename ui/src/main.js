@@ -69,7 +69,7 @@ const viz = {
     baseMode: "camera",    // "camera" | "anatomical" | "none"
     mapName: "none",       // "none" | map name | "patches"
     mapOpacity: 0.7,
-    blendMode: "source-over",  // CSS mix-blend-mode for map layer
+    blendMode: "soft-light",  // CSS mix-blend-mode for map layer
     ringVisible: false,
     bordersVisible: false,
 
