@@ -105,12 +105,11 @@ impl Session {
         self.display_validation.is_some()
     }
 
-    /// Get the measured refresh rate. Panics if display hasn't been validated.
-    pub fn display_measured_refresh_hz(&self) -> f64 {
+    /// Get the measured refresh rate, if display has been validated.
+    pub fn display_measured_refresh_hz(&self) -> Option<f64> {
         self.display_validation
             .as_ref()
-            .expect("Display has not been validated — run validation before accessing measured refresh rate")
-            .measured_refresh_hz
+            .map(|v| v.measured_refresh_hz)
     }
 
     /// Set the selected display.

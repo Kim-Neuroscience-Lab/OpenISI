@@ -168,8 +168,13 @@ impl AppState {
     pub fn new(config: ConfigManager) -> Self {
         // Load experiment from disk at startup.
         let exp_path = config.experiment_path();
-        let experiment = Experiment::load(&exp_path)
-            .unwrap_or_else(|e| panic!("Failed to load experiment: {e}"));
+        let experiment = match Experiment::load(&exp_path) {
+            Ok(exp) => exp,
+            Err(e) => {
+                eprintln!("[state] Failed to load experiment from {}: {e}", exp_path.display());
+                std::process::exit(1);
+            }
+        };
 
         let session = Session::new();
 
@@ -225,17 +230,26 @@ impl AppState {
         let width = monitor.width_px;
         let height = monitor.height_px;
         let position = monitor.position;
-        let system_cfg = self.config.lock().unwrap().rig.system.clone();
+        let system_cfg = match self.config.lock() {
+            Ok(cfg) => cfg.rig.system.clone(),
+            Err(_) => {
+                eprintln!("[state] config lock poisoned in spawn_stimulus_thread");
+                return;
+            }
+        };
         let initial_bg = self.experiment.stimulus.params.background_luminance;
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("stimulus".into())
             .spawn(move || {
                 crate::stimulus_thread::run(
                     cmd_rx, evt_tx, monitor_index, width, height, position, system_cfg, initial_bg,
                 );
             })
-            .expect("Failed to spawn stimulus thread");
+        {
+            eprintln!("[state] failed to spawn stimulus thread: {e}");
+            return;
+        }
 
         self.threads.stimulus_thread_spawned = true;
         eprintln!("[state] stimulus thread spawned for monitor {}", monitor_index);

@@ -21,6 +21,12 @@ use openisi_lib::messages::*;
 #[cfg(windows)]
 use openisi_lib::monitor;
 
+/// Print an error message and exit with code 1.
+fn exit_err(msg: &str) -> ! {
+    eprintln!("Error: {msg}");
+    std::process::exit(1);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -73,7 +79,7 @@ fn load_config() -> (ConfigManager, Experiment) {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let candidates = vec![
         exe_dir.join("config"),
@@ -83,16 +89,14 @@ fn load_config() -> (ConfigManager, Experiment) {
 
     let config_dir = candidates.into_iter()
         .find(|p| p.join("rig.toml").exists())
-        .unwrap_or_else(|| {
-            panic!("Cannot find config directory with rig.toml");
-        });
+        .unwrap_or_else(|| exit_err("Cannot find config directory with rig.toml"));
 
     let config = ConfigManager::load(&config_dir)
-        .unwrap_or_else(|e| panic!("Failed to load rig config: {e}"));
+        .unwrap_or_else(|e| exit_err(&format!("Failed to load rig config: {e}")));
 
     let exp_path = config.experiment_path();
     let experiment = Experiment::load(&exp_path)
-        .unwrap_or_else(|e| panic!("Failed to load experiment: {e}"));
+        .unwrap_or_else(|e| exit_err(&format!("Failed to load experiment: {e}")));
 
     (config, experiment)
 }
@@ -275,28 +279,36 @@ fn cmd_validate_timing(args: &[String]) {
     println!("Camera: connecting...");
 
     // Open camera and start recording.
-    let sdk = pco_sdk::Sdk::load().expect("PCO SDK required");
+    let sdk = pco_sdk::Sdk::load()
+        .unwrap_or_else(|e| exit_err(&format!("PCO SDK required: {e}")));
     let cameras = sdk.enumerate_cameras(10);
     if cameras.is_empty() {
         eprintln!("No cameras found");
         return;
     }
-    let mut camera = sdk.open_camera(cameras[0].index).expect("Failed to open camera");
-    let _rate = camera.set_max_pixel_rate().expect("Failed to set pixel rate");
+    let mut camera = sdk.open_camera(cameras[0].index)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to open camera: {e}")));
+    let _rate = camera.set_max_pixel_rate()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set pixel rate: {e}")));
     let binning = config.rig.camera.binning;
     if binning > 1 {
-        camera.set_binning(binning, binning).expect("Failed to set binning");
+        camera.set_binning(binning, binning)
+            .unwrap_or_else(|e| exit_err(&format!("Failed to set binning: {e}")));
     }
-    camera.set_timestamp_binary().expect("Failed to set timestamp mode");
-    camera.set_exposure_us(config.rig.camera.exposure_us).expect("Failed to set exposure");
+    camera.set_timestamp_binary()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set timestamp mode: {e}")));
+    camera.set_exposure_us(config.rig.camera.exposure_us)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set exposure: {e}")));
     if let Err(e) = camera.arm() {
         eprintln!("Failed to arm camera: {e}");
         return;
     }
     println!("Camera: {}x{}", camera.width, camera.height);
 
-    let mut recorder = camera.create_recorder(10).expect("Failed to create recorder");
-    recorder.start().expect("Failed to start recording");
+    let mut recorder = camera.create_recorder(10)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to create recorder: {e}")));
+    recorder.start()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to start recording: {e}")));
 
     // Wait for first frame.
     let deadline = std::time::Instant::now() + Duration::from_millis(
@@ -333,7 +345,7 @@ fn cmd_validate_timing(args: &[String]) {
                 stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos, sys_cfg, bg_lum,
             );
         })
-        .expect("Failed to spawn stimulus thread");
+        .unwrap_or_else(|e| exit_err(&format!("Failed to spawn stimulus thread: {e}")));
 
     // Wait for ready.
     loop {
@@ -355,7 +367,7 @@ fn cmd_validate_timing(args: &[String]) {
             refresh_hz: mon.refresh_hz, position: mon.position,
             physical_source: mon.physical_source.clone(),
         },
-    })).expect("Failed to start preview");
+    })).unwrap_or_else(|e| exit_err(&format!("Failed to start preview: {e}")));
 
     println!("Collecting timestamps...");
 
@@ -519,7 +531,8 @@ fn cmd_acquire(args: &[String]) {
     println!("Experiment: {:?} {:?}", experiment.stimulus.envelope, experiment.stimulus.carrier);
 
     // Camera setup.
-    let sdk = pco_sdk::Sdk::load().expect("PCO SDK required");
+    let sdk = pco_sdk::Sdk::load()
+        .unwrap_or_else(|e| exit_err(&format!("PCO SDK required: {e}")));
     let cameras = sdk.enumerate_cameras(10);
     if cameras.is_empty() {
         eprintln!("No cameras found");
@@ -527,8 +540,10 @@ fn cmd_acquire(args: &[String]) {
     }
     println!("Camera: {} {}x{}", cameras[0].name, cameras[0].width, cameras[0].height);
 
-    let mut camera = sdk.open_camera(cameras[0].index).expect("Failed to open camera");
-    let _rate = camera.set_max_pixel_rate().expect("Failed to set pixel rate");
+    let mut camera = sdk.open_camera(cameras[0].index)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to open camera: {e}")));
+    let _rate = camera.set_max_pixel_rate()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set pixel rate: {e}")));
     let binning = config.rig.camera.binning;
     if binning > 1 {
         if !camera.is_valid_binning(binning) {
@@ -537,10 +552,13 @@ fn cmd_acquire(args: &[String]) {
                 binning, binning, max_h, max_v, step_h, step_v);
             return;
         }
-        camera.set_binning(binning, binning).expect("Failed to set binning");
+        camera.set_binning(binning, binning)
+            .unwrap_or_else(|e| exit_err(&format!("Failed to set binning: {e}")));
     }
-    camera.set_timestamp_binary().expect("Failed to set timestamp mode");
-    camera.set_exposure_us(config.rig.camera.exposure_us).expect("Failed to set exposure");
+    camera.set_timestamp_binary()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set timestamp mode: {e}")));
+    camera.set_exposure_us(config.rig.camera.exposure_us)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to set exposure: {e}")));
     if let Err(e) = camera.arm() {
         eprintln!("Failed to arm camera: {e}");
         eprintln!("This may indicate the binning/pixel rate/exposure combination is not supported by the USB interface.");
@@ -570,7 +588,7 @@ fn cmd_acquire(args: &[String]) {
                 stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos, sys_cfg, bg_lum,
             );
         })
-        .expect("Failed to spawn stimulus thread");
+        .unwrap_or_else(|e| exit_err(&format!("Failed to spawn stimulus thread: {e}")));
 
     // Wait for stimulus ready.
     loop {
@@ -601,12 +619,15 @@ fn cmd_acquire(args: &[String]) {
         system: config.rig.system.clone(),
     };
 
-    stim_cmd_tx.send(StimulusCmd::StartAcquisition(acq_cmd)).expect("Failed to start acquisition");
+    stim_cmd_tx.send(StimulusCmd::StartAcquisition(acq_cmd))
+        .unwrap_or_else(|e| exit_err(&format!("Failed to start acquisition: {e}")));
     println!("Acquisition started");
 
     // Camera recording.
-    let mut recorder = camera.create_recorder(10).expect("Failed to create recorder");
-    recorder.start().expect("Failed to start recording");
+    let mut recorder = camera.create_recorder(10)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to create recorder: {e}")));
+    recorder.start()
+        .unwrap_or_else(|e| exit_err(&format!("Failed to start recording: {e}")));
 
     // Wait for first frame.
     let deadline = Instant::now() + Duration::from_millis(config.rig.system.camera_first_frame_timeout_ms as u64);
@@ -663,7 +684,8 @@ fn cmd_acquire(args: &[String]) {
 
     // Stop.
     let _ = recorder.stop();
-    stim_cmd_tx.send(StimulusCmd::Stop).expect("Failed to stop");
+    stim_cmd_tx.send(StimulusCmd::Stop)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to stop: {e}")));
 
     // Drain stimulus events to get the dataset.
     let mut stim_dataset = None;
@@ -699,14 +721,14 @@ fn cmd_acquire(args: &[String]) {
     let camera_data = accumulator.finish();
     let data_dir = &config.rig.paths.data_directory;
     let output_dir = if data_dir.is_empty() {
-        std::env::current_dir().unwrap()
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
         PathBuf::from(data_dir)
     };
     let _ = std::fs::create_dir_all(&output_dir);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System clock before epoch")
+        .unwrap_or_default()
         .as_secs();
     let output_path = output_dir.join(format!("acquisition_{ts}.oisi"));
 
@@ -1044,7 +1066,8 @@ fn cmd_import_session(args: &[String]) {
     println!("Importing session {} → {}", session_dir.display(), output.display());
 
     // Read pre-computed results.
-    let results_file = hdf5::File::open(&results_path).expect("Failed to open retinotopy_results.h5");
+    let results_file = hdf5::File::open(&results_path)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to open retinotopy_results.h5: {e}")));
 
     // Read per-direction complex maps: magnitude * exp(i * phase)
     let read_complex = |dir: &str| -> Option<ndarray::Array2<isi_analysis::Complex64>> {
@@ -1057,22 +1080,26 @@ fn cmd_import_session(args: &[String]) {
         }))
     };
 
-    let azi_fwd = read_complex("LR").expect("Missing LR");
-    let azi_rev = read_complex("RL").expect("Missing RL");
-    let alt_fwd = read_complex("TB").expect("Missing TB");
-    let alt_rev = read_complex("BT").expect("Missing BT");
+    let azi_fwd = read_complex("LR").unwrap_or_else(|| exit_err("Missing LR direction in results"));
+    let azi_rev = read_complex("RL").unwrap_or_else(|| exit_err("Missing RL direction in results"));
+    let alt_fwd = read_complex("TB").unwrap_or_else(|| exit_err("Missing TB direction in results"));
+    let alt_rev = read_complex("BT").unwrap_or_else(|| exit_err("Missing BT direction in results"));
 
     let complex_maps = isi_analysis::ComplexMaps { azi_fwd, azi_rev, alt_fwd, alt_rev };
 
     // Create .oisi and write complex maps.
-    isi_analysis::io::create(&output, "session_import").expect("Failed to create .oisi");
-    isi_analysis::io::write_complex_maps(&output, &complex_maps).expect("Failed to write complex maps");
+    isi_analysis::io::create(&output, "session_import")
+        .unwrap_or_else(|e| exit_err(&format!("Failed to create .oisi: {e}")));
+    isi_analysis::io::write_complex_maps(&output, &complex_maps)
+        .unwrap_or_else(|e| exit_err(&format!("Failed to write complex maps: {e}")));
 
     // Import anatomical if present.
     if anat_path.exists() {
         if let Ok(img_bytes) = std::fs::read(&anat_path) {
             if let Ok(img) = image_to_gray_array(&img_bytes) {
-                isi_analysis::io::write_anatomical(&output, &img).expect("Failed to write anatomical");
+                if let Err(e) = isi_analysis::io::write_anatomical(&output, &img) {
+                    exit_err(&format!("Failed to write anatomical: {e}"));
+                }
                 println!("  Anatomical: {}x{}", img.dim().1, img.dim().0);
             }
         }

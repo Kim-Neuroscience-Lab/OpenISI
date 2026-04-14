@@ -85,7 +85,7 @@ pub fn save_experiment_as(state: State<'_, SharedState>, name: String) -> AppRes
     app.experiment.name = Some(name.clone());
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let now_str = format!("{now_secs}");
     if app.experiment.created.is_none() {

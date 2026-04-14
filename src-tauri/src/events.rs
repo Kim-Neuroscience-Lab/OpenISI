@@ -378,9 +378,8 @@ pub fn encode_16bit_to_png_pub(pixels: &[u16], width: u32, height: u32) -> Optio
 /// Build a hardware snapshot from the current app state.
 pub(crate) fn build_hardware_snapshot(state: &crate::state::AppState) -> Option<crate::export::HardwareSnapshot> {
     let monitor = state.session.selected_display.as_ref()?;
-    let measured_hz = state.session.display_measured_refresh_hz();
-    let cam = state.session.camera.as_ref()
-        .expect("Camera info must be available when building hardware snapshot");
+    let measured_hz = state.session.display_measured_refresh_hz()?;
+    let cam = state.session.camera.as_ref()?;
     let (cam_model, cam_w, cam_h) = (cam.model.clone(), cam.width_px, cam.height_px);
 
     Some(crate::export::HardwareSnapshot {

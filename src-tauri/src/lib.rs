@@ -22,17 +22,20 @@ pub fn run() {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
     let config_dir = find_config_dir(&exe_dir);
 
-    let config = ConfigManager::load(&config_dir)
-        .unwrap_or_else(|e| {
-            panic!(
+    let config = match ConfigManager::load(&config_dir) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!(
                 "[openisi] Failed to load config from {}: {e}",
                 config_dir.display()
             );
-        });
+            std::process::exit(1);
+        }
+    };
 
     start_tauri(config);
 }
@@ -102,15 +105,22 @@ fn start_tauri(config: ConfigManager) {
     // stays in sync for the lifetime of the thread. If a command that writes
     // to rig.system is ever added, the camera thread must be notified via a
     // new CameraCmd::UpdateConfig message.
-    let cam_cfg = app_state.config.lock()
-        .expect("Failed to lock config during initialization")
-        .rig.system.clone();
-    std::thread::Builder::new()
+    let cam_cfg = match app_state.config.lock() {
+        Ok(cfg) => cfg.rig.system.clone(),
+        Err(_) => {
+            eprintln!("[openisi] config lock poisoned during initialization");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = std::thread::Builder::new()
         .name("camera".into())
         .spawn(move || {
             camera_thread::run(cam_cmd_rx, cam_evt_tx, cam_cfg);
         })
-        .expect("Failed to spawn camera thread");
+    {
+        eprintln!("[openisi] Failed to spawn camera thread: {e}");
+        std::process::exit(1);
+    }
 
     // Stimulus thread is spawned on-demand when a display is selected.
     app_state.threads.stim_cmd_rx = Some(stim_cmd_rx);
@@ -131,7 +141,10 @@ fn start_tauri(config: ConfigManager) {
                 .spawn(move || {
                     events::run_event_forwarder(handle, state_for_events);
                 })
-                .expect("Failed to spawn event forwarder");
+                .unwrap_or_else(|e| {
+                    eprintln!("[openisi] Failed to spawn event forwarder: {e}");
+                    std::process::exit(1);
+                });
 
             Ok(())
         })
@@ -189,7 +202,10 @@ fn start_tauri(config: ConfigManager) {
             commands::acquire::get_workspace_status,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building OpenISI")
+        .unwrap_or_else(|e| {
+            eprintln!("[openisi] Failed to build Tauri application: {e}");
+            std::process::exit(1);
+        })
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Send shutdown commands to background threads so they clean up hardware.

@@ -444,12 +444,10 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
     );
 
     // Serialize stimulus params to HashMap for dataset metadata
-    let stimulus_params: HashMap<String, serde_json::Value> = {
-        let json_val = serde_json::to_value(&cfg.experiment.stimulus.params)
-            .expect("StimulusParams must serialize to JSON");
-        serde_json::from_value(json_val)
-            .expect("StimulusParams JSON must deserialize to HashMap")
-    };
+    let stimulus_params: HashMap<String, serde_json::Value> = serde_json::to_value(&cfg.experiment.stimulus.params)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
 
     DatasetConfig {
         envelope,

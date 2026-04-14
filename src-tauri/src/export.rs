@@ -443,7 +443,8 @@ fn write_sweep_schedule_sec(
     let attr = sched_group.new_attr::<hdf5::types::VarLenUnicode>()
         .create("sweep_sequence")
         .map_err(|e| format!("creating sweep_sequence attr: {e}"))?;
-    let val: hdf5::types::VarLenUnicode = seq_json.parse().unwrap();
+    let val: hdf5::types::VarLenUnicode = seq_json.parse()
+        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
     attr.write_scalar(&val)
         .map_err(|e| format!("writing sweep_sequence attr: {e}"))?;
 
@@ -526,7 +527,8 @@ fn write_str_attr(file: &hdf5::File, name: &str, value: &str) -> Result<(), Stri
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| format!("creating attr {name}: {e}"))?;
-    let val: hdf5::types::VarLenUnicode = value.parse().unwrap();
+    let val: hdf5::types::VarLenUnicode = value.parse()
+        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
     attr.write_scalar(&val)
         .map_err(|e| format!("writing attr {name}: {e}"))?;
     Ok(())
@@ -599,7 +601,8 @@ fn write_group_str_attr(group: &hdf5::Group, name: &str, value: &str) -> Result<
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| format!("creating group attr {name}: {e}"))?;
-    let val: hdf5::types::VarLenUnicode = value.parse().unwrap();
+    let val: hdf5::types::VarLenUnicode = value.parse()
+        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
     attr.write_scalar(&val)
         .map_err(|e| format!("writing group attr {name}: {e}"))?;
     Ok(())

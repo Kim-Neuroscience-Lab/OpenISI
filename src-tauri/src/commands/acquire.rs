@@ -87,7 +87,9 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     }
 
     let experiment = app.experiment.clone();
-    let measured_refresh_hz = app.session.display_validation.as_ref().unwrap().measured_refresh_hz;
+    let measured_refresh_hz = app.session.display_validation.as_ref()
+        .ok_or(AppError::Validation("Display not validated".into()))?
+        .measured_refresh_hz;
 
     let rig = lock_state(&app.config, "start_acquisition config")?.rig.clone();
 
@@ -114,7 +116,7 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     // Start camera frame accumulation with acquisition-time snapshots.
     let (cam_w, cam_h) = {
         let cam = app.session.camera.as_ref()
-            .expect("Camera info must be available during acquisition");
+            .ok_or(AppError::NotAvailable("Camera info not available during acquisition".into()))?;
         (cam.width_px, cam.height_px)
     };
     app.start_acquisition(
@@ -168,14 +170,14 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
             std::env::current_exe()
                 .ok()
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| std::env::current_dir().unwrap())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
         } else {
             std::path::PathBuf::from(data_dir)
         };
         let _ = std::fs::create_dir_all(&dir);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("System clock is before Unix epoch")
+            .unwrap_or_default()
             .as_secs();
         // Use animal_id in filename if set, otherwise just timestamp.
         let safe_id: String = animal_id.trim().chars()

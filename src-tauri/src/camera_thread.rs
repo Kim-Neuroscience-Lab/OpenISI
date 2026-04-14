@@ -134,8 +134,15 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         return;
     }
 
-    let max_fps = camera.get_max_fps()
-        .expect("Failed to read max FPS from camera");
+    let max_fps = match camera.get_max_fps() {
+        Ok(fps) => fps,
+        Err(e) => {
+            let msg = format!("Failed to read max FPS: {e}");
+            eprintln!("[camera] {msg}");
+            let _ = evt_tx.send(CameraEvt::Error(msg));
+            return;
+        }
+    };
     eprintln!(
         "[camera] armed: {}x{}, max {:.1} fps",
         camera.width, camera.height, max_fps
