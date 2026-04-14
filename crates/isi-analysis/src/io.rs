@@ -23,7 +23,7 @@
 //!     azi_amplitude, alt_amplitude, vfs
 
 use hdf5::File as H5File;
-use ndarray::{Array2, Array3, s};
+use ndarray::{Array2, Array3};
 use num_complex::Complex64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,21 +159,6 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// Read analysis params stored in the file (if any).
-pub fn read_params(path: &Path) -> Result<Option<AnalysisParams>, AnalysisError> {
-    let file = open_read(path)?;
-    match file.attr("analysis_params") {
-        Ok(attr) => {
-            let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
-                .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
-            let json: String = json_vlu.as_str().to_string();
-            let params: AnalysisParams = serde_json::from_str(&json)
-                .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
-            Ok(Some(params))
-        }
-        Err(_) => Ok(None),
-    }
-}
 
 /// Read the four complex maps.
 pub fn read_complex_maps(path: &Path) -> Result<ComplexMaps, AnalysisError> {
@@ -229,26 +214,6 @@ pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
     Ok(data)
 }
 
-/// Read a single raw acquisition frame by cycle name and frame index.
-pub fn read_raw_frame(
-    path: &Path,
-    cycle_name: &str,
-    frame_index: usize,
-) -> Result<Array2<f32>, AnalysisError> {
-    let file = open_read(path)?;
-    let ds_path = format!("acquisition/frames/{cycle_name}");
-    let ds = file.dataset(&ds_path)
-        .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
-    let shape = ds.shape();
-    if shape.len() != 3 || frame_index >= shape[0] {
-        return Err(AnalysisError::InvalidPackage(
-            format!("{ds_path}: frame index {frame_index} out of range (T={})", shape[0])
-        ));
-    }
-    let frame: Array2<f32> = ds.read_slice(s![frame_index, .., ..])
-        .map_err(|e| AnalysisError::Hdf5(format!("reading frame {frame_index} from {ds_path}: {e}")))?;
-    Ok(frame)
-}
 
 // ---------------------------------------------------------------------------
 // Writing
@@ -823,5 +788,340 @@ impl CycleAccumulator {
         };
 
         Ok(RawProcessingResult { complex_maps, snr })
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array2;
+    use num_complex::Complex64;
+    use std::path::PathBuf;
+
+    /// Read analysis params stored in the file (if any).
+    /// Only used in tests — not part of the public API.
+    fn read_params(path: &Path) -> Result<Option<AnalysisParams>, AnalysisError> {
+        let file = open_read(path)?;
+        match file.attr("analysis_params") {
+            Ok(attr) => {
+                let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
+                    .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
+                let json: String = json_vlu.as_str().to_string();
+                let params: AnalysisParams = serde_json::from_str(&json)
+                    .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
+                Ok(Some(params))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Helper: build a minimal AnalysisParams for writing results.
+    fn test_params() -> crate::AnalysisParams {
+        crate::AnalysisParams {
+            smoothing_sigma: 1.0,
+            rotation_k: 0,
+            azi_angular_range: 60.0,
+            alt_angular_range: 40.0,
+            offset_azi: 0.0,
+            offset_alt: 0.0,
+            epsilon: 1e-6,
+            segmentation: None,
+        }
+    }
+
+    /// Helper: create a unique temp file path and ensure cleanup on drop.
+    struct TempFile(PathBuf);
+
+    impl TempFile {
+        fn new(name: &str) -> Self {
+            let mut path = std::env::temp_dir();
+            path.push(format!("openisi_test_{}_{}", name, std::process::id()));
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Build synthetic ComplexMaps of the given size.
+    fn make_complex_maps(h: usize, w: usize) -> ComplexMaps {
+        let make = |scale: f64| -> Array2<Complex64> {
+            Array2::from_shape_fn((h, w), |(r, c)| {
+                Complex64::new(
+                    (r as f64 + 1.0) * scale,
+                    (c as f64 + 1.0) * scale * 0.5,
+                )
+            })
+        };
+        ComplexMaps {
+            azi_fwd: make(1.0),
+            azi_rev: make(2.0),
+            alt_fwd: make(3.0),
+            alt_rev: make(4.0),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. Complex maps round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn complex_maps_round_trip() {
+        let tmp = TempFile::new("complex_rt");
+        let maps = make_complex_maps(8, 8);
+
+        create(tmp.path(), "test").unwrap();
+        write_complex_maps(tmp.path(), &maps).unwrap();
+
+        let loaded = read_complex_maps(tmp.path()).unwrap();
+
+        assert_eq!(loaded.azi_fwd.dim(), (8, 8));
+        assert_eq!(loaded.azi_fwd, maps.azi_fwd);
+        assert_eq!(loaded.azi_rev, maps.azi_rev);
+        assert_eq!(loaded.alt_fwd, maps.alt_fwd);
+        assert_eq!(loaded.alt_rev, maps.alt_rev);
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Results write + read round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn results_round_trip() {
+        let tmp = TempFile::new("results_rt");
+        let (h, w) = (8, 8);
+        let params = test_params();
+
+        let result = crate::AnalysisResult {
+            azi_phase: Array2::from_shape_fn((h, w), |(r, c)| r as f64 + c as f64),
+            alt_phase: Array2::from_shape_fn((h, w), |(r, c)| r as f64 * 0.1 + c as f64 * 0.2),
+            azi_phase_degrees: Array2::from_shape_fn((h, w), |(r, c)| (r + c) as f64 * 10.0),
+            alt_phase_degrees: Array2::from_shape_fn((h, w), |(r, c)| (r + c) as f64 * 5.0),
+            azi_amplitude: Array2::from_shape_fn((h, w), |(r, c)| (r * w + c) as f64 * 0.01),
+            alt_amplitude: Array2::from_shape_fn((h, w), |(r, c)| (r * w + c) as f64 * 0.02),
+            vfs: Array2::from_shape_fn((h, w), |(r, c)| if (r + c) % 2 == 0 { 1.0 } else { -1.0 }),
+            vfs_thresholded: Array2::zeros((h, w)),
+            area_labels: Array2::zeros((h, w)),
+            area_signs: vec![],
+            area_borders: Array2::from_elem((h, w), false),
+            eccentricity: Array2::zeros((h, w)),
+            magnification: Array2::zeros((h, w)),
+            contours_azi: Array2::from_elem((h, w), false),
+            contours_alt: Array2::from_elem((h, w), false),
+            snr_azi: None,
+            snr_alt: None,
+        };
+
+        create(tmp.path(), "test").unwrap();
+        write_results(tmp.path(), &result, &params).unwrap();
+
+        // Read back individual result maps and verify.
+        let azi_phase = read_result_map(tmp.path(), "azi_phase").unwrap();
+        assert_eq!(azi_phase, result.azi_phase);
+
+        let vfs = read_result_map(tmp.path(), "vfs").unwrap();
+        assert_eq!(vfs, result.vfs);
+
+        let alt_amplitude = read_result_map(tmp.path(), "alt_amplitude").unwrap();
+        assert_eq!(alt_amplitude, result.alt_amplitude);
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Anatomical round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn anatomical_round_trip() {
+        let tmp = TempFile::new("anat_rt");
+        let (h, w) = (16, 16);
+        let image = Array2::from_shape_fn((h, w), |(r, c)| ((r * w + c) % 256) as u8);
+
+        create(tmp.path(), "test").unwrap();
+        write_anatomical(tmp.path(), &image).unwrap();
+
+        let loaded = read_anatomical(tmp.path()).unwrap();
+        assert_eq!(loaded, image);
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. inspect() returns correct capabilities
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn inspect_capabilities() {
+        let tmp = TempFile::new("inspect_caps");
+        let maps = make_complex_maps(8, 8);
+        let image = Array2::<u8>::zeros((8, 8));
+
+        create(tmp.path(), "test").unwrap();
+        write_complex_maps(tmp.path(), &maps).unwrap();
+        write_anatomical(tmp.path(), &image).unwrap();
+
+        let caps = inspect(tmp.path()).unwrap();
+
+        assert!(caps.has_complex_maps, "should detect complex_maps");
+        assert!(caps.has_anatomical, "should detect anatomical");
+        assert!(!caps.has_results, "should not detect results");
+        assert!(!caps.has_acquisition, "should not detect acquisition");
+        assert_eq!(caps.dimensions, Some((8, 8)));
+    }
+
+    #[test]
+    fn inspect_with_results() {
+        let tmp = TempFile::new("inspect_results");
+        let params = test_params();
+        let (h, w) = (8, 8);
+
+        let result = crate::AnalysisResult {
+            azi_phase: Array2::zeros((h, w)),
+            alt_phase: Array2::zeros((h, w)),
+            azi_phase_degrees: Array2::zeros((h, w)),
+            alt_phase_degrees: Array2::zeros((h, w)),
+            azi_amplitude: Array2::zeros((h, w)),
+            alt_amplitude: Array2::zeros((h, w)),
+            vfs: Array2::zeros((h, w)),
+            vfs_thresholded: Array2::zeros((h, w)),
+            area_labels: Array2::zeros((h, w)),
+            area_signs: vec![1, -1],
+            area_borders: Array2::from_elem((h, w), false),
+            eccentricity: Array2::zeros((h, w)),
+            magnification: Array2::zeros((h, w)),
+            contours_azi: Array2::from_elem((h, w), false),
+            contours_alt: Array2::from_elem((h, w), false),
+            snr_azi: None,
+            snr_alt: None,
+        };
+
+        create(tmp.path(), "test").unwrap();
+        write_results(tmp.path(), &result, &params).unwrap();
+
+        let caps = inspect(tmp.path()).unwrap();
+        assert!(caps.has_results, "should detect results");
+        assert!(!caps.has_complex_maps, "no complex_maps written");
+        assert_eq!(caps.dimensions, Some((8, 8)));
+
+        // Verify result classification.
+        let names: Vec<&str> = caps.results.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"azi_phase"), "results should list azi_phase");
+        assert!(names.contains(&"vfs"), "results should list vfs");
+        assert!(names.contains(&"area_labels"), "results should list area_labels");
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. import_snlc_directory() with missing files
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn import_snlc_missing_mat_files() {
+        let dir = std::env::temp_dir().join(format!("openisi_test_empty_dir_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let out = TempFile::new("import_snlc_out");
+
+        let result = import_snlc_directory(&dir, out.path());
+        assert!(result.is_err(), "should fail with no .mat files");
+
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("need at least 2 .mat data files"),
+            "error should mention missing .mat files, got: {err_msg}"
+        );
+
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Empty file has no capabilities
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn inspect_empty_file() {
+        let tmp = TempFile::new("inspect_empty");
+        create(tmp.path(), "test").unwrap();
+
+        let caps = inspect(tmp.path()).unwrap();
+        assert!(!caps.has_complex_maps);
+        assert!(!caps.has_anatomical);
+        assert!(!caps.has_results);
+        assert!(!caps.has_acquisition);
+        assert_eq!(caps.dimensions, None);
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Overwriting complex maps replaces old data
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn complex_maps_overwrite() {
+        let tmp = TempFile::new("complex_overwrite");
+        create(tmp.path(), "test").unwrap();
+
+        let maps_v1 = make_complex_maps(8, 8);
+        write_complex_maps(tmp.path(), &maps_v1).unwrap();
+
+        // Write different maps.
+        let maps_v2 = ComplexMaps {
+            azi_fwd: Array2::from_elem((8, 8), Complex64::new(99.0, 99.0)),
+            azi_rev: Array2::from_elem((8, 8), Complex64::new(88.0, 88.0)),
+            alt_fwd: Array2::from_elem((8, 8), Complex64::new(77.0, 77.0)),
+            alt_rev: Array2::from_elem((8, 8), Complex64::new(66.0, 66.0)),
+        };
+        write_complex_maps(tmp.path(), &maps_v2).unwrap();
+
+        let loaded = read_complex_maps(tmp.path()).unwrap();
+        assert_eq!(loaded.azi_fwd[[0, 0]], Complex64::new(99.0, 99.0));
+        assert_eq!(loaded.alt_rev[[0, 0]], Complex64::new(66.0, 66.0));
+    }
+
+    // -------------------------------------------------------------------------
+    // 8. read_params round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn params_round_trip() {
+        let tmp = TempFile::new("params_rt");
+        let params = test_params();
+        let (h, w) = (4, 4);
+
+        // write_results stores params as an attribute.
+        let result = crate::AnalysisResult {
+            azi_phase: Array2::zeros((h, w)),
+            alt_phase: Array2::zeros((h, w)),
+            azi_phase_degrees: Array2::zeros((h, w)),
+            alt_phase_degrees: Array2::zeros((h, w)),
+            azi_amplitude: Array2::zeros((h, w)),
+            alt_amplitude: Array2::zeros((h, w)),
+            vfs: Array2::zeros((h, w)),
+            vfs_thresholded: Array2::zeros((h, w)),
+            area_labels: Array2::zeros((h, w)),
+            area_signs: vec![],
+            area_borders: Array2::from_elem((h, w), false),
+            eccentricity: Array2::zeros((h, w)),
+            magnification: Array2::zeros((h, w)),
+            contours_azi: Array2::from_elem((h, w), false),
+            contours_alt: Array2::from_elem((h, w), false),
+            snr_azi: None,
+            snr_alt: None,
+        };
+
+        create(tmp.path(), "test").unwrap();
+        write_results(tmp.path(), &result, &params).unwrap();
+
+        let loaded = read_params(tmp.path()).unwrap();
+        assert!(loaded.is_some(), "params should be present");
+        let loaded = loaded.unwrap();
+        assert!((loaded.smoothing_sigma - 1.0).abs() < f64::EPSILON);
+        assert!((loaded.azi_angular_range - 60.0).abs() < f64::EPSILON);
     }
 }

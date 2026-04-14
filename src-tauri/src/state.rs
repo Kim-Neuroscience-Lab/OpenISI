@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::config::{ConfigManager, Experiment};
-use crate::export::AcquisitionAccumulator;
+use crate::config::{ConfigManager, DisplaySettings, Experiment, RigGeometry};
+use crate::export::{AcquisitionAccumulator, HardwareSnapshot};
 use crate::messages::{CameraCmd, CameraEvt, StimulusCmd, StimulusEvt};
 use crate::session::{MonitorInfo, Session};
+use crate::timing::TimingCharacterization;
 
 // =============================================================================
 // Thread handles
@@ -43,9 +44,25 @@ pub struct ThreadHandles {
 // =============================================================================
 
 /// In-flight acquisition state. Created at acquisition start, consumed at end.
+/// Contains acquisition-time snapshots frozen at start — never updated during recording.
 pub struct AcquisitionState {
     /// Accumulates camera frames tagged by stimulus cycle.
     pub accumulator: AcquisitionAccumulator,
+    // ── Acquisition-time snapshots (frozen at start) ────────────────
+    /// The experiment configuration used for this acquisition.
+    pub experiment: Experiment,
+    /// Rig geometry (viewing distance) at acquisition time.
+    pub rig_geometry: RigGeometry,
+    /// Camera exposure in microseconds at acquisition time.
+    pub camera_exposure_us: u32,
+    /// Camera pixel binning factor at acquisition time.
+    pub camera_binning: u16,
+    /// Display settings (rotation, target FPS) at acquisition time.
+    pub display_settings: DisplaySettings,
+    /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
+    pub hardware_snapshot: Option<HardwareSnapshot>,
+    /// Timing characterization frozen at acquisition start.
+    pub timing_characterization: Option<TimingCharacterization>,
 }
 
 // =============================================================================
@@ -122,15 +139,28 @@ pub struct AppState {
 }
 
 /// Data awaiting user save confirmation after acquisition.
+/// Contains acquisition-time snapshots (frozen at start) plus stimulus results.
+/// Metadata (animal_id, notes, anatomical) is read from live state at save time.
 pub struct PendingSave {
     pub camera_data: crate::export::AccumulatedData,
     pub stimulus_dataset: openisi_stimulus::dataset::StimulusDataset,
     pub schedule: crate::export::SweepSchedule,
-    pub hardware_snapshot: Option<crate::export::HardwareSnapshot>,
-    pub timing_characterization: Option<crate::timing::TimingCharacterization>,
     pub completed_normally: bool,
-    pub animal_id: String,
-    pub notes: String,
+    // ── Acquisition-time snapshots (frozen at start) ──────────────
+    /// Experiment configuration frozen at acquisition start.
+    pub experiment: Experiment,
+    /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
+    pub hardware_snapshot: Option<HardwareSnapshot>,
+    /// Timing characterization frozen at acquisition start.
+    pub timing_characterization: Option<TimingCharacterization>,
+    /// Rig geometry (viewing distance) at acquisition time.
+    pub rig_geometry: RigGeometry,
+    /// Camera exposure in microseconds at acquisition time.
+    pub camera_exposure_us: u32,
+    /// Camera pixel binning factor at acquisition time.
+    pub camera_binning: u16,
+    /// Display settings (rotation, target FPS) at acquisition time.
+    pub display_settings: DisplaySettings,
 }
 
 impl AppState {
@@ -141,8 +171,7 @@ impl AppState {
         let experiment = Experiment::load(&exp_path)
             .unwrap_or_else(|e| panic!("Failed to load experiment: {e}"));
 
-        let mut session = Session::new();
-        session.monitor_rotation_deg = config.rig.display.monitor_rotation_deg;
+        let session = Session::new();
 
         Self {
             config: Arc::new(Mutex::new(config)),
@@ -212,11 +241,31 @@ impl AppState {
         eprintln!("[state] stimulus thread spawned for monitor {}", monitor_index);
     }
 
-    /// Start a new acquisition. Creates the accumulator.
-    pub fn start_acquisition(&mut self, cam_width: u32, cam_height: u32) {
+    /// Start a new acquisition. Creates the accumulator and freezes all config snapshots.
+    pub fn start_acquisition(
+        &mut self,
+        cam_width: u32,
+        cam_height: u32,
+        experiment: Experiment,
+        rig_geometry: RigGeometry,
+        camera_exposure_us: u32,
+        camera_binning: u16,
+        display_settings: DisplaySettings,
+        hardware_snapshot: Option<HardwareSnapshot>,
+        timing_characterization: Option<TimingCharacterization>,
+    ) {
         let mut accumulator = AcquisitionAccumulator::new();
         accumulator.start(cam_width, cam_height);
-        self.acquisition = Some(AcquisitionState { accumulator });
+        self.acquisition = Some(AcquisitionState {
+            accumulator,
+            experiment,
+            rig_geometry,
+            camera_exposure_us,
+            camera_binning,
+            display_settings,
+            hardware_snapshot,
+            timing_characterization,
+        });
         self.session.is_acquiring = true;
     }
 

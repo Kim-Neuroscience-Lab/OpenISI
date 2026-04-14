@@ -3,23 +3,17 @@
 //! Uses the same backend code as the Tauri app: same config, same threads,
 //! same export pipeline. For testing, validation, and scripted acquisition.
 //!
-//! This binary requires Windows (DXGI, QPC, PCO SDK). On other platforms
-//! it prints a message and exits.
+//! Analysis commands (analyze, inspect, import, import-session) work on all
+//! platforms. Hardware commands (info, validate-display, validate-timing,
+//! acquire) require Windows (DXGI, QPC, PCO SDK).
 
-#[cfg(not(windows))]
-fn main() {
-    eprintln!("The OpenISI headless CLI requires Windows (DXGI WaitForVBlank, QPC, PCO SDK).");
-    eprintln!("Use the GUI application for analysis and data exploration on this platform.");
-    std::process::exit(1);
-}
-
-#[cfg(windows)]
 use std::path::PathBuf;
+
+use openisi_lib::config::{ConfigManager, Experiment};
+
+// Windows-only imports for hardware commands.
 #[cfg(windows)]
 use std::time::{Duration, Instant};
-
-#[cfg(windows)]
-use openisi_lib::config::{ConfigManager, Experiment};
 #[cfg(windows)]
 use openisi_lib::export::SweepSchedule;
 #[cfg(windows)]
@@ -27,7 +21,6 @@ use openisi_lib::messages::*;
 #[cfg(windows)]
 use openisi_lib::monitor;
 
-#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -37,10 +30,13 @@ fn main() {
     }
 
     match args[1].as_str() {
+        // Hardware commands — Windows only.
         "info" => cmd_info(),
         "validate-display" => cmd_validate_display(&args[2..]),
         "validate-timing" => cmd_validate_timing(&args[2..]),
         "acquire" => cmd_acquire(&args[2..]),
+
+        // Software commands — all platforms.
         "analyze" => cmd_analyze(&args[2..]),
         "inspect" => cmd_inspect(&args[2..]),
         "import" => cmd_import(&args[2..]),
@@ -54,7 +50,6 @@ fn main() {
     }
 }
 
-#[cfg(windows)]
 fn print_usage() {
     eprintln!("OpenISI Headless CLI");
     eprintln!();
@@ -74,7 +69,6 @@ fn print_usage() {
 // Config loading
 // ═══════════════════════════════════════════════════════════════════════
 
-#[cfg(windows)]
 fn load_config() -> (ConfigManager, Experiment) {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -104,16 +98,44 @@ fn load_config() -> (ConfigManager, Experiment) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// info
+// Hardware commands — Windows only
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(not(windows))]
+fn cmd_info() {
+    eprintln!("The 'info' command requires Windows (DXGI, QPC, PCO SDK).");
+    eprintln!("Hardware detection is not available on this platform.");
+    std::process::exit(1);
+}
+
+#[cfg(not(windows))]
+fn cmd_validate_display(_args: &[String]) {
+    eprintln!("The 'validate-display' command requires Windows (DXGI WaitForVBlank).");
+    eprintln!("Display validation is not available on this platform.");
+    std::process::exit(1);
+}
+
+#[cfg(not(windows))]
+fn cmd_validate_timing(_args: &[String]) {
+    eprintln!("The 'validate-timing' command requires Windows (DXGI, QPC, PCO SDK).");
+    eprintln!("Timing validation is not available on this platform.");
+    std::process::exit(1);
+}
+
+#[cfg(not(windows))]
+fn cmd_acquire(_args: &[String]) {
+    eprintln!("The 'acquire' command requires Windows (DXGI, QPC, PCO SDK).");
+    eprintln!("Acquisition is not available on this platform.");
+    std::process::exit(1);
+}
 
 #[cfg(windows)]
 fn cmd_info() {
     let (config, experiment) = load_config();
 
     println!("=== Rig Config ===");
-    println!("Camera: exposure={}µs gain={} target_fps={}",
-        config.rig.camera.exposure_us, config.rig.camera.gain, config.rig.camera.target_fps);
+    println!("Camera: exposure={}µs binning={}",
+        config.rig.camera.exposure_us, config.rig.camera.binning);
     println!("Geometry: viewing_distance={}cm", config.rig.geometry.viewing_distance_cm);
     println!("Display: target_fps={} rotation={}°",
         config.rig.display.target_stimulus_fps, config.rig.display.monitor_rotation_deg);
@@ -407,15 +429,10 @@ fn cmd_validate_timing(args: &[String]) {
     let clock_offset_uncertainty_us = offset_variance.sqrt();
 
     // Compute trial parameters from experiment + actual geometry.
-    use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};
+    use openisi_stimulus::geometry::DisplayGeometry;
 
-    let projection = match experiment.geometry.projection {
-        openisi_lib::config::Projection::Cartesian => ProjectionType::Cartesian,
-        openisi_lib::config::Projection::Spherical => ProjectionType::Spherical,
-        openisi_lib::config::Projection::Cylindrical => ProjectionType::Cylindrical,
-    };
     let geometry = DisplayGeometry::new(
-        projection,
+        experiment.geometry.projection,
         config.rig.geometry.viewing_distance_cm,
         experiment.geometry.horizontal_offset_deg,
         experiment.geometry.vertical_offset_deg,
@@ -705,6 +722,10 @@ fn cmd_acquire(args: &[String]) {
             None, // session metadata
             None, // anatomical
             false, // stopped early by timeout
+            &config.rig.geometry,
+            config.rig.camera.exposure_us,
+            config.rig.camera.binning,
+            &config.rig.display,
         ) {
             Ok(summary) => println!("{summary}"),
             Err(e) => eprintln!("Export failed: {e}"),
@@ -715,10 +736,13 @@ fn cmd_acquire(args: &[String]) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Software commands — all platforms
+// ═══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════
 // analyze
 // ═══════════════════════════════════════════════════════════════════════
 
-#[cfg(windows)]
 fn cmd_analyze(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless analyze <file.oisi>");
@@ -769,7 +793,6 @@ fn cmd_analyze(args: &[String]) {
 // inspect
 // ═══════════════════════════════════════════════════════════════════════
 
-#[cfg(windows)]
 fn cmd_inspect(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless inspect <file.oisi>");
@@ -887,7 +910,6 @@ fn cmd_inspect(args: &[String]) {
 // import
 // ═══════════════════════════════════════════════════════════════════════
 
-#[cfg(windows)]
 fn cmd_import(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: openisi-headless import <mat-directory> [output.oisi]");
@@ -930,7 +952,6 @@ fn cmd_import(args: &[String]) {
     }
 }
 
-#[cfg(windows)]
 fn cmd_test_read(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless test-read <file.oisi>");
@@ -997,7 +1018,6 @@ fn cmd_test_read(args: &[String]) {
     }
 }
 
-#[cfg(windows)]
 fn cmd_import_session(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless import-session <session-dir> [output.oisi]");
@@ -1098,7 +1118,6 @@ fn cmd_import_session(args: &[String]) {
     }
 }
 
-#[cfg(windows)]
 /// Decode a PNG file to a grayscale Array2<u8>.
 fn image_to_gray_array(png_bytes: &[u8]) -> Result<ndarray::Array2<u8>, String> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
@@ -1144,7 +1163,6 @@ fn image_to_gray_array(png_bytes: &[u8]) -> Result<ndarray::Array2<u8>, String> 
     ndarray::Array2::from_shape_vec((h, w), gray).map_err(|e| format!("Shape: {e}"))
 }
 
-#[cfg(windows)]
 fn cmd_dump_h5(args: &[String]) {
     if args.is_empty() {
         eprintln!("Usage: headless dump-h5 <file.h5>");
@@ -1158,7 +1176,6 @@ fn cmd_dump_h5(args: &[String]) {
     dump_group(&file, "", 0);
 }
 
-#[cfg(windows)]
 fn dump_group(loc: &hdf5::Group, prefix: &str, depth: usize) {
     let indent = "  ".repeat(depth);
     let names = loc.member_names().unwrap_or_default();
@@ -1202,7 +1219,7 @@ fn dump_group(loc: &hdf5::Group, prefix: &str, depth: usize) {
         // Check for attributes
         if let Ok(grp) = loc.group(name) {
             for attr_name in grp.attr_names().unwrap_or_default() {
-                if let Ok(attr) = grp.attr(&attr_name) {
+                if let Ok(_attr) = grp.attr(&attr_name) {
                     println!("{indent}  @{attr_name}");
                 }
             }

@@ -176,7 +176,7 @@ pub fn analyze(
     params: &AnalysisParams,
     progress: &dyn ProgressSink,
     cancel: &AtomicBool,
-) -> Result<(), AnalysisError> {
+) -> Result<()> {
     let caps = io::inspect(path)?;
 
     let (complex_maps, snr) = if caps.has_acquisition {
@@ -240,33 +240,22 @@ pub fn analyze(
 // Error type
 // =============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
-    Io(std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("HDF5 error: {0}")]
     Hdf5(String),
+
+    #[error("Invalid .oisi file: {0}")]
     InvalidPackage(String),
+
+    #[error("Missing data: {0}")]
     MissingData(String),
+
+    #[error("Analysis cancelled")]
     Cancelled,
-}
-
-impl std::fmt::Display for AnalysisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::Hdf5(e) => write!(f, "HDF5 error: {e}"),
-            Self::InvalidPackage(e) => write!(f, "Invalid .oisi file: {e}"),
-            Self::MissingData(e) => write!(f, "Missing data: {e}"),
-            Self::Cancelled => write!(f, "Analysis cancelled"),
-        }
-    }
-}
-
-impl std::error::Error for AnalysisError {}
-
-impl From<std::io::Error> for AnalysisError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
 }
 
 impl From<hdf5::Error> for AnalysisError {
@@ -274,3 +263,6 @@ impl From<hdf5::Error> for AnalysisError {
         Self::Hdf5(e.to_string())
     }
 }
+
+/// Convenience alias used throughout the crate.
+pub type Result<T> = std::result::Result<T, AnalysisError>;

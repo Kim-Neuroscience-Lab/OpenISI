@@ -1,7 +1,5 @@
 [camera]
 exposure_us = 1000
-gain = -1
-target_fps = 0.0
 binning = 4
 
 [geometry]
@@ -54,18 +52,6 @@ fps_window_frames = 10
 drop_detection_warmup_frames = 10
 drop_detection_threshold = 1.5
 
-[ui]
-show_debug_overlay = false
-show_timing_info = true
-
-[window]
-maximized = false
-x = 100
-y = 100
-width = 1280
-height = 800
-
 [paths]
 data_directory = ""
 experiments_directory = ""
-last_experiment_path = ""

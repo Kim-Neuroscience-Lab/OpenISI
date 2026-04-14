@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Projection type for the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProjectionType {
     /// Cartesian coordinates on flat screen (physical cm units)
     Cartesian = 0,
@@ -20,6 +21,11 @@ pub enum ProjectionType {
 }
 
 impl ProjectionType {
+    /// Convert to the integer used by the WGSL shader.
+    pub fn to_shader_int(self) -> i32 {
+        self as i32
+    }
+
     pub fn from_int(v: i32) -> Option<Self> {
         match v {
             0 => Some(ProjectionType::Cartesian),

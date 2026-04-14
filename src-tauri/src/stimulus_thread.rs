@@ -36,16 +36,16 @@ use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerforma
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 #[cfg(windows)]
-use openisi_stimulus::dataset::{DatasetConfig, EnvelopeType, FrameRecord, FrameState, StimulusDataset};
+use openisi_stimulus::dataset::{DatasetConfig, FrameRecord, FrameState, StimulusDataset};
 #[cfg(windows)]
-use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};
+use openisi_stimulus::geometry::DisplayGeometry;
 #[cfg(windows)]
 use openisi_stimulus::renderer::{direction_to_int, RendererConfig, StimulusRenderer};
 #[cfg(windows)]
 use openisi_stimulus::sequencer::{Sequencer, SequencerConfig};
 
 #[cfg(windows)]
-use crate::config::{Envelope, Experiment, Projection, RigGeometry};
+use crate::config::{Envelope, Experiment, RigGeometry};
 #[cfg(windows)]
 use crate::messages::{
     AcquisitionCommand, AcquisitionResult, StimulusCmd, StimulusEvt,
@@ -362,28 +362,8 @@ fn capture_preview_frame(
     }
 }
 
-// =============================================================================
-// Enum conversion helpers
-// =============================================================================
-
-#[cfg(windows)]
-fn to_projection_type(p: Projection) -> ProjectionType {
-    match p {
-        Projection::Cartesian => ProjectionType::Cartesian,
-        Projection::Spherical => ProjectionType::Spherical,
-        Projection::Cylindrical => ProjectionType::Cylindrical,
-    }
-}
-
-#[cfg(windows)]
-fn to_envelope_type(e: Envelope) -> EnvelopeType {
-    match e {
-        Envelope::Bar => EnvelopeType::Bar,
-        Envelope::Wedge => EnvelopeType::Wedge,
-        Envelope::Ring => EnvelopeType::Ring,
-        Envelope::Fullfield => EnvelopeType::None,
-    }
-}
+// Note: config::Projection IS ProjectionType and config::Envelope IS EnvelopeType
+// (re-exported from the stimulus crate), so no conversion helpers are needed.
 
 // =============================================================================
 // Config mapping
@@ -391,15 +371,13 @@ fn to_envelope_type(e: Envelope) -> EnvelopeType {
 
 #[cfg(windows)]
 fn build_sequencer_config(cfg: &AcquisitionCommand) -> SequencerConfig {
-    let order = cfg.experiment.presentation.order.to_sequencer_order();
-
     // Compute sweep duration from stimulus parameters and geometry.
     let sweep_duration_sec = compute_sweep_duration(cfg);
 
     SequencerConfig {
         conditions: cfg.experiment.presentation.conditions.clone(),
         repetitions: cfg.experiment.presentation.repetitions,
-        order,
+        order: cfg.experiment.presentation.order,
         baseline_start_sec: cfg.experiment.timing.baseline_start_sec,
         baseline_end_sec: cfg.experiment.timing.baseline_end_sec,
         inter_stimulus_sec: cfg.experiment.timing.inter_stimulus_sec,
@@ -413,10 +391,8 @@ fn compute_sweep_duration(cfg: &AcquisitionCommand) -> f64 {
     let params = &cfg.experiment.stimulus.params;
     let envelope = cfg.experiment.stimulus.envelope;
 
-    let projection = to_projection_type(cfg.experiment.geometry.projection);
-
     let geometry = DisplayGeometry::new(
-        projection,
+        cfg.experiment.geometry.projection,
         cfg.geometry.viewing_distance_cm,
         cfg.experiment.geometry.horizontal_offset_deg,
         cfg.experiment.geometry.vertical_offset_deg,
@@ -454,11 +430,10 @@ fn compute_sweep_duration(cfg: &AcquisitionCommand) -> f64 {
 fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
     use std::collections::HashMap;
 
-    let envelope = to_envelope_type(cfg.experiment.stimulus.envelope);
-    let projection = to_projection_type(cfg.experiment.geometry.projection);
+    let envelope = cfg.experiment.stimulus.envelope;
 
     let geometry = DisplayGeometry::new(
-        projection,
+        cfg.experiment.geometry.projection,
         cfg.geometry.viewing_distance_cm,
         cfg.experiment.geometry.horizontal_offset_deg,
         cfg.experiment.geometry.vertical_offset_deg,
@@ -476,14 +451,12 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
             .expect("StimulusParams JSON must deserialize to HashMap")
     };
 
-    let order = cfg.experiment.presentation.order.to_sequencer_order();
-
     DatasetConfig {
         envelope,
         stimulus_params,
         conditions: cfg.experiment.presentation.conditions.clone(),
         repetitions: cfg.experiment.presentation.repetitions,
-        order,
+        order: cfg.experiment.presentation.order,
         baseline_start_sec: cfg.experiment.timing.baseline_start_sec,
         baseline_end_sec: cfg.experiment.timing.baseline_end_sec,
         inter_stimulus_sec: cfg.experiment.timing.inter_stimulus_sec,
@@ -509,12 +482,10 @@ fn build_preview_renderer_config(
     rig_geometry: &RigGeometry,
     monitor: &crate::session::MonitorInfo,
 ) -> RendererConfig {
-    let projection = to_projection_type(experiment.geometry.projection);
-
     let (w_cm, h_cm, w_px, h_px) = (monitor.width_cm, monitor.height_cm, monitor.width_px, monitor.height_px);
 
     let geometry = DisplayGeometry::new(
-        projection,
+        experiment.geometry.projection,
         rig_geometry.viewing_distance_cm,
         experiment.geometry.horizontal_offset_deg,
         experiment.geometry.vertical_offset_deg,
@@ -564,10 +535,8 @@ fn build_preview_renderer_config(
 
 #[cfg(windows)]
 fn build_renderer_config(cfg: &AcquisitionCommand) -> RendererConfig {
-    let projection = to_projection_type(cfg.experiment.geometry.projection);
-
     let geometry = DisplayGeometry::new(
-        projection,
+        cfg.experiment.geometry.projection,
         cfg.geometry.viewing_distance_cm,
         cfg.experiment.geometry.horizontal_offset_deg,
         cfg.experiment.geometry.vertical_offset_deg,

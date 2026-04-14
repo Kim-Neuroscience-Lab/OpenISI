@@ -11,25 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 // =============================================================================
-// Shared enums — string-serialized, used across rig and experiment configs
+// Shared enums — canonical definitions live in the stimulus crate
 // =============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Projection {
-    Cartesian,
-    Spherical,
-    Cylindrical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Envelope {
-    Bar,
-    Wedge,
-    Ring,
-    Fullfield,
-}
+// Re-export canonical types from the stimulus crate so existing `config::X` paths still work.
+pub use openisi_stimulus::dataset::EnvelopeType as Envelope;
+pub use openisi_stimulus::geometry::ProjectionType as Projection;
+pub use openisi_stimulus::sequencer::Order;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,14 +31,6 @@ pub enum Carrier {
 pub enum Structure {
     Blocked,
     Interleaved,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Order {
-    Sequential,
-    Interleaved,
-    Randomized,
 }
 
 // =============================================================================
@@ -67,16 +47,12 @@ pub struct RigConfig {
     pub display: DisplaySettings,
     pub analysis: AnalysisDefaults,
     pub system: SystemTuning,
-    pub ui: UiPreferences,
-    pub window: WindowState,
     pub paths: Paths,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameraDefaults {
     pub exposure_us: u32,
-    pub gain: i32,
-    pub target_fps: f64,
     /// Pixel binning factor (1=none, 2=2x2, 4=4x4). Applied symmetrically.
     pub binning: u16,
 }
@@ -146,25 +122,9 @@ pub struct SystemTuning {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UiPreferences {
-    pub show_debug_overlay: bool,
-    pub show_timing_info: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowState {
-    pub maximized: bool,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Paths {
     pub data_directory: String,
     pub experiments_directory: String,
-    pub last_experiment_path: String,
 }
 
 // =============================================================================
@@ -366,45 +326,11 @@ impl ConfigManager {
 // Enum helpers for renderer integration
 // =============================================================================
 
-impl Envelope {
-    /// Convert to the integer used by the WGSL shader.
-    /// This is the ONLY place enum→integer conversion happens.
-    pub fn to_shader_int(self) -> i32 {
-        match self {
-            Envelope::Fullfield => 0,
-            Envelope::Bar => 1,
-            Envelope::Wedge => 2,
-            Envelope::Ring => 3,
-        }
-    }
-}
-
 impl Carrier {
     pub fn to_shader_int(self) -> i32 {
         match self {
             Carrier::Solid => 0,
             Carrier::Checkerboard => 1,
-        }
-    }
-}
-
-impl Projection {
-    pub fn to_shader_int(self) -> i32 {
-        match self {
-            Projection::Cartesian => 0,
-            Projection::Spherical => 1,
-            Projection::Cylindrical => 2,
-        }
-    }
-}
-
-impl Order {
-    /// Convert to the sequencer crate's Order type.
-    pub fn to_sequencer_order(self) -> openisi_stimulus::sequencer::Order {
-        match self {
-            Order::Sequential => openisi_stimulus::sequencer::Order::Sequential,
-            Order::Interleaved => openisi_stimulus::sequencer::Order::Interleaved,
-            Order::Randomized => openisi_stimulus::sequencer::Order::Randomized,
         }
     }
 }

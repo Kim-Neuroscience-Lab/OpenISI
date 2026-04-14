@@ -1,7 +1,6 @@
 //! Camera thread — direct PCO SDK integration via Rust FFI.
 //!
-//! Replaces the Python daemon + shared memory architecture with direct
-//! DLL calls to sc2_cam.dll and pco_recorder.dll. Single process, no IPC.
+//! Calls sc2_cam.dll and pco_recorder.dll directly. Single process, no IPC.
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};

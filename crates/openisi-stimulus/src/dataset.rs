@@ -54,8 +54,9 @@ impl FrameState {
 
 /// Envelope type (stimulus shape).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvelopeType {
-    None = 0,
+    Fullfield = 0,
     Bar = 1,
     Wedge = 2,
     Ring = 3,
@@ -64,7 +65,7 @@ pub enum EnvelopeType {
 impl EnvelopeType {
     pub fn from_int(v: i32) -> Option<Self> {
         match v {
-            0 => Some(EnvelopeType::None),
+            0 => Some(EnvelopeType::Fullfield),
             1 => Some(EnvelopeType::Bar),
             2 => Some(EnvelopeType::Wedge),
             3 => Some(EnvelopeType::Ring),
@@ -74,11 +75,16 @@ impl EnvelopeType {
 
     pub fn stimulus_type_name(self) -> &'static str {
         match self {
-            EnvelopeType::None => "full_field",
+            EnvelopeType::Fullfield => "full_field",
             EnvelopeType::Bar => "drifting_bar",
             EnvelopeType::Wedge => "rotating_wedge",
             EnvelopeType::Ring => "expanding_ring",
         }
+    }
+
+    /// Convert to the integer used by the WGSL shader.
+    pub fn to_shader_int(self) -> i32 {
+        self as i32
     }
 }
 

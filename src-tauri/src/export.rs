@@ -26,6 +26,8 @@ pub struct HardwareSnapshot {
     pub camera_height_px: u32,
 }
 
+use crate::config::{DisplaySettings, RigGeometry};
+
 /// Accumulates ALL camera frames in acquisition order.
 /// No grouping by condition — all frames kept, including baselines.
 /// Stimulus state for each frame is computed analytically by analysis
@@ -161,6 +163,10 @@ pub fn write_oisi(
     session_meta: Option<&SessionMetadata>,
     anatomical: Option<&ndarray::Array2<u8>>,
     acquisition_complete: bool,
+    rig_geometry: &RigGeometry,
+    camera_exposure_us: u32,
+    camera_binning: u16,
+    display_settings: &DisplaySettings,
 ) -> Result<String, String> {
     use isi_analysis::io;
 
@@ -190,7 +196,7 @@ pub fn write_oisi(
 
     // Write hardware snapshot.
     if let Some(hw) = hardware {
-        write_hardware_group(&file, hw)?;
+        write_hardware_group(&file, hw, rig_geometry, camera_exposure_us, camera_binning, display_settings)?;
     }
 
     // Write session metadata (animal ID, notes).
@@ -353,7 +359,14 @@ pub fn write_oisi(
 }
 
 /// Write hardware snapshot as `/hardware` group with scalar attributes.
-fn write_hardware_group(file: &hdf5::File, hw: &HardwareSnapshot) -> Result<(), String> {
+fn write_hardware_group(
+    file: &hdf5::File,
+    hw: &HardwareSnapshot,
+    rig_geometry: &RigGeometry,
+    camera_exposure_us: u32,
+    camera_binning: u16,
+    display_settings: &DisplaySettings,
+) -> Result<(), String> {
     let group = file.create_group("hardware")
         .map_err(|e| format!("Failed to create hardware group: {e}"))?;
 
@@ -375,6 +388,21 @@ fn write_hardware_group(file: &hdf5::File, hw: &HardwareSnapshot) -> Result<(), 
         .map_err(|e| format!("creating gamma_corrected attr: {e}"))?;
     attr.write_scalar(&gamma_val)
         .map_err(|e| format!("writing gamma_corrected attr: {e}"))?;
+
+    // Rig geometry — viewing distance for stimulus geometry reproduction.
+    write_group_f64_attr(&group, "viewing_distance_cm", rig_geometry.viewing_distance_cm)?;
+
+    // Camera acquisition config — exposure and binning at acquisition time.
+    write_group_u32_attr(&group, "camera_exposure_us", camera_exposure_us)?;
+    let attr = group.new_attr::<u16>()
+        .create("camera_binning")
+        .map_err(|e| format!("creating camera_binning attr: {e}"))?;
+    attr.write_scalar(&camera_binning)
+        .map_err(|e| format!("writing camera_binning attr: {e}"))?;
+
+    // Display settings — rotation and target FPS at acquisition time.
+    write_group_f64_attr(&group, "monitor_rotation_deg", display_settings.monitor_rotation_deg)?;
+    write_group_u32_attr(&group, "target_stimulus_fps", display_settings.target_stimulus_fps)?;
 
     Ok(())
 }
@@ -720,7 +748,13 @@ mod tests {
             sweep_start_us: Vec::new(),
             sweep_end_us: Vec::new(),
         };
-        let result = write_oisi(&tmp, &ds, data, None, None, &schedule, None, None, None, true);
+        let rig_geometry = crate::config::RigGeometry { viewing_distance_cm: 25.0 };
+        let display_settings = crate::config::DisplaySettings {
+            target_stimulus_fps: 60,
+            monitor_rotation_deg: 0.0,
+        };
+        let result = write_oisi(&tmp, &ds, data, None, None, &schedule, None, None, None, true,
+            &rig_geometry, 10000, 1, &display_settings);
         assert!(result.is_ok(), "write_oisi failed: {:?}", result.err());
 
         let file = hdf5::File::open(&tmp).expect("Should open .oisi file");

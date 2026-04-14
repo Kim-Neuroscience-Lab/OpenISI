@@ -1,6 +1,7 @@
 pub mod camera_thread;
 pub mod commands;
 pub mod config;
+pub mod error;
 pub mod events;
 pub mod export;
 pub mod messages;
@@ -95,8 +96,15 @@ fn start_tauri(config: ConfigManager) {
     }
     app_state.monitors = monitors;
 
-    // Spawn camera thread (direct PCO SDK, no daemon needed)
-    let cam_cfg = app_state.config.lock().unwrap().rig.system.clone();
+    // Spawn camera thread (direct PCO SDK, no daemon needed).
+    // The camera thread receives a snapshot of SystemTuning at startup.
+    // Invariant: no command modifies rig.system at runtime, so this snapshot
+    // stays in sync for the lifetime of the thread. If a command that writes
+    // to rig.system is ever added, the camera thread must be notified via a
+    // new CameraCmd::UpdateConfig message.
+    let cam_cfg = app_state.config.lock()
+        .expect("Failed to lock config during initialization")
+        .rig.system.clone();
     std::thread::Builder::new()
         .name("camera".into())
         .spawn(move || {
@@ -128,61 +136,57 @@ fn start_tauri(config: ConfigManager) {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Hardware tool
             // Library
-            commands::list_oisi_files,
-            commands::delete_oisi_files,
-            commands::get_data_directory,
-            commands::set_data_directory,
+            commands::library::list_oisi_files,
+            commands::library::delete_oisi_files,
+            commands::library::get_data_directory,
+            commands::library::set_data_directory,
             // Import
-            commands::import_snlc,
-            commands::import_snlc_sample_data,
+            commands::library::import_snlc,
+            commands::library::import_snlc_sample_data,
             // Analysis
-            commands::inspect_oisi,
-            commands::run_analysis,
-            commands::get_analysis_params,
-            commands::set_analysis_params,
-            commands::read_result,
-            commands::read_anatomical,
-            commands::export_map_png,
+            commands::analysis::inspect_oisi,
+            commands::analysis::run_analysis,
+            commands::analysis::get_analysis_params,
+            commands::analysis::set_analysis_params,
+            commands::analysis::read_result,
+            commands::analysis::read_anatomical,
+            commands::analysis::export_map_png,
             // Hardware
-            commands::get_monitors,
-            commands::select_display,
-            commands::validate_display,
-            commands::validate_timing,
-            commands::set_monitor_rotation,
-            commands::set_display_dimensions,
-            commands::get_rig_geometry,
-            commands::set_viewing_distance,
-            commands::get_ring_overlay,
-            commands::set_ring_overlay,
-            commands::enumerate_cameras,
-            commands::connect_camera,
-            commands::disconnect_camera,
+            commands::hardware::get_monitors,
+            commands::hardware::select_display,
+            commands::hardware::validate_display,
+            commands::hardware::validate_timing,
+            commands::hardware::set_monitor_rotation,
+            commands::hardware::set_display_dimensions,
+            commands::hardware::get_rig_geometry,
+            commands::hardware::set_viewing_distance,
+            commands::hardware::get_ring_overlay,
+            commands::hardware::set_ring_overlay,
+            commands::hardware::enumerate_cameras,
+            commands::hardware::connect_camera,
+            commands::hardware::disconnect_camera,
             // Camera tool
-            commands::get_camera_frame,
-            commands::capture_anatomical,
-            commands::set_exposure,
+            commands::hardware::capture_anatomical,
+            commands::hardware::set_exposure,
             // Experiment tool
-            commands::get_experiment,
-            commands::update_experiment,
-            commands::load_experiment,
-            commands::save_experiment_as,
-            commands::list_experiments,
-            commands::get_duration_summary,
-            commands::start_preview,
-            commands::stop_preview,
+            commands::experiment::get_experiment,
+            commands::experiment::update_experiment,
+            commands::experiment::load_experiment,
+            commands::experiment::save_experiment_as,
+            commands::experiment::list_experiments,
+            commands::experiment::get_duration_summary,
+            commands::acquire::start_preview,
+            commands::acquire::stop_preview,
             // Acquire tool
-            commands::set_save_path,
-            commands::get_save_path,
-            commands::set_session_metadata,
-            commands::start_acquisition,
-            commands::stop_acquisition,
-            commands::save_acquisition,
-            commands::discard_acquisition,
+            commands::acquire::set_session_metadata,
+            commands::acquire::start_acquisition,
+            commands::acquire::stop_acquisition,
+            commands::acquire::save_acquisition,
+            commands::acquire::discard_acquisition,
             // Workspace state
-            commands::get_session,
-            commands::get_workspace_status,
+            commands::acquire::get_session,
+            commands::acquire::get_workspace_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building OpenISI")

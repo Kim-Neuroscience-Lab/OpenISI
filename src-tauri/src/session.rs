@@ -69,9 +69,6 @@ pub struct Session {
     // Display
     pub selected_display: Option<MonitorInfo>,
     pub display_validation: Option<DisplayValidation>,
-    /// Physical rotation of the stimulus monitor around the viewing axis, in degrees.
-    /// e.g., 180 = mounted upside down. Applied to stimulus output only, not preview.
-    pub monitor_rotation_deg: f64,
 
     // Camera
     pub camera: Option<CameraInfo>,
