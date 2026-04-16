@@ -3,41 +3,41 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::config::Experiment;
 use crate::error::{lock_state, AppError, AppResult};
 use crate::events::build_hardware_snapshot;
 use crate::messages::{AcquisitionCommand, PreviewCommand, StimulusCmd};
+use crate::params::RegistrySnapshot;
 
 use super::SharedState;
 
 /// Validate experiment parameters before acquisition or preview.
-fn validate_experiment(exp: &Experiment) -> AppResult<()> {
-    let p = &exp.stimulus.params;
-    match exp.stimulus.envelope {
-        crate::config::Envelope::Bar => {
-            if p.sweep_speed_deg_per_sec <= 0.0 {
+fn validate_experiment(snap: &RegistrySnapshot) -> AppResult<()> {
+    use crate::params::Envelope;
+    match snap.stimulus_envelope() {
+        Envelope::Bar => {
+            if snap.sweep_speed_deg_per_sec() <= 0.0 {
                 return Err(AppError::Validation("Sweep speed must be greater than zero".into()));
             }
         }
-        crate::config::Envelope::Wedge => {
-            if p.rotation_speed_deg_per_sec <= 0.0 {
+        Envelope::Wedge => {
+            if snap.rotation_speed_deg_per_sec() <= 0.0 {
                 return Err(AppError::Validation("Rotation speed must be greater than zero".into()));
             }
         }
-        crate::config::Envelope::Ring => {
-            if p.expansion_speed_deg_per_sec <= 0.0 {
+        Envelope::Ring => {
+            if snap.expansion_speed_deg_per_sec() <= 0.0 {
                 return Err(AppError::Validation("Expansion speed must be greater than zero".into()));
             }
         }
-        crate::config::Envelope::Fullfield => {}
+        Envelope::Fullfield => {}
     }
-    if p.stimulus_width_deg <= 0.0 {
+    if snap.stimulus_width_deg() <= 0.0 {
         return Err(AppError::Validation("Stimulus width must be greater than zero".into()));
     }
-    if exp.presentation.repetitions == 0 {
+    if snap.repetitions() == 0 {
         return Err(AppError::Validation("Repetitions must be at least 1".into()));
     }
-    if exp.presentation.conditions.is_empty() {
+    if snap.conditions().is_empty() {
         return Err(AppError::Validation("No conditions defined".into()));
     }
     Ok(())
@@ -57,7 +57,12 @@ pub fn set_session_metadata(state: State<'_, SharedState>, animal_id: String, no
 pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     let mut app = lock_state(&state, "start_acquisition")?;
 
-    validate_experiment(&app.experiment)?;
+    // Take a snapshot for validation and acquisition.
+    let reg = lock_state(&app.registry, "start_acquisition registry")?;
+    let snapshot = reg.snapshot();
+    drop(reg);
+
+    validate_experiment(&snapshot)?;
 
     // Check prerequisites.
     let monitor = app.session.selected_display.as_ref()
@@ -75,7 +80,6 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     }
 
     // Timing validation is strongly recommended but not a hard block.
-    // If present and Systematic, warn the user.
     if let Some(ref tc) = app.session.timing_characterization {
         if tc.regime == crate::timing::TimingRegime::Systematic {
             eprintln!(
@@ -86,20 +90,14 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
         }
     }
 
-    let experiment = app.experiment.clone();
     let measured_refresh_hz = app.session.display_validation.as_ref()
         .ok_or(AppError::Validation("Display not validated".into()))?
         .measured_refresh_hz;
 
-    let rig = lock_state(&app.config, "start_acquisition config")?.rig.clone();
-
     let acq_cmd = AcquisitionCommand {
-        experiment: experiment.clone(),
-        geometry: rig.geometry.clone(),
+        snapshot: snapshot.clone(),
         monitor: monitor.clone(),
-        display: rig.display.clone(),
         measured_refresh_hz,
-        system: rig.system.clone(),
     };
 
     let tx = app.threads.stimulus_tx.as_ref()
@@ -113,7 +111,7 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     let hardware_snapshot = build_hardware_snapshot(&app);
     let timing_characterization = app.session.timing_characterization.clone();
 
-    // Start camera frame accumulation with acquisition-time snapshots.
+    // Start camera frame accumulation with acquisition-time snapshot.
     let (cam_w, cam_h) = {
         let cam = app.session.camera.as_ref()
             .ok_or(AppError::NotAvailable("Camera info not available during acquisition".into()))?;
@@ -122,11 +120,7 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     app.start_acquisition(
         cam_w,
         cam_h,
-        experiment,
-        rig.geometry.clone(),
-        rig.camera.exposure_us,
-        rig.camera.binning,
-        rig.display.clone(),
+        snapshot,
         hardware_snapshot,
         timing_characterization,
     );
@@ -154,8 +148,7 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
     let pending = app.pending_save.take()
         .ok_or(AppError::NotAvailable("No pending acquisition to save".into()))?;
 
-    // Read metadata from live state at save time — these are descriptive metadata
-    // that the user may update between acquisition and save.
+    // Read metadata from live state at save time.
     let animal_id = app.session.animal_id.clone();
     let notes = app.session.notes.clone();
     let anatomical = app.anatomical_image.clone();
@@ -164,8 +157,7 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
     let output_path = if let Some(p) = path {
         std::path::PathBuf::from(p)
     } else {
-        let cfg = lock_state(&app.config, "save_acquisition config")?;
-        let data_dir = &cfg.rig.paths.data_directory;
+        let data_dir = pending.snapshot.data_directory().to_string();
         let dir = if data_dir.is_empty() {
             std::env::current_exe()
                 .ok()
@@ -179,7 +171,6 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Use animal_id in filename if set, otherwise just timestamp.
         let safe_id: String = animal_id.trim().chars()
             .map(|c: char| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .collect();
@@ -198,23 +189,17 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
 
     drop(app); // Release lock during file write.
 
-    // Acquisition-time snapshots come from PendingSave (frozen at start).
-    // Metadata (session_meta, anatomical) was read from live state above.
     crate::export::write_oisi(
         &output_path,
         &pending.stimulus_dataset,
         pending.camera_data,
-        Some(&pending.experiment),
+        &pending.snapshot,
         pending.hardware_snapshot.as_ref(),
         &pending.schedule,
         pending.timing_characterization.as_ref(),
         Some(&session_meta),
         anatomical.as_ref(),
         pending.completed_normally,
-        &pending.rig_geometry,
-        pending.camera_exposure_us,
-        pending.camera_binning,
-        &pending.display_settings,
     ).map_err(|e| AppError::Io(std::io::Error::new(
         std::io::ErrorKind::Other,
         format!("Failed to write .oisi: {e}"),
@@ -245,9 +230,11 @@ pub fn discard_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
 pub fn start_preview(state: State<'_, SharedState>) -> AppResult<()> {
     let app = lock_state(&state, "start_preview")?;
 
-    let experiment = app.experiment.clone();
-    validate_experiment(&experiment)?;
-    let geometry = lock_state(&app.config, "start_preview config")?.rig.geometry.clone();
+    let reg = lock_state(&app.registry, "start_preview registry")?;
+    let snapshot = reg.snapshot();
+    drop(reg);
+
+    validate_experiment(&snapshot)?;
 
     let monitor = app.session.selected_display.clone()
         .ok_or(AppError::Validation(
@@ -260,8 +247,7 @@ pub fn start_preview(state: State<'_, SharedState>) -> AppResult<()> {
         ))?;
 
     tx.send(StimulusCmd::Preview(PreviewCommand {
-        experiment,
-        geometry,
+        snapshot,
         monitor,
     })).map_err(|e| AppError::Hardware(format!("Failed to send preview command: {e}")))?;
     Ok(())
@@ -282,10 +268,10 @@ pub fn stop_preview(state: State<'_, SharedState>) -> AppResult<()> {
 #[tauri::command]
 pub fn get_session(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     let app = lock_state(&state, "get_session")?;
-    let cfg = lock_state(&app.config, "get_session config")?;
-    let exposure_us = cfg.rig.camera.exposure_us;
-    let monitor_rotation_deg = cfg.rig.display.monitor_rotation_deg;
-    drop(cfg);
+    let reg = lock_state(&app.registry, "get_session registry")?;
+    let exposure_us = reg.camera_exposure_us();
+    let monitor_rotation_deg = reg.monitor_rotation_deg();
+    drop(reg);
     Ok(serde_json::json!({
         "selected_display": app.session.selected_display,
         "display_validation": app.session.display_validation,

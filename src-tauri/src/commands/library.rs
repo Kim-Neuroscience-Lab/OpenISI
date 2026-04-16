@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::error::{lock_state, AppError, AppResult};
+use crate::params::ParamValue;
 
 use super::SharedState;
 
@@ -23,14 +24,15 @@ pub struct OisiFileInfo {
 #[tauri::command]
 pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileInfo>> {
     let app = lock_state(&state, "list_oisi_files")?;
-    let cfg = lock_state(&app.config, "list_oisi_files config")?;
-    let data_dir = &cfg.rig.paths.data_directory;
+    let reg = lock_state(&app.registry, "list_oisi_files registry")?;
+    let data_dir = reg.data_directory().to_string();
+    drop(reg);
 
     if data_dir.is_empty() {
         return Ok(Vec::new());
     }
 
-    let dir = std::path::Path::new(data_dir);
+    let dir = std::path::Path::new(&data_dir);
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -75,18 +77,19 @@ pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileI
 #[tauri::command]
 pub fn get_data_directory(state: State<'_, SharedState>) -> AppResult<String> {
     let app = lock_state(&state, "get_data_directory")?;
-    let cfg = lock_state(&app.config, "get_data_directory config")?;
-    Ok(cfg.rig.paths.data_directory.clone())
+    let reg = lock_state(&app.registry, "get_data_directory registry")?;
+    Ok(reg.data_directory().to_string())
 }
 
 /// Set the data directory path. Persists to rig.toml.
 #[tauri::command]
 pub fn set_data_directory(state: State<'_, SharedState>, path: String) -> AppResult<()> {
     let app = lock_state(&state, "set_data_directory")?;
-    let mut cfg = lock_state(&app.config, "set_data_directory config")?;
-    cfg.rig.paths.data_directory = path;
-    if let Err(e) = cfg.save() {
-        eprintln!("[config] Failed to save data directory: {e}");
+    let mut reg = lock_state(&app.registry, "set_data_directory registry")?;
+    reg.set(crate::params::ParamId::DataDirectory, ParamValue::String(path))
+        .map_err(|e| AppError::Validation(e))?;
+    if let Err(e) = reg.save_rig() {
+        eprintln!("[params] Failed to save data directory: {e}");
     }
     Ok(())
 }
@@ -118,8 +121,8 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
 
     let out_dir = {
         let app = lock_state(&state, "import_snlc")?;
-        let cfg = lock_state(&app.config, "import_snlc config")?;
-        let data_dir = &cfg.rig.paths.data_directory;
+        let reg = lock_state(&app.registry, "import_snlc registry")?;
+        let data_dir = reg.data_directory().to_string();
         if data_dir.is_empty() {
             src_dir.parent().unwrap_or(src_dir).to_path_buf()
         } else {
@@ -143,11 +146,11 @@ const SNLC_SAMPLE_DATA_URL: &str =
 /// Returns the list of created .oisi file paths.
 #[tauri::command]
 pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<String>> {
-    // Determine output directory (same logic as import_snlc).
+    // Determine output directory.
     let out_dir = {
         let app = lock_state(&state, "import_snlc_sample_data")?;
-        let cfg = lock_state(&app.config, "import_snlc_sample_data config")?;
-        let data_dir = &cfg.rig.paths.data_directory;
+        let reg = lock_state(&app.registry, "import_snlc_sample_data registry")?;
+        let data_dir = reg.data_directory().to_string();
         if data_dir.is_empty() {
             return Err(AppError::Validation(
                 "Set a data directory before downloading sample data.".into(),
@@ -299,19 +302,13 @@ fn find_mat_dirs(dir: &std::path::Path, results: &mut Vec<std::path::PathBuf>) {
 // ════════════════════════════════════════════════════════════════════════
 
 /// Convert Unix epoch seconds to local datetime string "YYYY-MM-DD HH:MM:SS".
-/// Uses Windows GetLocalTime via the system's UTC offset.
 fn epoch_to_local_datetime(epoch_secs: u64) -> String {
-    // Get local offset by comparing SystemTime::now() with a known epoch.
-    // Simple approach: compute UTC civil time, then apply a fixed offset.
-    // On Windows, use GetTimeZoneInformation for the offset.
     #[cfg(windows)]
     {
         use windows::Win32::System::Time::GetTimeZoneInformation;
         let mut tzi = windows::Win32::System::Time::TIME_ZONE_INFORMATION::default();
         let result = unsafe { GetTimeZoneInformation(&mut tzi) };
-        // Bias is in minutes, negative for east of UTC.
         let bias_minutes = match result {
-            // TIME_ZONE_ID_DAYLIGHT
             2 => tzi.Bias + tzi.DaylightBias,
             _ => tzi.Bias + tzi.StandardBias,
         };

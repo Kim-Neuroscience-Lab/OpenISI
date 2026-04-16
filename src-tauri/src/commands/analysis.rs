@@ -25,34 +25,34 @@ pub fn inspect_oisi(path: String) -> AppResult<serde_json::Value> {
 #[tauri::command]
 pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<String> {
     let app = lock_state(&state, "run_analysis")?;
-    let analysis_cfg = lock_state(&app.config, "run_analysis config")?.rig.analysis.clone();
+    let reg = lock_state(&app.registry, "run_analysis registry")?;
+    let snap = reg.snapshot();
+    drop(reg);
     drop(app); // Release lock during analysis
 
-    let seg_params = analysis_cfg.segmentation.as_ref().map(|s| {
-        isi_analysis::params::SegmentationParams {
-            sign_map_filter_sigma: s.sign_map_filter_sigma,
-            sign_map_threshold: s.sign_map_threshold,
-            open_radius: s.open_radius,
-            close_radius: s.close_radius,
-            dilate_radius: s.dilate_radius,
-            pad_border: s.pad_border,
-            spur_iterations: s.spur_iterations,
-            split_overlap_threshold: s.split_overlap_threshold,
-            merge_overlap_threshold: s.merge_overlap_threshold,
-            merge_dilate_radius: s.merge_dilate_radius,
-            merge_close_radius: s.merge_close_radius,
-            eccentricity_radius: s.eccentricity_radius,
-        }
+    let seg_params = Some(isi_analysis::params::SegmentationParams {
+        sign_map_filter_sigma: snap.sign_map_filter_sigma(),
+        sign_map_threshold: snap.sign_map_threshold(),
+        open_radius: snap.open_radius(),
+        close_radius: snap.close_radius(),
+        dilate_radius: snap.dilate_radius(),
+        pad_border: snap.pad_border(),
+        spur_iterations: snap.spur_iterations(),
+        split_overlap_threshold: snap.split_overlap_threshold(),
+        merge_overlap_threshold: snap.merge_overlap_threshold(),
+        merge_dilate_radius: snap.merge_dilate_radius(),
+        merge_close_radius: snap.merge_close_radius(),
+        eccentricity_radius: snap.eccentricity_radius(),
     });
 
     let params = isi_analysis::AnalysisParams {
-        smoothing_sigma: analysis_cfg.smoothing_sigma,
-        rotation_k: analysis_cfg.rotation_k,
-        azi_angular_range: analysis_cfg.azi_angular_range,
-        alt_angular_range: analysis_cfg.alt_angular_range,
-        offset_azi: analysis_cfg.offset_azi,
-        offset_alt: analysis_cfg.offset_alt,
-        epsilon: analysis_cfg.epsilon,
+        smoothing_sigma: snap.smoothing_sigma(),
+        rotation_k: snap.rotation_k(),
+        azi_angular_range: snap.azi_angular_range(),
+        alt_angular_range: snap.alt_angular_range(),
+        offset_azi: snap.offset_azi(),
+        offset_alt: snap.offset_alt(),
+        epsilon: snap.epsilon(),
         segmentation: seg_params,
     };
 
@@ -73,16 +73,29 @@ pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<St
 #[tauri::command]
 pub fn get_analysis_params(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     let app = lock_state(&state, "get_analysis_params")?;
-    let a = lock_state(&app.config, "get_analysis_params config")?.rig.analysis.clone();
+    let reg = lock_state(&app.registry, "get_analysis_params registry")?;
     Ok(serde_json::json!({
-        "smoothing_sigma": a.smoothing_sigma,
-        "rotation_k": a.rotation_k,
-        "azi_angular_range": a.azi_angular_range,
-        "alt_angular_range": a.alt_angular_range,
-        "offset_azi": a.offset_azi,
-        "offset_alt": a.offset_alt,
-        "epsilon": a.epsilon,
-        "segmentation": a.segmentation,
+        "smoothing_sigma": reg.smoothing_sigma(),
+        "rotation_k": reg.rotation_k(),
+        "azi_angular_range": reg.azi_angular_range(),
+        "alt_angular_range": reg.alt_angular_range(),
+        "offset_azi": reg.offset_azi(),
+        "offset_alt": reg.offset_alt(),
+        "epsilon": reg.epsilon(),
+        "segmentation": {
+            "sign_map_filter_sigma": reg.sign_map_filter_sigma(),
+            "sign_map_threshold": reg.sign_map_threshold(),
+            "open_radius": reg.open_radius(),
+            "close_radius": reg.close_radius(),
+            "dilate_radius": reg.dilate_radius(),
+            "pad_border": reg.pad_border(),
+            "spur_iterations": reg.spur_iterations(),
+            "split_overlap_threshold": reg.split_overlap_threshold(),
+            "merge_overlap_threshold": reg.merge_overlap_threshold(),
+            "merge_dilate_radius": reg.merge_dilate_radius(),
+            "merge_close_radius": reg.merge_close_radius(),
+            "eccentricity_radius": reg.eccentricity_radius(),
+        },
     }))
 }
 
@@ -100,22 +113,32 @@ pub fn set_analysis_params(
     sign_map_threshold: Option<f64>,
     eccentricity_radius: Option<f64>,
 ) -> AppResult<()> {
+    use crate::params::{ParamId, ParamValue};
+
     let app = lock_state(&state, "set_analysis_params")?;
-    let mut cfg = lock_state(&app.config, "set_analysis_params config")?;
-    cfg.rig.analysis.smoothing_sigma = smoothing_sigma;
-    cfg.rig.analysis.rotation_k = rotation_k;
-    cfg.rig.analysis.azi_angular_range = azi_angular_range;
-    cfg.rig.analysis.alt_angular_range = alt_angular_range;
-    cfg.rig.analysis.offset_azi = offset_azi;
-    cfg.rig.analysis.offset_alt = offset_alt;
-    // Update segmentation params if provided.
-    if let Some(ref mut seg) = cfg.rig.analysis.segmentation {
-        if let Some(v) = sign_map_filter_sigma { seg.sign_map_filter_sigma = v; }
-        if let Some(v) = sign_map_threshold { seg.sign_map_threshold = v; }
-        if let Some(v) = eccentricity_radius { seg.eccentricity_radius = v; }
-    }
-    if let Err(e) = cfg.save() {
-        eprintln!("[config] Failed to save analysis params: {e}");
+    let mut reg = lock_state(&app.registry, "set_analysis_params registry")?;
+
+    reg.batch(|r| -> Result<(), String> {
+        r.set(ParamId::SmoothingSigma, ParamValue::F64(smoothing_sigma))?;
+        r.set(ParamId::RotationK, ParamValue::I32(rotation_k))?;
+        r.set(ParamId::AziAngularRange, ParamValue::F64(azi_angular_range))?;
+        r.set(ParamId::AltAngularRange, ParamValue::F64(alt_angular_range))?;
+        r.set(ParamId::OffsetAzi, ParamValue::F64(offset_azi))?;
+        r.set(ParamId::OffsetAlt, ParamValue::F64(offset_alt))?;
+        if let Some(v) = sign_map_filter_sigma {
+            r.set(ParamId::SignMapFilterSigma, ParamValue::F64(v))?;
+        }
+        if let Some(v) = sign_map_threshold {
+            r.set(ParamId::SignMapThreshold, ParamValue::F64(v))?;
+        }
+        if let Some(v) = eccentricity_radius {
+            r.set(ParamId::EccentricityRadius, ParamValue::F64(v))?;
+        }
+        Ok(())
+    }).map_err(|e| AppError::Validation(e))?;
+
+    if let Err(e) = reg.save_rig() {
+        eprintln!("[params] Failed to save analysis params: {e}");
     }
     Ok(())
 }
@@ -135,7 +158,6 @@ pub fn read_result(path: String, name: String) -> AppResult<serde_json::Value> {
 
     // 1D array (e.g., area_signs).
     if shape.len() == 1 {
-        // Read as i32 for broadest HDF5 compatibility (i8 may not be directly supported).
         let data: Vec<i32> = ds.read_1d()
             .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Hdf5(
                 format!("reading 1D {name}: {e}"),

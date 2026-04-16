@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use openisi_lib::config::{ConfigManager, Experiment};
+use openisi_lib::params::Registry;
 
 // Windows-only imports for hardware commands.
 #[cfg(windows)]
@@ -75,7 +75,7 @@ fn print_usage() {
 // Config loading
 // ═══════════════════════════════════════════════════════════════════════
 
-fn load_config() -> (ConfigManager, Experiment) {
+fn load_registry() -> Registry {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -91,14 +91,13 @@ fn load_config() -> (ConfigManager, Experiment) {
         .find(|p| p.join("rig.toml").exists())
         .unwrap_or_else(|| exit_err("Cannot find config directory with rig.toml"));
 
-    let config = ConfigManager::load(&config_dir)
+    let mut registry = Registry::new(&config_dir);
+    registry.load_rig()
         .unwrap_or_else(|e| exit_err(&format!("Failed to load rig config: {e}")));
-
-    let exp_path = config.experiment_path();
-    let experiment = Experiment::load(&exp_path)
+    registry.load_experiment()
         .unwrap_or_else(|e| exit_err(&format!("Failed to load experiment: {e}")));
 
-    (config, experiment)
+    registry
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -135,22 +134,23 @@ fn cmd_acquire(_args: &[String]) {
 
 #[cfg(windows)]
 fn cmd_info() {
-    let (config, experiment) = load_config();
+    let reg = load_registry();
+    let snap = reg.snapshot();
 
     println!("=== Rig Config ===");
     println!("Camera: exposure={}µs binning={}",
-        config.rig.camera.exposure_us, config.rig.camera.binning);
-    println!("Geometry: viewing_distance={}cm", config.rig.geometry.viewing_distance_cm);
+        snap.camera_exposure_us(), snap.camera_binning());
+    println!("Geometry: viewing_distance={}cm", snap.viewing_distance_cm());
     println!("Display: target_fps={} rotation={}°",
-        config.rig.display.target_stimulus_fps, config.rig.display.monitor_rotation_deg);
+        snap.target_stimulus_fps(), snap.monitor_rotation_deg());
 
     println!();
     println!("=== Experiment ===");
-    println!("Envelope: {:?}", experiment.stimulus.envelope);
-    println!("Carrier: {:?}", experiment.stimulus.carrier);
-    println!("Conditions: {:?}", experiment.presentation.conditions);
-    println!("Repetitions: {}", experiment.presentation.repetitions);
-    println!("Baselines: {}/{}s", experiment.timing.baseline_start_sec, experiment.timing.baseline_end_sec);
+    println!("Envelope: {:?}", snap.stimulus_envelope());
+    println!("Carrier: {:?}", snap.stimulus_carrier());
+    println!("Conditions: {:?}", snap.conditions());
+    println!("Repetitions: {}", snap.repetitions());
+    println!("Baselines: {}/{}s", snap.baseline_start_sec(), snap.baseline_end_sec());
 
     println!();
     println!("=== Monitors ===");
@@ -180,14 +180,12 @@ fn cmd_info() {
         for c in &cameras {
             println!("  [{}] {} {}x{} {:.1}fps", c.index, c.name, c.width, c.height, c.max_fps);
         }
-        // Open first camera to query capabilities.
         if let Ok(cam) = sdk.open_camera(cameras[0].index) {
             let info = cam.info();
             println!("  Pixel rates: {:?}", info.pixel_rates);
             println!("  Exposure range: {}ns .. {}ms", info.min_exposure_ns, info.max_exposure_ms);
             let (max_h, step_h, max_v, step_v) = cam.available_binning();
             println!("  Binning: max {}x{}, stepping h={} v={}", max_h, max_v, step_h, step_v);
-            // Drop cam — closes camera properly.
         }
     }
 }
@@ -198,7 +196,8 @@ fn cmd_info() {
 
 #[cfg(windows)]
 fn cmd_validate_display(args: &[String]) {
-    let (config, _) = load_config();
+    let reg = load_registry();
+    let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
     let idx: usize = args.first()
@@ -221,7 +220,7 @@ fn cmd_validate_display(args: &[String]) {
     let mut qpc_freq = 0i64;
     unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc_freq); }
 
-    let sample_count = config.rig.system.display_validation_sample_count;
+    let sample_count = snap.display_validation_sample_count();
     let warmup = 30u32;
     let total = sample_count + warmup;
     let mut timestamps = Vec::with_capacity(total as usize);
@@ -269,7 +268,8 @@ fn cmd_validate_timing(args: &[String]) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3.0);
 
-    let (config, experiment) = load_config();
+    let reg = load_registry();
+    let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
     let stim_idx = if monitors.len() > 1 { 1 } else { 0 };
@@ -290,14 +290,14 @@ fn cmd_validate_timing(args: &[String]) {
         .unwrap_or_else(|e| exit_err(&format!("Failed to open camera: {e}")));
     let _rate = camera.set_max_pixel_rate()
         .unwrap_or_else(|e| exit_err(&format!("Failed to set pixel rate: {e}")));
-    let binning = config.rig.camera.binning;
+    let binning = snap.camera_binning();
     if binning > 1 {
         camera.set_binning(binning, binning)
             .unwrap_or_else(|e| exit_err(&format!("Failed to set binning: {e}")));
     }
     camera.set_timestamp_binary()
         .unwrap_or_else(|e| exit_err(&format!("Failed to set timestamp mode: {e}")));
-    camera.set_exposure_us(config.rig.camera.exposure_us)
+    camera.set_exposure_us(snap.camera_exposure_us())
         .unwrap_or_else(|e| exit_err(&format!("Failed to set exposure: {e}")));
     if let Err(e) = camera.arm() {
         eprintln!("Failed to arm camera: {e}");
@@ -312,7 +312,7 @@ fn cmd_validate_timing(args: &[String]) {
 
     // Wait for first frame.
     let deadline = std::time::Instant::now() + Duration::from_millis(
-        config.rig.system.camera_first_frame_timeout_ms as u64
+        snap.camera_first_frame_timeout_ms() as u64
     );
     loop {
         if std::time::Instant::now() > deadline {
@@ -322,7 +322,7 @@ fn cmd_validate_timing(args: &[String]) {
         match recorder.get_latest_frame() {
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(
-                config.rig.system.camera_first_frame_poll_ms as u64
+                snap.camera_first_frame_poll_ms() as u64
             )),
             Err(e) => { eprintln!("Frame error: {e}"); return; }
         }
@@ -331,8 +331,14 @@ fn cmd_validate_timing(args: &[String]) {
     // Start stimulus thread.
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
-    let sys_cfg = config.rig.system.clone();
-    let bg_lum = experiment.stimulus.params.background_luminance;
+    let bg_lum = snap.background_luminance();
+    let preview_width_px = snap.preview_width_px();
+    let preview_interval_ms = snap.preview_interval_ms();
+    let preview_cycle_sec = snap.preview_cycle_sec();
+    let idle_sleep_ms = snap.idle_sleep_ms();
+    let fps_window_frames = snap.fps_window_frames();
+    let drop_detection_warmup_frames = snap.drop_detection_warmup_frames();
+    let drop_detection_threshold = snap.drop_detection_threshold();
     let mon_idx = mon.index;
     let mon_w = mon.width_px;
     let mon_h = mon.height_px;
@@ -342,7 +348,10 @@ fn cmd_validate_timing(args: &[String]) {
         .name("stimulus".into())
         .spawn(move || {
             openisi_lib::stimulus_thread::run(
-                stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos, sys_cfg, bg_lum,
+                stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos,
+                preview_width_px, preview_interval_ms, preview_cycle_sec,
+                idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
+                drop_detection_threshold, bg_lum,
             );
         })
         .unwrap_or_else(|e| exit_err(&format!("Failed to spawn stimulus thread: {e}")));
@@ -358,8 +367,7 @@ fn cmd_validate_timing(args: &[String]) {
 
     // Start a preview to get stimulus vsync running.
     stim_cmd_tx.send(StimulusCmd::Preview(PreviewCommand {
-        experiment: experiment.clone(),
-        geometry: config.rig.geometry.clone(),
+        snapshot: snap.clone(),
         monitor: openisi_lib::session::MonitorInfo {
             index: mon.index, name: mon.name.clone(),
             width_px: mon.width_px, height_px: mon.height_px,
@@ -393,7 +401,7 @@ fn cmd_validate_timing(args: &[String]) {
             Ok(None) => {}
             Err(e) => { eprintln!("Frame error: {e}"); break; }
         }
-        std::thread::sleep(Duration::from_millis(config.rig.system.camera_poll_interval_ms as u64));
+        std::thread::sleep(Duration::from_millis(snap.camera_poll_interval_ms() as u64));
     }
 
     // Stop.
@@ -401,10 +409,6 @@ fn cmd_validate_timing(args: &[String]) {
     stim_cmd_tx.send(StimulusCmd::StopPreview).ok();
     stim_cmd_tx.send(StimulusCmd::Shutdown).ok();
 
-    // Collect stimulus timestamps from vsync events that were emitted during preview.
-    // The stimulus thread sent PreviewFrame events at ~10fps — not per-vsync.
-    // For the stimulus rate, use the display validation measurement instead.
-    // Run a quick WaitForVBlank measurement for stimulus rate.
     let dxgi_output = match monitor::find_dxgi_output(stim_idx) {
         Ok(o) => o,
         Err(e) => { eprintln!("DXGI: {e}"); return; }
@@ -430,7 +434,6 @@ fn cmd_validate_timing(args: &[String]) {
         return;
     }
 
-    // Clock offset uncertainty: std dev of (sys_ts - hw_ts) across frames.
     let offsets: Vec<f64> = cam_sys_timestamps.iter().zip(cam_hw_timestamps.iter())
         .map(|(&sys, &hw)| (sys - hw) as f64)
         .collect();
@@ -440,55 +443,52 @@ fn cmd_validate_timing(args: &[String]) {
         .sum::<f64>() / offsets.len() as f64;
     let clock_offset_uncertainty_us = offset_variance.sqrt();
 
-    // Compute trial parameters from experiment + actual geometry.
     use openisi_stimulus::geometry::DisplayGeometry;
 
     let geometry = DisplayGeometry::new(
-        experiment.geometry.projection,
-        config.rig.geometry.viewing_distance_cm,
-        experiment.geometry.horizontal_offset_deg,
-        experiment.geometry.vertical_offset_deg,
+        snap.experiment_projection(),
+        snap.viewing_distance_cm(),
+        snap.horizontal_offset_deg(),
+        snap.vertical_offset_deg(),
         mon.width_cm, mon.height_cm,
         mon.width_px, mon.height_px,
     );
 
-    let p = &experiment.stimulus.params;
-    let sweep_sec = match experiment.stimulus.envelope {
-        openisi_lib::config::Envelope::Bar => {
-            let total_travel = geometry.visual_field_width_deg() + p.stimulus_width_deg;
-            total_travel / p.sweep_speed_deg_per_sec
+    let envelope = snap.stimulus_envelope();
+    let sweep_sec = match envelope {
+        openisi_lib::params::Envelope::Bar => {
+            let total_travel = geometry.visual_field_width_deg() + snap.stimulus_width_deg();
+            total_travel / snap.sweep_speed_deg_per_sec()
         }
-        openisi_lib::config::Envelope::Wedge => {
-            360.0 / p.rotation_speed_deg_per_sec
+        openisi_lib::params::Envelope::Wedge => {
+            360.0 / snap.rotation_speed_deg_per_sec()
         }
-        openisi_lib::config::Envelope::Ring => {
-            let total_travel = geometry.get_max_eccentricity_deg() + p.stimulus_width_deg;
-            total_travel / p.expansion_speed_deg_per_sec
+        openisi_lib::params::Envelope::Ring => {
+            let total_travel = geometry.get_max_eccentricity_deg() + snap.stimulus_width_deg();
+            total_travel / snap.expansion_speed_deg_per_sec()
         }
-        openisi_lib::config::Envelope::Fullfield => 0.0,
+        openisi_lib::params::Envelope::Fullfield => 0.0,
     };
 
-    let n_conditions = experiment.presentation.conditions.len();
-    let n_reps = experiment.presentation.repetitions as usize;
+    let n_conditions = snap.conditions().len();
+    let n_reps = snap.repetitions() as usize;
     let n_trials = n_conditions * n_reps;
-    // Inter-trial interval: time between consecutive sweep onsets.
-    let inter_trial_sec = sweep_sec + experiment.timing.inter_stimulus_sec;
+    let inter_trial_sec = sweep_sec + snap.inter_stimulus_sec();
 
-    // Session duration from baselines + sweeps + intervals.
     let total_sweep_time = n_trials as f64 * sweep_sec;
     let total_inter_stim = if n_trials > 1 {
-        (n_trials - 1) as f64 * experiment.timing.inter_stimulus_sec
+        (n_trials - 1) as f64 * snap.inter_stimulus_sec()
     } else { 0.0 };
     let total_inter_dir = if n_conditions > 1 {
-        (n_conditions - 1) as f64 * experiment.timing.inter_direction_sec * n_reps as f64
+        (n_conditions - 1) as f64 * snap.inter_direction_sec() * n_reps as f64
     } else { 0.0 };
-    let session_sec = experiment.timing.baseline_start_sec
+    let session_sec = snap.baseline_start_sec()
         + total_sweep_time
         + total_inter_stim
         + total_inter_dir
-        + experiment.timing.baseline_end_sec;
+        + snap.baseline_end_sec();
 
-    println!("Sweep duration: {:.3}s ({:?} envelope)", sweep_sec, experiment.stimulus.envelope);
+    println!("Sweep duration: {:.3}s ({:?} envelope)", sweep_sec, envelope);
     println!("Session duration: {:.1}s ({} trials)", session_sec, n_trials);
 
     let params = openisi_lib::timing::TimingParams {
@@ -521,14 +521,15 @@ fn cmd_acquire(args: &[String]) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(10.0);
 
-    let (config, experiment) = load_config();
+    let reg = load_registry();
+    let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
     let stim_idx = if monitors.len() > 1 { 1 } else { 0 };
     let monitor = &monitors[stim_idx];
 
     println!("Acquiring for {:.1}s on monitor [{}] {}", duration_sec, stim_idx, monitor.name);
-    println!("Experiment: {:?} {:?}", experiment.stimulus.envelope, experiment.stimulus.carrier);
+    println!("Experiment: {:?} {:?}", snap.stimulus_envelope(), snap.stimulus_carrier());
 
     // Camera setup.
     let sdk = pco_sdk::Sdk::load()
@@ -544,7 +545,7 @@ fn cmd_acquire(args: &[String]) {
         .unwrap_or_else(|e| exit_err(&format!("Failed to open camera: {e}")));
     let _rate = camera.set_max_pixel_rate()
         .unwrap_or_else(|e| exit_err(&format!("Failed to set pixel rate: {e}")));
-    let binning = config.rig.camera.binning;
+    let binning = snap.camera_binning();
     if binning > 1 {
         if !camera.is_valid_binning(binning) {
             let (max_h, step_h, max_v, step_v) = camera.available_binning();
@@ -557,25 +558,30 @@ fn cmd_acquire(args: &[String]) {
     }
     camera.set_timestamp_binary()
         .unwrap_or_else(|e| exit_err(&format!("Failed to set timestamp mode: {e}")));
-    camera.set_exposure_us(config.rig.camera.exposure_us)
+    camera.set_exposure_us(snap.camera_exposure_us())
         .unwrap_or_else(|e| exit_err(&format!("Failed to set exposure: {e}")));
     if let Err(e) = camera.arm() {
         eprintln!("Failed to arm camera: {e}");
         eprintln!("This may indicate the binning/pixel rate/exposure combination is not supported by the USB interface.");
-        eprintln!("Try binning=1, or reduce pixel rate.");
         return;
     }
 
     let cam_w = camera.width;
     let cam_h = camera.height;
-    println!("Camera armed: {}x{}, exposure {}µs", cam_w, cam_h, config.rig.camera.exposure_us);
+    println!("Camera armed: {}x{}, exposure {}µs", cam_w, cam_h, snap.camera_exposure_us());
 
     // Stimulus thread.
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
 
-    let sys_cfg = config.rig.system.clone();
-    let bg_lum = experiment.stimulus.params.background_luminance;
+    let bg_lum = snap.background_luminance();
+    let preview_width_px = snap.preview_width_px();
+    let preview_interval_ms = snap.preview_interval_ms();
+    let preview_cycle_sec = snap.preview_cycle_sec();
+    let idle_sleep_ms = snap.idle_sleep_ms();
+    let fps_window_frames = snap.fps_window_frames();
+    let drop_detection_warmup_frames = snap.drop_detection_warmup_frames();
+    let drop_detection_threshold = snap.drop_detection_threshold();
     let mon_idx = monitor.index;
     let mon_w = monitor.width_px;
     let mon_h = monitor.height_px;
@@ -585,7 +591,10 @@ fn cmd_acquire(args: &[String]) {
         .name("stimulus".into())
         .spawn(move || {
             openisi_lib::stimulus_thread::run(
-                stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos, sys_cfg, bg_lum,
+                stim_cmd_rx, stim_evt_tx, mon_idx, mon_w, mon_h, mon_pos,
+                preview_width_px, preview_interval_ms, preview_cycle_sec,
+                idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
+                drop_detection_threshold, bg_lum,
             );
         })
         .unwrap_or_else(|e| exit_err(&format!("Failed to spawn stimulus thread: {e}")));
@@ -601,8 +610,7 @@ fn cmd_acquire(args: &[String]) {
 
     // Start acquisition.
     let acq_cmd = AcquisitionCommand {
-        experiment: experiment.clone(),
-        geometry: config.rig.geometry.clone(),
+        snapshot: snap.clone(),
         monitor: openisi_lib::session::MonitorInfo {
             index: monitor.index,
             name: monitor.name.clone(),
@@ -614,9 +622,7 @@ fn cmd_acquire(args: &[String]) {
             position: monitor.position,
             physical_source: monitor.physical_source.clone(),
         },
-        display: config.rig.display.clone(),
         measured_refresh_hz: monitor.refresh_hz as f64,
-        system: config.rig.system.clone(),
     };
 
     stim_cmd_tx.send(StimulusCmd::StartAcquisition(acq_cmd))
@@ -630,7 +636,7 @@ fn cmd_acquire(args: &[String]) {
         .unwrap_or_else(|e| exit_err(&format!("Failed to start recording: {e}")));
 
     // Wait for first frame.
-    let deadline = Instant::now() + Duration::from_millis(config.rig.system.camera_first_frame_timeout_ms as u64);
+    let deadline = Instant::now() + Duration::from_millis(snap.camera_first_frame_timeout_ms() as u64);
     loop {
         if Instant::now() > deadline {
             eprintln!("Timed out waiting for first camera frame");
@@ -638,7 +644,7 @@ fn cmd_acquire(args: &[String]) {
         }
         match recorder.get_latest_frame() {
             Ok(Some(_)) => break,
-            Ok(None) => std::thread::sleep(Duration::from_millis(config.rig.system.camera_first_frame_poll_ms as u64)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(snap.camera_first_frame_poll_ms() as u64)),
             Err(e) => { eprintln!("Frame read error: {e}"); return; }
         }
     }
@@ -679,7 +685,7 @@ fn cmd_acquire(args: &[String]) {
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(config.rig.system.camera_poll_interval_ms as u64));
+        std::thread::sleep(Duration::from_millis(snap.camera_poll_interval_ms() as u64));
     }
 
     // Stop.
@@ -719,7 +725,7 @@ fn cmd_acquire(args: &[String]) {
 
     // Save.
     let camera_data = accumulator.finish();
-    let data_dir = &config.rig.paths.data_directory;
+    let data_dir = snap.data_directory().to_string();
     let output_dir = if data_dir.is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
@@ -737,17 +743,13 @@ fn cmd_acquire(args: &[String]) {
             &output_path,
             ds,
             camera_data,
-            Some(&experiment),
+            &snap,
             None,
             &sweep_schedule,
-            None, // timing characterization
-            None, // session metadata
-            None, // anatomical
-            false, // stopped early by timeout
-            &config.rig.geometry,
-            config.rig.camera.exposure_us,
-            config.rig.camera.binning,
-            &config.rig.display,
+            None,
+            None,
+            None,
+            false,
         ) {
             Ok(summary) => println!("{summary}"),
             Err(e) => eprintln!("Export failed: {e}"),
@@ -771,33 +773,33 @@ fn cmd_analyze(args: &[String]) {
         return;
     }
 
-    let (config, _) = load_config();
+    let reg = load_registry();
+    let snap = reg.snapshot();
     let path = std::path::Path::new(&args[0]);
 
-    let seg_params = config.rig.analysis.segmentation.as_ref().map(|s| {
-        isi_analysis::params::SegmentationParams {
-            sign_map_filter_sigma: s.sign_map_filter_sigma,
-            sign_map_threshold: s.sign_map_threshold,
-            open_radius: s.open_radius,
-            close_radius: s.close_radius,
-            dilate_radius: s.dilate_radius,
-            pad_border: s.pad_border,
-            spur_iterations: s.spur_iterations,
-            split_overlap_threshold: s.split_overlap_threshold,
-            merge_overlap_threshold: s.merge_overlap_threshold,
-            merge_dilate_radius: s.merge_dilate_radius,
-            merge_close_radius: s.merge_close_radius,
-            eccentricity_radius: s.eccentricity_radius,
-        }
+    let seg_params = Some(isi_analysis::params::SegmentationParams {
+        sign_map_filter_sigma: snap.sign_map_filter_sigma(),
+        sign_map_threshold: snap.sign_map_threshold(),
+        open_radius: snap.open_radius(),
+        close_radius: snap.close_radius(),
+        dilate_radius: snap.dilate_radius(),
+        pad_border: snap.pad_border(),
+        spur_iterations: snap.spur_iterations(),
+        split_overlap_threshold: snap.split_overlap_threshold(),
+        merge_overlap_threshold: snap.merge_overlap_threshold(),
+        merge_dilate_radius: snap.merge_dilate_radius(),
+        merge_close_radius: snap.merge_close_radius(),
+        eccentricity_radius: snap.eccentricity_radius(),
     });
+
     let params = isi_analysis::AnalysisParams {
-        smoothing_sigma: config.rig.analysis.smoothing_sigma,
-        rotation_k: config.rig.analysis.rotation_k,
-        azi_angular_range: config.rig.analysis.azi_angular_range,
-        alt_angular_range: config.rig.analysis.alt_angular_range,
-        offset_azi: config.rig.analysis.offset_azi,
-        offset_alt: config.rig.analysis.offset_alt,
-        epsilon: config.rig.analysis.epsilon,
+        smoothing_sigma: snap.smoothing_sigma(),
+        rotation_k: snap.rotation_k(),
+        azi_angular_range: snap.azi_angular_range(),
+        alt_angular_range: snap.alt_angular_range(),
+        offset_azi: snap.offset_azi(),
+        offset_alt: snap.offset_alt(),
+        epsilon: snap.epsilon(),
         segmentation: seg_params,
     };
 
@@ -835,33 +837,27 @@ fn cmd_inspect(args: &[String]) {
                 format!("yes ({})", caps.results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "))
             } else { "no".into() });
             if let Some((h, w)) = caps.dimensions {
-                println!("Dimensions:   {}×{}", w, h);
+                println!("Dimensions:   {}x{}", w, h);
             }
 
-            // Dump unified timeline info if present.
             if let Ok(file) = hdf5::File::open(path) {
-                // Camera unified timestamps.
                 if let Ok(ds) = file.dataset("acquisition/camera/timestamps_sec") {
                     if let Ok(ts) = ds.read_1d::<f64>() {
                         let n = ts.len();
                         if n > 0 {
                             println!("\nUnified timeline (seconds from t=0):");
-                            println!("  Camera frames:  {} (t=[{:.6} .. {:.6}]s)",
-                                n, ts[0], ts[n - 1]);
+                            println!("  Camera frames:  {} (t=[{:.6} .. {:.6}]s)", n, ts[0], ts[n - 1]);
                         }
                     }
                 }
-                // Stimulus unified timestamps.
                 if let Ok(ds) = file.dataset("acquisition/stimulus/timestamps_sec") {
                     if let Ok(ts) = ds.read_1d::<f64>() {
                         let n = ts.len();
                         if n > 0 {
-                            println!("  Stimulus frames: {} (t=[{:.6} .. {:.6}]s)",
-                                n, ts[0], ts[n - 1]);
+                            println!("  Stimulus frames: {} (t=[{:.6} .. {:.6}]s)", n, ts[0], ts[n - 1]);
                         }
                     }
                 }
-                // Schedule unified timestamps.
                 if let Ok(ds) = file.dataset("acquisition/schedule/sweep_start_sec") {
                     if let Ok(starts) = ds.read_1d::<f64>() {
                         if let Ok(ends_ds) = file.dataset("acquisition/schedule/sweep_end_sec") {
@@ -874,7 +870,6 @@ fn cmd_inspect(args: &[String]) {
                         }
                     }
                 }
-                // Timing characterization.
                 if let Ok(tg) = file.group("acquisition/timing") {
                     println!("\nTiming characterization:");
                     if let Ok(attr) = tg.attr("regime") {
@@ -903,7 +898,6 @@ fn cmd_inspect(args: &[String]) {
                         }
                     }
                 }
-                // Clock sync.
                 if let Ok(cs) = file.group("acquisition/clock_sync") {
                     println!("\nClock sync:");
                     if let Ok(attr) = cs.attr("cam_hw_minus_sys_start_us") {
@@ -953,18 +947,17 @@ fn cmd_import(args: &[String]) {
         dir.parent().unwrap_or(dir).join(format!("{name}.oisi"))
     };
 
-    println!("Importing {} → {}", dir.display(), output.display());
+    println!("Importing {} -> {}", dir.display(), output.display());
 
     match isi_analysis::io::import_snlc_directory(dir, &output) {
         Ok(()) => {
             println!("Import complete: {}", output.display());
-            // Show what was created.
             match isi_analysis::io::inspect(&output) {
                 Ok(caps) => {
                     println!("  Complex maps: {}", if caps.has_complex_maps { "yes" } else { "no" });
                     println!("  Anatomical:   {}", if caps.has_anatomical { "yes" } else { "no" });
                     if let Some((h, w)) = caps.dimensions {
-                        println!("  Dimensions:   {}×{}", w, h);
+                        println!("  Dimensions:   {}x{}", w, h);
                     }
                 }
                 Err(e) => eprintln!("  (inspect failed: {e})"),
@@ -985,7 +978,6 @@ fn cmd_test_read(args: &[String]) {
         Err(e) => { eprintln!("Failed to open: {e}"); return; }
     };
 
-    // List all datasets in /results/
     let group = match file.group("results") {
         Ok(g) => g,
         Err(e) => { eprintln!("No results group: {e}"); return; }
@@ -1000,7 +992,6 @@ fn cmd_test_read(args: &[String]) {
                 let shape = ds.shape();
                 let ndim = shape.len();
                 if ndim == 2 {
-                    // Try reading as f64
                     if let Ok(arr) = ds.read_2d::<f64>() {
                         let (h, w) = arr.dim();
                         let min = arr.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -1008,14 +999,12 @@ fn cmd_test_read(args: &[String]) {
                         println!("  {name}: f64 {h}x{w} [{min:.4} .. {max:.4}]");
                         continue;
                     }
-                    // Try as i32
                     if let Ok(arr) = ds.read_2d::<i32>() {
                         let (h, w) = arr.dim();
                         let max = *arr.iter().max().unwrap_or(&0);
                         println!("  {name}: i32 {h}x{w} max={max}");
                         continue;
                     }
-                    // Try as u8
                     if let Ok(arr) = ds.read_2d::<u8>() {
                         let (h, w) = arr.dim();
                         let sum: u64 = arr.iter().map(|&v| v as u64).sum();
@@ -1063,13 +1052,11 @@ fn cmd_import_session(args: &[String]) {
         session_dir.parent().unwrap_or(session_dir).join(format!("{name}.oisi"))
     };
 
-    println!("Importing session {} → {}", session_dir.display(), output.display());
+    println!("Importing session {} -> {}", session_dir.display(), output.display());
 
-    // Read pre-computed results.
     let results_file = hdf5::File::open(&results_path)
         .unwrap_or_else(|e| exit_err(&format!("Failed to open retinotopy_results.h5: {e}")));
 
-    // Read per-direction complex maps: magnitude * exp(i * phase)
     let read_complex = |dir: &str| -> Option<ndarray::Array2<isi_analysis::Complex64>> {
         let grp = results_file.group(dir).ok()?;
         let mag: ndarray::Array2<f64> = grp.dataset("magnitude").ok()?.read().ok()?;
@@ -1087,7 +1074,6 @@ fn cmd_import_session(args: &[String]) {
 
     let complex_maps = isi_analysis::ComplexMaps { azi_fwd, azi_rev, alt_fwd, alt_rev };
 
-    // Create .oisi and write complex maps.
     isi_analysis::io::create(&output, "session_import")
         .unwrap_or_else(|e| exit_err(&format!("Failed to create .oisi: {e}")));
     isi_analysis::io::write_complex_maps(&output, &complex_maps)
@@ -1095,99 +1081,42 @@ fn cmd_import_session(args: &[String]) {
 
     // Import anatomical if present.
     if anat_path.exists() {
-        if let Ok(img_bytes) = std::fs::read(&anat_path) {
-            if let Ok(img) = image_to_gray_array(&img_bytes) {
-                if let Err(e) = isi_analysis::io::write_anatomical(&output, &img) {
-                    exit_err(&format!("Failed to write anatomical: {e}"));
+        let file_bytes = std::fs::read(&anat_path)
+            .unwrap_or_else(|e| exit_err(&format!("Failed to read anatomical: {e}")));
+        let decoder = png::Decoder::new(std::io::Cursor::new(&file_bytes));
+        match decoder.read_info() {
+            Ok(mut reader) => {
+                let mut buf = vec![0u8; reader.output_buffer_size()];
+                if let Ok(info) = reader.next_frame(&mut buf) {
+                    let (w, h) = (info.width as usize, info.height as usize);
+                    // Convert to grayscale u8 if needed.
+                    let gray: Vec<u8> = match info.color_type {
+                        png::ColorType::Grayscale => buf[..w * h].to_vec(),
+                        png::ColorType::GrayscaleAlpha => buf[..w * h * 2].chunks(2).map(|c| c[0]).collect(),
+                        png::ColorType::Rgb => buf[..w * h * 3].chunks(3)
+                            .map(|c| ((c[0] as u16 + c[1] as u16 + c[2] as u16) / 3) as u8).collect(),
+                        png::ColorType::Rgba => buf[..w * h * 4].chunks(4)
+                            .map(|c| ((c[0] as u16 + c[1] as u16 + c[2] as u16) / 3) as u8).collect(),
+                        _ => { eprintln!("  Unsupported PNG color type for anatomical"); Vec::new() }
+                    };
+                    if !gray.is_empty() {
+                        let arr = ndarray::Array2::from_shape_vec((h, w), gray)
+                            .unwrap_or_else(|e| exit_err(&format!("Shape error: {e}")));
+                        let file = hdf5::File::open_rw(&output)
+                            .unwrap_or_else(|e| exit_err(&format!("Failed to open .oisi for anatomical: {e}")));
+                        file.new_dataset_builder()
+                            .with_data(&arr)
+                            .create("anatomical")
+                            .unwrap_or_else(|e| exit_err(&format!("Failed to write anatomical: {e}")));
+                        println!("  Anatomical: {}x{}", w, h);
+                    }
                 }
-                println!("  Anatomical: {}x{}", img.dim().1, img.dim().0);
             }
+            Err(e) => eprintln!("  Skipping anatomical ({}): {e}", anat_path.display()),
         }
     }
 
     println!("Import complete: {}", output.display());
-
-    // Run analysis.
-    let (config, _) = load_config();
-    let seg_params = config.rig.analysis.segmentation.as_ref().map(|s| {
-        isi_analysis::params::SegmentationParams {
-            sign_map_filter_sigma: s.sign_map_filter_sigma,
-            sign_map_threshold: s.sign_map_threshold,
-            open_radius: s.open_radius,
-            close_radius: s.close_radius,
-            dilate_radius: s.dilate_radius,
-            pad_border: s.pad_border,
-            spur_iterations: s.spur_iterations,
-            split_overlap_threshold: s.split_overlap_threshold,
-            merge_overlap_threshold: s.merge_overlap_threshold,
-            merge_dilate_radius: s.merge_dilate_radius,
-            merge_close_radius: s.merge_close_radius,
-            eccentricity_radius: s.eccentricity_radius,
-        }
-    });
-    let params = isi_analysis::AnalysisParams {
-        smoothing_sigma: config.rig.analysis.smoothing_sigma,
-        rotation_k: config.rig.analysis.rotation_k,
-        azi_angular_range: config.rig.analysis.azi_angular_range,
-        alt_angular_range: config.rig.analysis.alt_angular_range,
-        offset_azi: config.rig.analysis.offset_azi,
-        offset_alt: config.rig.analysis.offset_alt,
-        epsilon: config.rig.analysis.epsilon,
-        segmentation: seg_params,
-    };
-
-    println!("Analyzing...");
-    let progress = isi_analysis::SilentProgress;
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    match isi_analysis::analyze(&output, &params, &progress, &cancel) {
-        Ok(()) => println!("Analysis complete"),
-        Err(e) => eprintln!("Analysis failed: {e}"),
-    }
-}
-
-/// Decode a PNG file to a grayscale Array2<u8>.
-fn image_to_gray_array(png_bytes: &[u8]) -> Result<ndarray::Array2<u8>, String> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-    let mut reader = decoder.read_info().map_err(|e| format!("PNG decode: {e}"))?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).map_err(|e| format!("PNG frame: {e}"))?;
-    let w = info.width as usize;
-    let h = info.height as usize;
-
-    let bytes_per_sample = match info.bit_depth {
-        png::BitDepth::Sixteen => 2,
-        _ => 1,
-    };
-
-    // Convert to grayscale u8 with auto-contrast for 16-bit.
-    let gray: Vec<u8> = match (info.color_type, bytes_per_sample) {
-        (png::ColorType::Grayscale, 1) => buf[..h * w].to_vec(),
-        (png::ColorType::Grayscale, 2) => {
-            // 16-bit grayscale: read as big-endian u16, auto-contrast to u8.
-            let pixels: Vec<u16> = buf[..h * w * 2].chunks(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let min = *pixels.iter().min().unwrap_or(&0);
-            let max = *pixels.iter().max().unwrap_or(&0);
-            let range = (max - min).max(1) as f64;
-            pixels.iter().map(|&p| ((p - min) as f64 / range * 255.0) as u8).collect()
-        }
-        (png::ColorType::GrayscaleAlpha, _) => {
-            let step = 2 * bytes_per_sample;
-            buf[..h * w * step].chunks(step).map(|c| if bytes_per_sample == 2 { (u16::from_be_bytes([c[0], c[1]]) >> 8) as u8 } else { c[0] }).collect()
-        }
-        (png::ColorType::Rgb, _) => {
-            let step = 3 * bytes_per_sample;
-            buf[..h * w * step].chunks(step).map(|c| ((c[0] as u16 + c[1] as u16 + c[2] as u16) / 3) as u8).collect()
-        }
-        (png::ColorType::Rgba, _) => {
-            let step = 4 * bytes_per_sample;
-            buf[..h * w * step].chunks(step).map(|c| ((c[0] as u16 + c[1] as u16 + c[2] as u16) / 3) as u8).collect()
-        }
-        _ => return Err("Unsupported color type".into()),
-    };
-
-    ndarray::Array2::from_shape_vec((h, w), gray).map_err(|e| format!("Shape: {e}"))
 }
 
 fn cmd_dump_h5(args: &[String]) {
@@ -1195,61 +1124,24 @@ fn cmd_dump_h5(args: &[String]) {
         eprintln!("Usage: headless dump-h5 <file.h5>");
         return;
     }
-    let file = match hdf5::File::open(&args[0]) {
+    let path = &args[0];
+    let file = match hdf5::File::open(path) {
         Ok(f) => f,
         Err(e) => { eprintln!("Failed to open: {e}"); return; }
     };
-    println!("File: {}", args[0]);
-    dump_group(&file, "", 0);
-}
 
-fn dump_group(loc: &hdf5::Group, prefix: &str, depth: usize) {
-    let indent = "  ".repeat(depth);
-    let names = loc.member_names().unwrap_or_default();
-    for name in &names {
-        let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-        if let Ok(ds) = loc.dataset(name) {
-            let shape = ds.shape();
-            let dtype_str = ds.dtype().map(|d| format!("{:?}", d)).unwrap_or_else(|_| "?".into());
-            // Try to show a sample value
-            if shape.len() == 0 {
-                println!("{indent}{name}: scalar");
-            } else if shape.len() == 1 && shape[0] <= 20 {
-                if let Ok(arr) = ds.read_1d::<f64>() {
-                    println!("{indent}{name}: f64[{}] = {:?}", shape[0], &arr.to_vec()[..shape[0].min(10)]);
-                } else if let Ok(arr) = ds.read_1d::<i64>() {
-                    println!("{indent}{name}: i64[{}] = {:?}", shape[0], &arr.to_vec()[..shape[0].min(10)]);
-                } else {
-                    println!("{indent}{name}: {:?} dtype={dtype_str}", shape);
-                }
-            } else if shape.len() == 2 {
-                if let Ok(arr) = ds.read_2d::<f64>() {
-                    let min = arr.iter().cloned().fold(f64::INFINITY, f64::min);
-                    let max = arr.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    println!("{indent}{name}: f64 {}x{} [{min:.4} .. {max:.4}]", shape[0], shape[1]);
-                } else if let Ok(arr) = ds.read_2d::<u16>() {
-                    let min = *arr.iter().min().unwrap_or(&0);
-                    let max = *arr.iter().max().unwrap_or(&0);
-                    println!("{indent}{name}: u16 {}x{} [{min} .. {max}]", shape[0], shape[1]);
-                } else {
-                    println!("{indent}{name}: {:?} dtype={dtype_str}", shape);
-                }
-            } else if shape.len() == 3 {
-                println!("{indent}{name}: {:?} dtype={dtype_str}", shape);
-            } else {
-                println!("{indent}{name}: {:?}", shape);
-            }
-        } else if let Ok(grp) = loc.group(name) {
-            println!("{indent}{name}/");
-            dump_group(&grp, &path, depth + 1);
-        }
-        // Check for attributes
-        if let Ok(grp) = loc.group(name) {
-            for attr_name in grp.attr_names().unwrap_or_default() {
-                if let Ok(_attr) = grp.attr(&attr_name) {
-                    println!("{indent}  @{attr_name}");
-                }
+    fn dump_group(group: &hdf5::Group, prefix: &str) {
+        let names = group.member_names().unwrap_or_default();
+        for name in &names {
+            let full = format!("{prefix}/{name}");
+            if let Ok(sub) = group.group(name) {
+                println!("{full}/ (group)");
+                dump_group(&sub, &full);
+            } else if let Ok(ds) = group.dataset(name) {
+                println!("{full} {:?}", ds.shape());
             }
         }
     }
+
+    dump_group(&file.as_group().unwrap(), "");
 }

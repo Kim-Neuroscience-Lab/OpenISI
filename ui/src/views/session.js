@@ -3,6 +3,7 @@
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+import { buildParamInput, buildParamGroup, wireParamListeners, applyParamChanges, fetchGroupDescriptors } from '../param-form.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Section definitions
@@ -576,11 +577,20 @@ async function renderProtocol(body) {
     }
 
     const p = exp.stimulus.params;
-    const g = exp.geometry;
 
     // Load available saved experiments.
     let savedExperiments = [];
     try { savedExperiments = await invoke("list_experiments"); } catch (_) {}
+
+    // Fetch descriptor groups for stimulus, geometry, and timing.
+    const stimulusDescs = await fetchGroupDescriptors(invoke, "stimulus");
+    const geometryDescs = await fetchGroupDescriptors(invoke, "geometry");
+    const timingDescs = await fetchGroupDescriptors(invoke, "timing");
+
+    // Build descriptor-driven HTML for each group.
+    const stimulusHTML = stimulusDescs.map(buildParamInput).filter(Boolean).join('\n');
+    const geometryHTML = geometryDescs.map(buildParamInput).filter(Boolean).join('\n');
+    const timingHTML = timingDescs.map(buildParamInput).filter(Boolean).join('\n');
 
     body.innerHTML = `
         <div class="card">
@@ -602,69 +612,12 @@ async function renderProtocol(body) {
             <h3>Stimulus</h3>
             <input type="hidden" id="proto-rotation" value="${p.rotation_deg}">
             <div class="form-grid-3">
-                <div class="form-row">
-                    <label>Projection</label>
-                    <select id="proto-proj" style="width:100%">
-                        <option value="cartesian" ${g.projection === "cartesian" ? "selected" : ""}>Cartesian</option>
-                        <option value="spherical" ${g.projection === "spherical" ? "selected" : ""}>Spherical</option>
-                        <option value="cylindrical" ${g.projection === "cylindrical" ? "selected" : ""}>Cylindrical</option>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <label>Envelope</label>
-                    <select id="proto-envelope" style="width:100%">
-                        <option value="bar" ${exp.stimulus.envelope === "bar" ? "selected" : ""}>Bar</option>
-                        <option value="wedge" ${exp.stimulus.envelope === "wedge" ? "selected" : ""}>Wedge</option>
-                        <option value="ring" ${exp.stimulus.envelope === "ring" ? "selected" : ""}>Ring</option>
-                        <option value="fullfield" ${exp.stimulus.envelope === "fullfield" ? "selected" : ""}>Fullfield</option>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <label>Carrier</label>
-                    <select id="proto-carrier" style="width:100%">
-                        <option value="solid" ${exp.stimulus.carrier === "solid" ? "selected" : ""}>Solid</option>
-                        <option value="checkerboard" ${exp.stimulus.carrier === "checkerboard" ? "selected" : ""}>Checkerboard</option>
-                    </select>
-                </div>
-
-                <div class="form-row">
-                    <label>BG luminance</label>
-                    <input type="number" id="proto-bglum" step="0.05" min="0" max="1" value="${p.background_luminance}" style="width:55px">
-                </div>
-                <div class="form-row">
-                    <label>Stimulus luminance</label>
-                    <input type="number" id="proto-meanlum" step="0.05" min="0" max="1" value="${p.mean_luminance}" style="width:55px">
-                </div>
-                <div class="form-row">
-                    <label>Contrast</label>
-                    <input type="number" id="proto-contrast" step="0.05" min="0" max="1" value="${p.contrast}" style="width:55px">
-                </div>
-
-                <div class="form-row">
-                    <label>Flicker frequency</label>
-                    <input type="number" id="proto-strobe" step="0.5" min="0" max="30" value="${p.strobe_frequency_hz}" style="width:55px"> Hz
-                </div>
-                <div class="form-row" id="envelope-speed-slot"></div>
-                <div class="form-row"></div>
-
-                <div class="form-row" id="envelope-width-slot"></div>
-                <div class="form-row">
-                    <label>Checker size</label>
-                    <input type="number" id="proto-checkdeg" step="0.5" min="0.1" max="90" value="${p.check_size_deg}" style="width:55px"> \u00b0
-                </div>
-                <div class="form-row"></div>
-
-                <div class="form-row">
-                    <label>Azimuth center</label>
-                    <input type="number" id="proto-hoff" step="1" min="-180" max="180" value="${g.horizontal_offset_deg}" style="width:55px"> \u00b0
-                </div>
-                <div class="form-row">
-                    <label>Altitude center</label>
-                    <input type="number" id="proto-voff" step="1" min="-90" max="90" value="${g.vertical_offset_deg}" style="width:55px"> \u00b0
-                </div>
-                <div class="form-row"></div>
+                ${stimulusHTML}
             </div>
-            <div id="envelope-params" style="display:none"></div>
+        </div>
+        <div class="card">
+            <h3>Geometry</h3>
+            ${geometryHTML}
         </div>
         <div style="display:flex; gap:12px;">
             <div class="card" style="flex:1;">
@@ -688,22 +641,7 @@ async function renderProtocol(body) {
             </div>
             <div class="card" style="flex:1;">
                 <h3>Timing</h3>
-                <div class="form-row">
-                    <label>Pre-stimulus wait</label>
-                    <input type="number" id="proto-bstart" step="0.5" min="0" max="60" value="${exp.timing.baseline_start_sec}" style="width:60px"> s
-                </div>
-                <div class="form-row">
-                    <label>Post-stimulus wait</label>
-                    <input type="number" id="proto-bend" step="0.5" min="0" max="60" value="${exp.timing.baseline_end_sec}" style="width:60px"> s
-                </div>
-                <div class="form-row">
-                    <label>Between sweeps</label>
-                    <input type="number" id="proto-istim" step="0.5" min="0" max="30" value="${exp.timing.inter_stimulus_sec}" style="width:60px"> s
-                </div>
-                <div class="form-row">
-                    <label>Between directions</label>
-                    <input type="number" id="proto-idir" step="0.5" min="0" max="30" value="${exp.timing.inter_direction_sec}" style="width:60px"> s
-                </div>
+                ${timingHTML}
             </div>
         </div>
         <div class="card">
@@ -732,12 +670,27 @@ async function renderProtocol(body) {
         if (el) el.innerHTML = `<span class="mono-value" style="color: var(--text-muted)">Select a display to compute duration</span>`;
     }
 
-    // Auto-save on any change with debounce.
+    // Wire descriptor-driven param inputs: set_params on change, refresh duration after.
+    wireParamListeners(body, invoke, async () => {
+        try {
+            const dur = await invoke("get_duration_summary");
+            const el = document.getElementById("duration-summary");
+            if (el) el.innerHTML = `<span class="mono-value">${dur.sweep_count} sweeps \u00d7 ${dur.sweep_duration_sec.toFixed(1)}s = ${dur.formatted}</span>`;
+        } catch (_) {}
+
+        // If preview is running, restart it with new params.
+        if (previewStatus && previewStatus.textContent === "Running") {
+            await invoke("stop_preview");
+            await invoke("start_preview");
+        }
+    });
+
+    // Auto-save for custom fields (conditions, order, reps) that aren't in the registry.
     let saveTimeout;
     let previewStatus = null;
     function scheduleAutoSave() {
         clearTimeout(saveTimeout);
-        saveTimeout = setTimeout(autoSaveExperiment, 500);
+        saveTimeout = setTimeout(autoSaveCustomFields, 500);
     }
 
     // Experiment picker — load a saved experiment.
@@ -772,38 +725,6 @@ async function renderProtocol(body) {
         ring: ["Expand", "Contract"],
         fullfield: ["On"],
     };
-
-    // Build envelope-specific parameter inputs.
-    function buildEnvelopeParams(envelope) {
-        const widthSlot = document.getElementById("envelope-width-slot");
-        const speedSlot = document.getElementById("envelope-speed-slot");
-        if (!widthSlot || !speedSlot) return;
-
-        const envName = envelope === "wedge" ? "Wedge" : envelope === "ring" ? "Ring" : "Bar";
-
-        if (envelope === "fullfield") {
-            widthSlot.innerHTML = "";
-            speedSlot.innerHTML = "";
-        } else {
-            widthSlot.innerHTML = `<label>${envName} width</label><input type="number" id="proto-width" step="1" min="1" max="180" value="${p.stimulus_width_deg}" style="width:55px"> \u00b0`;
-
-            if (envelope === "bar") {
-                speedSlot.innerHTML = `<label>${envName} speed</label><input type="number" id="proto-speed" step="0.5" min="0.1" max="180" value="${p.sweep_speed_deg_per_sec}" style="width:55px"> \u00b0/s`;
-            } else if (envelope === "wedge") {
-                speedSlot.innerHTML = `<label>${envName} speed</label><input type="number" id="proto-rotspeed" step="0.5" min="0.1" max="180" value="${p.rotation_speed_deg_per_sec}" style="width:55px"> \u00b0/s`;
-            } else if (envelope === "ring") {
-                speedSlot.innerHTML = `<label>${envName} speed</label><input type="number" id="proto-expspeed" step="0.5" min="0.1" max="180" value="${p.expansion_speed_deg_per_sec}" style="width:55px"> \u00b0/s`;
-            }
-        }
-
-        // Wire auto-save on new inputs.
-        [widthSlot, speedSlot].forEach(slot => {
-            slot.querySelectorAll("input").forEach(el =>
-                el.addEventListener("change", scheduleAutoSave));
-        });
-    }
-
-    buildEnvelopeParams(exp.stimulus.envelope);
 
     // Conditions list — orderable, toggleable.
     // `activeConditions` is the ordered list of enabled conditions (the SSoT).
@@ -927,49 +848,26 @@ async function renderProtocol(body) {
 
     buildConditionsList(exp.stimulus.envelope);
 
-    // When envelope changes, update conditions pool and visible params.
-    document.getElementById("proto-envelope").addEventListener("change", (e) => {
-        const newEnvelope = e.target.value;
-        const pool = envelopeConditions[newEnvelope] || [];
-        // Reset active conditions to the full pool for the new envelope.
-        activeConditions = [...pool];
-        buildConditionsList(newEnvelope);
-        buildEnvelopeParams(newEnvelope);
-        scheduleAutoSave();
-    });
+    // When envelope changes via descriptor (params:changed will show/hide speed fields),
+    // also update the conditions pool.
+    const envelopeEl = body.querySelector('[data-param-id="stimulus.envelope"]');
+    if (envelopeEl) {
+        envelopeEl.addEventListener("change", () => {
+            const newEnvelope = envelopeEl.value;
+            const pool = envelopeConditions[newEnvelope] || [];
+            activeConditions = [...pool];
+            buildConditionsList(newEnvelope);
+            scheduleAutoSave();
+        });
+    }
 
-    async function autoSaveExperiment() {
-        const updated = await invoke("get_experiment");
-        updated.geometry.horizontal_offset_deg = parseFloat(document.getElementById("proto-hoff").value);
-        updated.geometry.vertical_offset_deg = parseFloat(document.getElementById("proto-voff").value);
-        updated.geometry.projection = document.getElementById("proto-proj").value;
-
-        const envelope = document.getElementById("proto-envelope").value;
-        updated.stimulus.envelope = envelope;
-        updated.stimulus.carrier = document.getElementById("proto-carrier").value;
-        // Read envelope-specific params (only the ones currently in DOM).
-        const readVal = (id, fallback) => { const el = document.getElementById(id); return el ? parseFloat(el.value) : fallback; };
-        updated.stimulus.params.stimulus_width_deg = readVal("proto-width", updated.stimulus.params.stimulus_width_deg);
-        updated.stimulus.params.sweep_speed_deg_per_sec = readVal("proto-speed", updated.stimulus.params.sweep_speed_deg_per_sec);
-        updated.stimulus.params.rotation_speed_deg_per_sec = readVal("proto-rotspeed", updated.stimulus.params.rotation_speed_deg_per_sec);
-        updated.stimulus.params.expansion_speed_deg_per_sec = readVal("proto-expspeed", updated.stimulus.params.expansion_speed_deg_per_sec);
-        updated.stimulus.params.rotation_deg = parseFloat(document.getElementById("proto-rotation").value);
-        updated.stimulus.params.contrast = parseFloat(document.getElementById("proto-contrast").value);
-        updated.stimulus.params.mean_luminance = parseFloat(document.getElementById("proto-meanlum").value);
-        updated.stimulus.params.background_luminance = parseFloat(document.getElementById("proto-bglum").value);
-        updated.stimulus.params.check_size_deg = parseFloat(document.getElementById("proto-checkdeg").value);
-        updated.stimulus.params.strobe_frequency_hz = parseFloat(document.getElementById("proto-strobe").value);
-
-        // Update conditions from the user's ordered/filtered list.
-        updated.presentation.conditions = [...activeConditions];
-        updated.presentation.repetitions = parseInt(document.getElementById("proto-reps").value);
-        updated.presentation.order = document.getElementById("proto-order").value;
-
-        updated.timing.baseline_start_sec = parseFloat(document.getElementById("proto-bstart").value);
-        updated.timing.baseline_end_sec = parseFloat(document.getElementById("proto-bend").value);
-        updated.timing.inter_stimulus_sec = parseFloat(document.getElementById("proto-istim").value);
-        updated.timing.inter_direction_sec = parseFloat(document.getElementById("proto-idir").value);
+    // Save custom fields (conditions, order, reps) that aren't in the descriptor registry.
+    async function autoSaveCustomFields() {
         try {
+            const updated = await invoke("get_experiment");
+            updated.presentation.conditions = [...activeConditions];
+            updated.presentation.repetitions = parseInt(document.getElementById("proto-reps").value);
+            updated.presentation.order = document.getElementById("proto-order").value;
             await invoke("update_experiment", { config: updated });
 
             // Refresh duration summary.
@@ -978,21 +876,18 @@ async function renderProtocol(body) {
                 const el = document.getElementById("duration-summary");
                 if (el) el.innerHTML = `<span class="mono-value">${dur.sweep_count} sweeps \u00d7 ${dur.sweep_duration_sec.toFixed(1)}s = ${dur.formatted}</span>`;
             } catch (_) {}
-
-            // If preview is running, restart it with new params.
-            if (previewStatus && previewStatus.textContent === "Running") {
-                await invoke("stop_preview");
-                await invoke("start_preview");
-            }
         } catch (e) {
-            console.error("auto-save experiment:", e);
+            console.error("auto-save custom fields:", e);
         }
     }
 
-    // Wire up all inputs to auto-save.
-    body.querySelectorAll("input, select").forEach(el => {
-        el.addEventListener("change", scheduleAutoSave);
-        el.addEventListener("input", scheduleAutoSave);
+    // Wire custom fields (non-descriptor) to auto-save.
+    ["proto-reps", "proto-order"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener("change", scheduleAutoSave);
+            el.addEventListener("input", scheduleAutoSave);
+        }
     });
 
     previewStatus = document.createElement("span");

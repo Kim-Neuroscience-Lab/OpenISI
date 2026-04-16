@@ -858,6 +858,15 @@ async function updateStatusBar() {
 // ═══════════════════════════════════════════════════════════════════════
 
 async function setupGlobalListeners() {
+    // Reactive parameter registry: patch DOM when params change server-side.
+    const { applyParamChanges } = await import('./param-form.js');
+    await listen("params:changed", (event) => {
+        const container = document.getElementById("content");
+        if (container && event.payload?.changes) {
+            applyParamChanges(container, event.payload.changes);
+        }
+    });
+
     await listen("camera:status", (event) => {
         const d = event.payload;
         const el = document.getElementById("status-camera");

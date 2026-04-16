@@ -1,11 +1,11 @@
 pub mod camera_thread;
 pub mod commands;
-pub mod config;
 pub mod error;
 pub mod events;
 pub mod export;
 pub mod messages;
 pub mod monitor;
+pub mod params;
 pub mod session;
 pub mod state;
 pub mod stimulus_thread;
@@ -13,12 +13,12 @@ pub mod timing;
 
 use std::sync::{Arc, Mutex};
 
-use config::ConfigManager;
+use params::Registry;
 use state::AppState;
 
 pub fn run() {
     // Load config from the config directory.
-    // Try: 1) <exe_dir>/../config  2) <exe_dir>/config  3) ./config
+    // Try: 1) <exe_dir>/config  2) <exe_dir>/../config  3) <exe_dir>/../../config
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -26,18 +26,17 @@ pub fn run() {
 
     let config_dir = find_config_dir(&exe_dir);
 
-    let config = match ConfigManager::load(&config_dir) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!(
-                "[openisi] Failed to load config from {}: {e}",
-                config_dir.display()
-            );
-            std::process::exit(1);
-        }
-    };
+    let mut registry = Registry::new(&config_dir);
+    if let Err(e) = registry.load_rig() {
+        eprintln!("[openisi] Failed to load rig params from {}: {e}", config_dir.display());
+        std::process::exit(1);
+    }
+    if let Err(e) = registry.load_experiment() {
+        eprintln!("[openisi] Failed to load experiment params from {}: {e}", config_dir.display());
+        std::process::exit(1);
+    }
 
-    start_tauri(config);
+    start_tauri(registry);
 }
 
 /// Build the list of candidate config directories relative to the given exe directory.
@@ -70,7 +69,7 @@ fn find_config_dir(exe_dir: &std::path::Path) -> std::path::PathBuf {
         })
 }
 
-fn start_tauri(config: ConfigManager) {
+fn start_tauri(registry: Registry) {
     // Create channels for stimulus thread
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
@@ -80,7 +79,7 @@ fn start_tauri(config: ConfigManager) {
     let (cam_evt_tx, cam_evt_rx) = crossbeam_channel::unbounded();
 
     // Build app state
-    let mut app_state = AppState::new(config);
+    let mut app_state = AppState::new(registry);
 
     app_state.threads.stimulus_tx = Some(stim_cmd_tx);
     app_state.threads.stimulus_rx = Some(stim_evt_rx);
@@ -99,23 +98,33 @@ fn start_tauri(config: ConfigManager) {
     }
     app_state.monitors = monitors;
 
-    // Spawn camera thread (direct PCO SDK, no daemon needed).
-    // The camera thread receives a snapshot of SystemTuning at startup.
-    // Invariant: no command modifies rig.system at runtime, so this snapshot
-    // stays in sync for the lifetime of the thread. If a command that writes
-    // to rig.system is ever added, the camera thread must be notified via a
-    // new CameraCmd::UpdateConfig message.
-    let cam_cfg = match app_state.config.lock() {
-        Ok(cfg) => cfg.rig.system.clone(),
+    // Spawn camera thread (direct PCO SDK via FFI).
+    // The camera thread receives system tuning values at startup.
+    // Invariant: no command modifies system tuning at runtime, so these snapshots
+    // stay in sync for the lifetime of the thread.
+    let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
+         cam_frame_send_interval_ms, cam_poll_interval_ms) = match app_state.registry.lock() {
+        Ok(reg) => (
+            reg.camera_first_frame_timeout_ms(),
+            reg.camera_first_frame_poll_ms(),
+            reg.camera_frame_send_interval_ms(),
+            reg.camera_poll_interval_ms(),
+        ),
         Err(_) => {
-            eprintln!("[openisi] config lock poisoned during initialization");
+            eprintln!("[openisi] registry lock poisoned during initialization");
             std::process::exit(1);
         }
     };
     if let Err(e) = std::thread::Builder::new()
         .name("camera".into())
         .spawn(move || {
-            camera_thread::run(cam_cmd_rx, cam_evt_tx, cam_cfg);
+            camera_thread::run(
+                cam_cmd_rx, cam_evt_tx,
+                cam_first_frame_timeout_ms,
+                cam_first_frame_poll_ms,
+                cam_frame_send_interval_ms,
+                cam_poll_interval_ms,
+            );
         })
     {
         eprintln!("[openisi] Failed to spawn camera thread: {e}");
@@ -133,6 +142,13 @@ fn start_tauri(config: ConfigManager) {
         .plugin(tauri_plugin_dialog::init())
         .manage(shared_state.clone())
         .setup(move |app| {
+            // Inject the Tauri app handle into the registry for event emission.
+            {
+                let state = shared_state.lock().unwrap();
+                let mut reg = state.registry.lock().unwrap();
+                reg.set_app_handle(app.handle().clone());
+            }
+
             // Start the event forwarding loop — bridges crossbeam channels to Tauri events.
             let handle = app.handle().clone();
             let state_for_events = shared_state.clone();
@@ -200,6 +216,9 @@ fn start_tauri(config: ConfigManager) {
             // Workspace state
             commands::acquire::get_session,
             commands::acquire::get_workspace_status,
+            // Parameter registry
+            crate::params::commands::get_param_descriptors,
+            crate::params::commands::set_params,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

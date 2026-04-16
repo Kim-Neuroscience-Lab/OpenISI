@@ -1,18 +1,16 @@
 //! Application state shared across Tauri commands.
 //!
 //! Layered state with clear ownership:
-//! - `rig`: persistent config (Arc<Mutex<ConfigManager>>)
-//! - `experiment`: current working experiment
+//! - `registry`: persistent config (Arc<Mutex<Registry>>) — single source of truth
 //! - `session`: volatile hardware state (resets each launch)
 //! - `acquisition`: in-flight acquisition data (only during recording)
 //! - `threads`: channel handles for background threads
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::config::{ConfigManager, DisplaySettings, Experiment, RigGeometry};
+use crate::params::{Registry, RegistrySnapshot};
 use crate::export::{AcquisitionAccumulator, HardwareSnapshot};
 use crate::messages::{CameraCmd, CameraEvt, StimulusCmd, StimulusEvt};
 use crate::session::{MonitorInfo, Session};
@@ -49,16 +47,8 @@ pub struct AcquisitionState {
     /// Accumulates camera frames tagged by stimulus cycle.
     pub accumulator: AcquisitionAccumulator,
     // ── Acquisition-time snapshots (frozen at start) ────────────────
-    /// The experiment configuration used for this acquisition.
-    pub experiment: Experiment,
-    /// Rig geometry (viewing distance) at acquisition time.
-    pub rig_geometry: RigGeometry,
-    /// Camera exposure in microseconds at acquisition time.
-    pub camera_exposure_us: u32,
-    /// Camera pixel binning factor at acquisition time.
-    pub camera_binning: u16,
-    /// Display settings (rotation, target FPS) at acquisition time.
-    pub display_settings: DisplaySettings,
+    /// All parameter values frozen at acquisition start.
+    pub snapshot: RegistrySnapshot,
     /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
     pub hardware_snapshot: Option<HardwareSnapshot>,
     /// Timing characterization frozen at acquisition start.
@@ -96,23 +86,18 @@ pub struct AcquisitionSummary {
 // =============================================================================
 
 /// Application state managed by Tauri. Layered by lifecycle:
-/// - `rig`: read at startup, written on explicit user changes
-/// - `experiment`: loaded at startup, modified by user
+/// - `registry`: persistent config, read at startup, written on explicit user changes
 /// - `session`: volatile hardware state, resets each launch
 /// - `acquisition`: only exists during recording
 pub struct AppState {
-    // ── Rig config (persistent) ─────────────────────────────────────
-    pub config: Arc<Mutex<ConfigManager>>,
+    // ── Parameter registry (single source of truth for all config) ──
+    pub registry: Arc<Mutex<Registry>>,
 
-    // ── Experiment (persistent, current working state) ──────────────
-    pub experiment: Experiment,
-    pub experiment_path: Option<PathBuf>,
-
-    // ── Session (volatile hardware state) ───────────────────────────
+    // ── Session (volatile hardware state) ───────��───────────────────
     pub session: Session,
     pub monitors: Vec<MonitorInfo>,
 
-    // ── Thread handles ──────────────────────────────────────────────
+    // ── Thread handles ───────��────────────────────────────────���─────
     pub threads: ThreadHandles,
 
     // ── Camera preview ──────────────────────────────────────────────
@@ -147,41 +132,21 @@ pub struct PendingSave {
     pub schedule: crate::export::SweepSchedule,
     pub completed_normally: bool,
     // ── Acquisition-time snapshots (frozen at start) ──────────────
-    /// Experiment configuration frozen at acquisition start.
-    pub experiment: Experiment,
+    /// All parameter values frozen at acquisition start.
+    pub snapshot: RegistrySnapshot,
     /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
     pub hardware_snapshot: Option<HardwareSnapshot>,
     /// Timing characterization frozen at acquisition start.
     pub timing_characterization: Option<TimingCharacterization>,
-    /// Rig geometry (viewing distance) at acquisition time.
-    pub rig_geometry: RigGeometry,
-    /// Camera exposure in microseconds at acquisition time.
-    pub camera_exposure_us: u32,
-    /// Camera pixel binning factor at acquisition time.
-    pub camera_binning: u16,
-    /// Display settings (rotation, target FPS) at acquisition time.
-    pub display_settings: DisplaySettings,
 }
 
 impl AppState {
-    /// Create initial state with config.
-    pub fn new(config: ConfigManager) -> Self {
-        // Load experiment from disk at startup.
-        let exp_path = config.experiment_path();
-        let experiment = match Experiment::load(&exp_path) {
-            Ok(exp) => exp,
-            Err(e) => {
-                eprintln!("[state] Failed to load experiment from {}: {e}", exp_path.display());
-                std::process::exit(1);
-            }
-        };
-
+    /// Create initial state with a loaded registry.
+    pub fn new(registry: Registry) -> Self {
         let session = Session::new();
 
         Self {
-            config: Arc::new(Mutex::new(config)),
-            experiment,
-            experiment_path: None,
+            registry: Arc::new(Mutex::new(registry)),
             session,
             monitors: Vec::new(),
             threads: ThreadHandles {
@@ -230,20 +195,35 @@ impl AppState {
         let width = monitor.width_px;
         let height = monitor.height_px;
         let position = monitor.position;
-        let system_cfg = match self.config.lock() {
-            Ok(cfg) => cfg.rig.system.clone(),
+
+        // Read system tuning and initial background from registry.
+        let (preview_width_px, preview_interval_ms, preview_cycle_sec,
+             idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
+             drop_detection_threshold, initial_bg) = match self.registry.lock() {
+            Ok(reg) => (
+                reg.preview_width_px(),
+                reg.preview_interval_ms(),
+                reg.preview_cycle_sec(),
+                reg.idle_sleep_ms(),
+                reg.fps_window_frames(),
+                reg.drop_detection_warmup_frames(),
+                reg.drop_detection_threshold(),
+                reg.background_luminance(),
+            ),
             Err(_) => {
-                eprintln!("[state] config lock poisoned in spawn_stimulus_thread");
+                eprintln!("[state] registry lock poisoned in spawn_stimulus_thread");
                 return;
             }
         };
-        let initial_bg = self.experiment.stimulus.params.background_luminance;
 
         if let Err(e) = std::thread::Builder::new()
             .name("stimulus".into())
             .spawn(move || {
                 crate::stimulus_thread::run(
-                    cmd_rx, evt_tx, monitor_index, width, height, position, system_cfg, initial_bg,
+                    cmd_rx, evt_tx, monitor_index, width, height, position,
+                    preview_width_px, preview_interval_ms, preview_cycle_sec,
+                    idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
+                    drop_detection_threshold, initial_bg,
                 );
             })
         {
@@ -260,11 +240,7 @@ impl AppState {
         &mut self,
         cam_width: u32,
         cam_height: u32,
-        experiment: Experiment,
-        rig_geometry: RigGeometry,
-        camera_exposure_us: u32,
-        camera_binning: u16,
-        display_settings: DisplaySettings,
+        snapshot: RegistrySnapshot,
         hardware_snapshot: Option<HardwareSnapshot>,
         timing_characterization: Option<TimingCharacterization>,
     ) {
@@ -272,11 +248,7 @@ impl AppState {
         accumulator.start(cam_width, cam_height);
         self.acquisition = Some(AcquisitionState {
             accumulator,
-            experiment,
-            rig_geometry,
-            camera_exposure_us,
-            camera_binning,
-            display_settings,
+            snapshot,
             hardware_snapshot,
             timing_characterization,
         });

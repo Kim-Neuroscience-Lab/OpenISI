@@ -2675,6 +2675,7 @@ dependencies = [
  "isi-analysis",
  "ndarray",
  "openisi-stimulus",
+ "paste",
  "pco-sdk",
  "png",
  "pollster",

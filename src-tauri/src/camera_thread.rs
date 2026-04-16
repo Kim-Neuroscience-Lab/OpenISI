@@ -7,11 +7,32 @@ use std::time::{Duration, Instant};
 
 use pco_sdk::{Frame, Sdk};
 
-use crate::config::SystemTuning;
 use crate::messages::{CameraCmd, CameraConnectedInfo, CameraDeviceInfo, CameraEvt, CameraFrameData};
 
+/// System tuning values passed to the camera thread at startup.
+/// These are snapshot values from the registry — immutable for the thread's lifetime.
+struct CameraTuning {
+    camera_first_frame_timeout_ms: u32,
+    camera_first_frame_poll_ms: u32,
+    camera_frame_send_interval_ms: u32,
+    camera_poll_interval_ms: u32,
+}
+
 /// Run the camera thread. Blocks until Shutdown command received.
-pub fn run(cmd_rx: Receiver<CameraCmd>, evt_tx: Sender<CameraEvt>, sys_cfg: SystemTuning) {
+pub fn run(
+    cmd_rx: Receiver<CameraCmd>,
+    evt_tx: Sender<CameraEvt>,
+    camera_first_frame_timeout_ms: u32,
+    camera_first_frame_poll_ms: u32,
+    camera_frame_send_interval_ms: u32,
+    camera_poll_interval_ms: u32,
+) {
+    let sys_cfg = CameraTuning {
+        camera_first_frame_timeout_ms,
+        camera_first_frame_poll_ms,
+        camera_frame_send_interval_ms,
+        camera_poll_interval_ms,
+    };
     // Try to load the SDK once at thread start.
     let sdk = match Sdk::load() {
         Ok(sdk) => {
@@ -86,7 +107,7 @@ fn do_enumerate(sdk: &Sdk, evt_tx: &Sender<CameraEvt>) {
 }
 
 /// Handle a camera connection session. Returns when disconnected.
-fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u16, sys_cfg: &SystemTuning, cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
+fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u16, sys_cfg: &CameraTuning, cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
     // Get QPC frequency for system timestamp conversion.
     #[cfg(windows)]
     let qpc_freq = {

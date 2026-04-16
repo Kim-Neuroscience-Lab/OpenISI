@@ -56,7 +56,7 @@ pub fn validate_display(state: State<'_, SharedState>) -> AppResult<crate::sessi
 
         let monitor_index = monitor.index;
         let expected_refresh = monitor.refresh_hz as f64;
-        let sample_count = lock_state(&app.config, "validate_display config")?.rig.system.display_validation_sample_count;
+        let sample_count = lock_state(&app.registry, "validate_display registry")?.display_validation_sample_count();
         drop(app); // Release lock during measurement
 
         let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)
@@ -113,7 +113,6 @@ pub fn validate_display(state: State<'_, SharedState>) -> AppResult<crate::sessi
 
         let mut warnings = Vec::new();
 
-        // CI width > 2% of mean -> measurement is noisy.
         if ci95_hz / measured_refresh_hz > 0.02 {
             warnings.push(format!(
                 "High measurement uncertainty: 95% CI is ±{:.2}Hz ({:.1}% of {:.1}Hz)",
@@ -153,10 +152,6 @@ pub fn validate_display(state: State<'_, SharedState>) -> AppResult<crate::sessi
 }
 
 /// Validate timing relationship between camera and stimulus clocks.
-///
-/// Requires: display selected + validated, camera connected (streaming frames).
-/// Measures vsync rate via WaitForVBlank, uses recent camera hardware timestamps
-/// from the ring buffer, computes TimingCharacterization, stores in session.
 #[tauri::command]
 pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing::TimingCharacterization> {
     #[cfg(not(windows))]
@@ -193,9 +188,11 @@ pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing
     // Grab camera timestamps from ring buffer.
     let cam_hw_ts = app.camera_hw_timestamps_ring.clone();
     let cam_sys_ts = app.camera_sys_timestamps_ring.clone();
-    let experiment = app.experiment.clone();
-    let rig = lock_state(&app.config, "validate_timing config")?.rig.clone();
 
+    // Read experiment + rig params from registry.
+    let reg = lock_state(&app.registry, "validate_timing registry")?;
+    let snap = reg.snapshot();
+    drop(reg);
     drop(app); // Release lock during measurement.
 
     // Need at least 30 camera frames for meaningful statistics.
@@ -251,52 +248,51 @@ pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing
         .map(|w| (w[1] - w[0]) as f64)
         .collect();
 
-    // Compute session parameters from experiment + geometry.
+    // Compute session parameters from snapshot + geometry.
     use openisi_stimulus::geometry::DisplayGeometry;
 
     let geometry = DisplayGeometry::new(
-        experiment.geometry.projection,
-        rig.geometry.viewing_distance_cm,
-        rig.geometry.viewing_distance_cm,
-        experiment.geometry.horizontal_offset_deg,
-        experiment.geometry.vertical_offset_deg,
+        snap.experiment_projection(),
+        snap.viewing_distance_cm(),
+        snap.horizontal_offset_deg(),
+        snap.vertical_offset_deg(),
         monitor_width_cm, monitor_height_cm,
         monitor_width_px, monitor_height_px,
     );
 
-    let p = &experiment.stimulus.params;
-    let sweep_sec = match experiment.stimulus.envelope {
-        crate::config::Envelope::Bar => {
-            let total_travel = geometry.visual_field_width_deg() + p.stimulus_width_deg;
-            total_travel / p.sweep_speed_deg_per_sec
+    let envelope = snap.stimulus_envelope();
+    let sweep_sec = match envelope {
+        crate::params::Envelope::Bar => {
+            let total_travel = geometry.visual_field_width_deg() + snap.stimulus_width_deg();
+            total_travel / snap.sweep_speed_deg_per_sec()
         }
-        crate::config::Envelope::Wedge => {
-            360.0 / p.rotation_speed_deg_per_sec
+        crate::params::Envelope::Wedge => {
+            360.0 / snap.rotation_speed_deg_per_sec()
         }
-        crate::config::Envelope::Ring => {
-            let total_travel = geometry.get_max_eccentricity_deg() + p.stimulus_width_deg;
-            total_travel / p.expansion_speed_deg_per_sec
+        crate::params::Envelope::Ring => {
+            let total_travel = geometry.get_max_eccentricity_deg() + snap.stimulus_width_deg();
+            total_travel / snap.expansion_speed_deg_per_sec()
         }
-        crate::config::Envelope::Fullfield => 0.0,
+        crate::params::Envelope::Fullfield => 0.0,
     };
 
-    let n_conditions = experiment.presentation.conditions.len();
-    let n_reps = experiment.presentation.repetitions as usize;
+    let n_conditions = snap.conditions().len();
+    let n_reps = snap.repetitions() as usize;
     let n_trials = n_conditions * n_reps;
-    let inter_trial_sec = sweep_sec + experiment.timing.inter_stimulus_sec;
+    let inter_trial_sec = sweep_sec + snap.inter_stimulus_sec();
 
     let total_sweep_time = n_trials as f64 * sweep_sec;
     let total_inter_stim = if n_trials > 1 {
-        (n_trials - 1) as f64 * experiment.timing.inter_stimulus_sec
+        (n_trials - 1) as f64 * snap.inter_stimulus_sec()
     } else { 0.0 };
     let total_inter_dir = if n_conditions > 1 {
-        (n_conditions - 1) as f64 * experiment.timing.inter_direction_sec * n_reps as f64
+        (n_conditions - 1) as f64 * snap.inter_direction_sec() * n_reps as f64
     } else { 0.0 };
-    let session_sec = experiment.timing.baseline_start_sec
+    let session_sec = snap.baseline_start_sec()
         + total_sweep_time
         + total_inter_stim
         + total_inter_dir
-        + experiment.timing.baseline_end_sec;
+        + snap.baseline_end_sec();
 
     let timing_params = crate::timing::TimingParams {
         n_trials,
@@ -321,39 +317,39 @@ pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing
     } // #[cfg(windows)]
 }
 
-/// Set the physical rotation of the stimulus monitor (degrees around viewing axis).
-/// e.g., 180 = mounted upside down. Applied to stimulus output only, not preview.
+/// Set the physical rotation of the stimulus monitor.
 #[tauri::command]
 pub fn set_monitor_rotation(state: State<'_, SharedState>, rotation_deg: f64) -> AppResult<()> {
     let app = lock_state(&state, "set_monitor_rotation")?;
-    // Single source of truth: rig config only.
-    {
-        let mut cfg = lock_state(&app.config, "set_monitor_rotation config")?;
-        cfg.rig.display.monitor_rotation_deg = rotation_deg;
-        if let Err(e) = cfg.save() {
-            eprintln!("[config] Failed to save monitor rotation: {e}");
-        }
+    let mut reg = lock_state(&app.registry, "set_monitor_rotation registry")?;
+    reg.set(crate::params::ParamId::MonitorRotationDeg, crate::params::ParamValue::F64(rotation_deg))
+        .map_err(|e| AppError::Validation(e))?;
+    if let Err(e) = reg.save_rig() {
+        eprintln!("[params] Failed to save monitor rotation: {e}");
     }
-    eprintln!("[config] monitor rotation set to {rotation_deg}°");
+    eprintln!("[params] monitor rotation set to {rotation_deg}°");
     Ok(())
 }
 
 /// Get the rig geometry (viewing distance).
 #[tauri::command]
-pub fn get_rig_geometry(state: State<'_, SharedState>) -> AppResult<crate::config::RigGeometry> {
+pub fn get_rig_geometry(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     let app = lock_state(&state, "get_rig_geometry")?;
-    let cfg = lock_state(&app.config, "get_rig_geometry config")?;
-    Ok(cfg.rig.geometry.clone())
+    let reg = lock_state(&app.registry, "get_rig_geometry registry")?;
+    Ok(serde_json::json!({
+        "viewing_distance_cm": reg.viewing_distance_cm(),
+    }))
 }
 
 /// Set the viewing distance. Persists to rig.toml.
 #[tauri::command]
 pub fn set_viewing_distance(state: State<'_, SharedState>, distance_cm: f64) -> AppResult<()> {
     let app = lock_state(&state, "set_viewing_distance")?;
-    let mut cfg = lock_state(&app.config, "set_viewing_distance config")?;
-    cfg.rig.geometry.viewing_distance_cm = distance_cm;
-    if let Err(e) = cfg.save() {
-        eprintln!("[config] Failed to save viewing distance: {e}");
+    let mut reg = lock_state(&app.registry, "set_viewing_distance registry")?;
+    reg.set(crate::params::ParamId::ViewingDistanceCm, crate::params::ParamValue::F64(distance_cm))
+        .map_err(|e| AppError::Validation(e))?;
+    if let Err(e) = reg.save_rig() {
+        eprintln!("[params] Failed to save viewing distance: {e}");
     }
     Ok(())
 }
@@ -377,20 +373,38 @@ pub fn set_display_dimensions(
 
 /// Get ring overlay config.
 #[tauri::command]
-pub fn get_ring_overlay(state: State<'_, SharedState>) -> AppResult<crate::config::RingOverlay> {
+pub fn get_ring_overlay(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     let app = lock_state(&state, "get_ring_overlay")?;
-    let cfg = lock_state(&app.config, "get_ring_overlay config")?;
-    Ok(cfg.rig.ring_overlay.clone())
+    let reg = lock_state(&app.registry, "get_ring_overlay registry")?;
+    Ok(serde_json::json!({
+        "enabled": reg.ring_overlay_enabled(),
+        "radius_px": reg.ring_overlay_radius_px(),
+        "center_x_px": reg.ring_overlay_center_x_px(),
+        "center_y_px": reg.ring_overlay_center_y_px(),
+    }))
 }
 
 /// Update ring overlay config. Persists to rig.toml.
 #[tauri::command]
-pub fn set_ring_overlay(state: State<'_, SharedState>, overlay: crate::config::RingOverlay) -> AppResult<()> {
+pub fn set_ring_overlay(
+    state: State<'_, SharedState>,
+    enabled: bool,
+    radius_px: u32,
+    center_x_px: u32,
+    center_y_px: u32,
+) -> AppResult<()> {
+    use crate::params::{ParamId, ParamValue};
     let app = lock_state(&state, "set_ring_overlay")?;
-    let mut cfg = lock_state(&app.config, "set_ring_overlay config")?;
-    cfg.rig.ring_overlay = overlay;
-    if let Err(e) = cfg.save() {
-        eprintln!("[config] Failed to save ring overlay: {e}");
+    let mut reg = lock_state(&app.registry, "set_ring_overlay registry")?;
+    reg.batch(|r| -> Result<(), String> {
+        r.set(ParamId::RingOverlayEnabled, ParamValue::Bool(enabled))?;
+        r.set(ParamId::RingOverlayRadiusPx, ParamValue::U32(radius_px))?;
+        r.set(ParamId::RingOverlayCenterXPx, ParamValue::U32(center_x_px))?;
+        r.set(ParamId::RingOverlayCenterYPx, ParamValue::U32(center_y_px))?;
+        Ok(())
+    }).map_err(|e| AppError::Validation(e))?;
+    if let Err(e) = reg.save_rig() {
+        eprintln!("[params] Failed to save ring overlay: {e}");
     }
     Ok(())
 }
@@ -410,10 +424,13 @@ pub fn enumerate_cameras(state: State<'_, SharedState>) -> AppResult<()> {
 #[tauri::command]
 pub fn connect_camera(state: State<'_, SharedState>, camera_index: u16) -> AppResult<()> {
     let app = lock_state(&state, "connect_camera")?;
-    let cam = lock_state(&app.config, "connect_camera config")?.rig.camera.clone();
+    let reg = lock_state(&app.registry, "connect_camera registry")?;
+    let exposure_us = reg.camera_exposure_us();
+    let binning = reg.camera_binning();
+    drop(reg);
     let tx = app.threads.camera_tx.as_ref()
         .ok_or(AppError::NotAvailable("Camera thread not running".into()))?;
-    tx.send(CameraCmd::Connect { index: camera_index, exposure_us: cam.exposure_us, binning: cam.binning })
+    tx.send(CameraCmd::Connect { index: camera_index, exposure_us, binning })
         .map_err(|e| AppError::Hardware(format!("Failed to send connect command: {e}")))?;
     Ok(())
 }
@@ -441,7 +458,6 @@ pub fn capture_anatomical(state: State<'_, SharedState>, path: String) -> AppRes
     let pixels = cache.pixels.clone();
 
     // Store as u8 ndarray for embedding in .oisi later.
-    // Auto-contrast: scale u16 range to u8.
     let min_val = pixels.iter().copied().min().unwrap_or(0);
     let max_val = pixels.iter().copied().max().unwrap_or(0);
     let range = (max_val - min_val).max(1) as f64;
@@ -488,12 +504,13 @@ pub fn set_exposure(state: State<'_, SharedState>, exposure_us: u32) -> AppResul
         .ok_or(AppError::NotAvailable("Camera thread not running".into()))?;
     tx.send(CameraCmd::SetExposure(exposure_us))
         .map_err(|e| AppError::Hardware(format!("Failed to send exposure command: {e}")))?;
-    // Persist to config.
+    // Persist to registry.
     {
-        let mut cfg = lock_state(&app.config, "set_exposure config")?;
-        cfg.rig.camera.exposure_us = exposure_us;
-        if let Err(e) = cfg.save() {
-            eprintln!("[config] Failed to save exposure: {e}");
+        let mut reg = lock_state(&app.registry, "set_exposure registry")?;
+        reg.set(crate::params::ParamId::CameraExposureUs, crate::params::ParamValue::U32(exposure_us))
+            .map_err(|e| AppError::Validation(e))?;
+        if let Err(e) = reg.save_rig() {
+            eprintln!("[params] Failed to save exposure: {e}");
         }
     }
     // Keep session camera info in sync.

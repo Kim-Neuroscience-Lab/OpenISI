@@ -3,7 +3,7 @@
 //! Defines the command/event types for crossbeam channels between
 //! the main thread, stimulus thread, and camera thread.
 
-use crate::config::{Experiment, RigGeometry, DisplaySettings, SystemTuning};
+use crate::params::RegistrySnapshot;
 use crate::session::MonitorInfo;
 
 // =============================================================================
@@ -27,18 +27,14 @@ pub enum StimulusCmd {
 /// Full configuration for an acquisition run. Self-contained — the stimulus thread
 /// receives everything it needs in this single message.
 pub struct AcquisitionCommand {
-    pub experiment: Experiment,
-    pub geometry: RigGeometry,
+    pub snapshot: RegistrySnapshot,
     pub monitor: MonitorInfo,
-    pub display: DisplaySettings,
     pub measured_refresh_hz: f64,
-    pub system: SystemTuning,
 }
 
 /// Configuration for preview mode.
 pub struct PreviewCommand {
-    pub experiment: Experiment,
-    pub geometry: RigGeometry,
+    pub snapshot: RegistrySnapshot,
     pub monitor: MonitorInfo,
 }
 

@@ -3,6 +3,7 @@
 // phase maps (jet, full image), VFS (jet, full image), black borders.
 
 const { invoke } = window.__TAURI__.core;
+import { buildParamGroup, wireParamListeners, applyParamChanges, fetchGroupDescriptors } from '../param-form.js';
 
 let currentFile = null;
 let fileInfo = null;
@@ -32,10 +33,10 @@ export async function render(container) {
 
 async function renderAnalysisView(container, fileInfo, currentFile) {
 
-    // Load analysis params and ring config.
-    const params = await invoke("get_analysis_params");
+    // Load analysis params (via descriptor registry) and ring config.
+    const retinotopyDescs = await fetchGroupDescriptors(invoke, "retinotopy");
+    const segmentationDescs = await fetchGroupDescriptors(invoke, "segmentation");
     const ring = await invoke("get_ring_overlay");
-    const seg = params.segmentation || {};
 
     // Set up the layered preview.
     window.openISI.showPreviewPanel();
@@ -95,55 +96,9 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
             </div>
         </div>
 
-        <div class="card">
-            <h3>Retinotopy</h3>
-            <div class="form-row">
-                <label>Smoothing \u03c3</label>
-                <input type="number" id="param-sigma" step="0.5" min="0" max="20" value="${params.smoothing_sigma}" style="width:70px"> px
-            </div>
-            <div class="form-row">
-                <label>Rotation</label>
-                <select id="param-rotation">
-                    <option value="0" ${params.rotation_k === 0 ? "selected" : ""}>0\u00b0</option>
-                    <option value="1" ${params.rotation_k === 1 ? "selected" : ""}>90\u00b0 CCW</option>
-                    <option value="2" ${params.rotation_k === 2 ? "selected" : ""}>180\u00b0</option>
-                    <option value="3" ${params.rotation_k === 3 ? "selected" : ""}>270\u00b0 CCW</option>
-                </select>
-            </div>
-            <div class="form-row">
-                <label>Azi range</label>
-                <input type="number" id="param-azi-range" step="5" min="1" max="360" value="${params.azi_angular_range}" style="width:70px"> \u00b0
-            </div>
-            <div class="form-row">
-                <label>Alt range</label>
-                <input type="number" id="param-alt-range" step="5" min="1" max="360" value="${params.alt_angular_range}" style="width:70px"> \u00b0
-            </div>
-            <div class="form-row">
-                <label>Azi offset</label>
-                <input type="number" id="param-azi-off" step="1" min="-180" max="180" value="${params.offset_azi}" style="width:70px"> \u00b0
-            </div>
-            <div class="form-row">
-                <label>Alt offset</label>
-                <input type="number" id="param-alt-off" step="1" min="-90" max="90" value="${params.offset_alt}" style="width:70px"> \u00b0
-            </div>
-        </div>
+        ${buildParamGroup(retinotopyDescs, "Retinotopy")}
 
-        <div class="card">
-            <h3>Segmentation</h3>
-            <div class="form-row">
-                <label>VFS smooth \u03c3</label>
-                <input type="number" id="param-vfs-sigma" step="0.5" min="0" max="30" value="${seg.sign_map_filter_sigma}" style="width:70px"> px
-            </div>
-            <div class="form-row">
-                <label>VFS threshold</label>
-                <input type="number" id="param-vfs-thresh" step="0.05" min="0" max="1" value="${seg.sign_map_threshold}" style="width:70px">
-                <span class="mono-value" style="font-size:10px; color:var(--text-muted)">0 = auto (1.5\u00d7\u03c3)</span>
-            </div>
-            <div class="form-row">
-                <label>Ecc. radius</label>
-                <input type="number" id="param-ecc-radius" step="5" min="5" max="90" value="${seg.eccentricity_radius}" style="width:70px"> \u00b0
-            </div>
-        </div>
+        ${buildParamGroup(segmentationDescs, "Segmentation")}
 
         <div class="card">
             <h3>Head Ring</h3>
@@ -194,24 +149,6 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
         const statusEl = document.getElementById("analysis-status");
         if (!statusEl) return;
 
-        // Save params.
-        try {
-            await invoke("set_analysis_params", {
-                smoothingSigma: parseFloat(document.getElementById("param-sigma").value) || 2.0,
-                rotationK: parseInt(document.getElementById("param-rotation").value) || 0,
-                aziAngularRange: parseFloat(document.getElementById("param-azi-range").value) || 100,
-                altAngularRange: parseFloat(document.getElementById("param-alt-range").value) || 100,
-                offsetAzi: parseFloat(document.getElementById("param-azi-off").value) || 0,
-                offsetAlt: parseFloat(document.getElementById("param-alt-off").value) || 0,
-                signMapFilterSigma: parseFloat(document.getElementById("param-vfs-sigma")?.value) || null,
-                signMapThreshold: parseFloat(document.getElementById("param-vfs-thresh")?.value) ?? null,
-                eccentricityRadius: parseFloat(document.getElementById("param-ecc-radius")?.value) || null,
-            });
-        } catch (e) {
-            statusEl.textContent = `Param save error: ${e}`;
-            return;
-        }
-
         statusEl.textContent = "Re-analyzing...";
         statusEl.style.color = "";
 
@@ -233,13 +170,8 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
         }
     }
 
-    // Wire all param inputs to trigger re-analysis.
-    const paramIds = ["param-sigma", "param-rotation", "param-azi-range", "param-alt-range",
-                      "param-azi-off", "param-alt-off", "param-vfs-sigma", "param-vfs-thresh", "param-ecc-radius"];
-    paramIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener("change", scheduleReanalyze);
-    });
+    // Wire descriptor-driven param inputs: set_params on change, then trigger reanalysis.
+    wireParamListeners(container, invoke, () => scheduleReanalyze());
 
     // Ring controls in analysis view.
     function updateAnalysisRing() {

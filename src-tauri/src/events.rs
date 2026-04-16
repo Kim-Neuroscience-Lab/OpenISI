@@ -104,9 +104,9 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                                     Ok(s) => s,
                                     Err(_) => { eprintln!("[events] state lock poisoned"); continue; }
                                 };
-                                // Read current exposure from rig config (the single source of truth).
-                                let exposure_us = s.config.lock()
-                                    .map(|cfg| cfg.rig.camera.exposure_us)
+                                // Read current exposure from registry (the single source of truth).
+                                let exposure_us = s.registry.lock()
+                                    .map(|reg| reg.camera_exposure_us())
                                     .unwrap_or(0);
                                 s.session.camera_connected = true;
                                 s.session.camera = Some(crate::session::CameraInfo {
@@ -270,17 +270,22 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                                     Err(_) => { eprintln!("[events] state lock poisoned"); continue; }
                                 };
 
-                                let (accumulated, acq_experiment, acq_rig_geometry,
-                                     acq_camera_exposure_us, acq_camera_binning, acq_display_settings,
+                                let (accumulated, acq_snapshot,
                                      acq_hardware_snapshot, acq_timing_characterization) =
                                     if let Some(acq) = s.end_acquisition() {
                                         eprintln!("[events] accumulator: {}", acq.accumulator.stats());
                                         let data = acq.accumulator.finish();
-                                        (data, acq.experiment, acq.rig_geometry,
-                                         acq.camera_exposure_us, acq.camera_binning, acq.display_settings,
+                                        (data, acq.snapshot,
                                          acq.hardware_snapshot, acq.timing_characterization)
                                     } else {
                                         eprintln!("[events] WARNING: no acquisition state at completion");
+                                        // Fallback: take a live snapshot from the registry.
+                                        let fallback_snap = s.registry.lock()
+                                            .map(|reg| reg.snapshot())
+                                            .unwrap_or_else(|_| {
+                                                // Poison: create minimal snapshot from defaults.
+                                                crate::params::Registry::new(std::path::Path::new(".")).snapshot()
+                                            });
                                         (AccumulatedData {
                                             frames: Vec::new(),
                                             hardware_timestamps_us: Vec::new(),
@@ -289,10 +294,7 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                                             width: 0,
                                             height: 0,
                                         },
-                                        s.experiment.clone(),
-                                        crate::config::RigGeometry { viewing_distance_cm: 0.0 },
-                                        0, 1,
-                                        crate::config::DisplaySettings { target_stimulus_fps: 0, monitor_rotation_deg: 0.0 },
+                                        fallback_snap,
                                         None, None)
                                     };
 
@@ -307,13 +309,9 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                                     stimulus_dataset: result.dataset,
                                     schedule,
                                     completed_normally: result.completed_normally,
-                                    experiment: acq_experiment,
+                                    snapshot: acq_snapshot,
                                     hardware_snapshot: acq_hardware_snapshot,
                                     timing_characterization: acq_timing_characterization,
-                                    rig_geometry: acq_rig_geometry,
-                                    camera_exposure_us: acq_camera_exposure_us,
-                                    camera_binning: acq_camera_binning,
-                                    display_settings: acq_display_settings,
                                 });
 
                                 s.session.is_acquiring = false;

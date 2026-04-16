@@ -26,7 +26,7 @@ pub struct HardwareSnapshot {
     pub camera_height_px: u32,
 }
 
-use crate::config::{DisplaySettings, RigGeometry};
+use crate::params::RegistrySnapshot;
 
 /// Accumulates ALL camera frames in acquisition order.
 /// No grouping by condition — all frames kept, including baselines.
@@ -156,17 +156,13 @@ pub fn write_oisi(
     path: &Path,
     stimulus_dataset: &StimulusDataset,
     camera_data: AccumulatedData,
-    experiment: Option<&crate::config::Experiment>,
+    snapshot: &RegistrySnapshot,
     hardware: Option<&HardwareSnapshot>,
     schedule: &SweepSchedule,
     timing: Option<&crate::timing::TimingCharacterization>,
     session_meta: Option<&SessionMetadata>,
     anatomical: Option<&ndarray::Array2<u8>>,
     acquisition_complete: bool,
-    rig_geometry: &RigGeometry,
-    camera_exposure_us: u32,
-    camera_binning: u16,
-    display_settings: &DisplaySettings,
 ) -> Result<String, String> {
     use isi_analysis::io;
 
@@ -187,16 +183,49 @@ pub fn write_oisi(
         .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
     write_str_attr(&file, "stimulus_metadata", &meta_json)?;
 
-    // Write experiment snapshot.
-    if let Some(exp) = experiment {
-        let exp_json = serde_json::to_string_pretty(exp)
-            .map_err(|e| format!("Failed to serialize experiment: {e}"))?;
-        write_str_attr(&file, "experiment", &exp_json)?;
+    // Write experiment snapshot as JSON (reconstructed from registry snapshot for provenance).
+    {
+        let exp_json = serde_json::json!({
+            "geometry": {
+                "horizontal_offset_deg": snapshot.horizontal_offset_deg(),
+                "vertical_offset_deg": snapshot.vertical_offset_deg(),
+            },
+            "stimulus": {
+                "envelope": format!("{:?}", snapshot.stimulus_envelope()).to_lowercase(),
+                "carrier": format!("{:?}", snapshot.stimulus_carrier()).to_lowercase(),
+                "params": {
+                    "contrast": snapshot.contrast(),
+                    "mean_luminance": snapshot.mean_luminance(),
+                    "background_luminance": snapshot.background_luminance(),
+                    "check_size_deg": snapshot.check_size_deg(),
+                    "check_size_cm": snapshot.check_size_cm(),
+                    "strobe_frequency_hz": snapshot.strobe_frequency_hz(),
+                    "stimulus_width_deg": snapshot.stimulus_width_deg(),
+                    "sweep_speed_deg_per_sec": snapshot.sweep_speed_deg_per_sec(),
+                    "rotation_speed_deg_per_sec": snapshot.rotation_speed_deg_per_sec(),
+                    "expansion_speed_deg_per_sec": snapshot.expansion_speed_deg_per_sec(),
+                    "rotation_deg": snapshot.rotation_deg(),
+                }
+            },
+            "presentation": {
+                "conditions": snapshot.conditions(),
+                "repetitions": snapshot.repetitions(),
+            },
+            "timing": {
+                "baseline_start_sec": snapshot.baseline_start_sec(),
+                "baseline_end_sec": snapshot.baseline_end_sec(),
+                "inter_stimulus_sec": snapshot.inter_stimulus_sec(),
+                "inter_direction_sec": snapshot.inter_direction_sec(),
+            }
+        });
+        let exp_str = serde_json::to_string_pretty(&exp_json)
+            .map_err(|e| format!("Failed to serialize experiment snapshot: {e}"))?;
+        write_str_attr(&file, "experiment", &exp_str)?;
     }
 
     // Write hardware snapshot.
     if let Some(hw) = hardware {
-        write_hardware_group(&file, hw, rig_geometry, camera_exposure_us, camera_binning, display_settings)?;
+        write_hardware_group(&file, hw, snapshot)?;
     }
 
     // Write session metadata (animal ID, notes).
@@ -362,10 +391,7 @@ pub fn write_oisi(
 fn write_hardware_group(
     file: &hdf5::File,
     hw: &HardwareSnapshot,
-    rig_geometry: &RigGeometry,
-    camera_exposure_us: u32,
-    camera_binning: u16,
-    display_settings: &DisplaySettings,
+    snapshot: &RegistrySnapshot,
 ) -> Result<(), String> {
     let group = file.create_group("hardware")
         .map_err(|e| format!("Failed to create hardware group: {e}"))?;
@@ -390,19 +416,20 @@ fn write_hardware_group(
         .map_err(|e| format!("writing gamma_corrected attr: {e}"))?;
 
     // Rig geometry — viewing distance for stimulus geometry reproduction.
-    write_group_f64_attr(&group, "viewing_distance_cm", rig_geometry.viewing_distance_cm)?;
+    write_group_f64_attr(&group, "viewing_distance_cm", snapshot.viewing_distance_cm())?;
 
     // Camera acquisition config — exposure and binning at acquisition time.
-    write_group_u32_attr(&group, "camera_exposure_us", camera_exposure_us)?;
+    write_group_u32_attr(&group, "camera_exposure_us", snapshot.camera_exposure_us())?;
+    let binning_val = snapshot.camera_binning();
     let attr = group.new_attr::<u16>()
         .create("camera_binning")
         .map_err(|e| format!("creating camera_binning attr: {e}"))?;
-    attr.write_scalar(&camera_binning)
+    attr.write_scalar(&binning_val)
         .map_err(|e| format!("writing camera_binning attr: {e}"))?;
 
     // Display settings — rotation and target FPS at acquisition time.
-    write_group_f64_attr(&group, "monitor_rotation_deg", display_settings.monitor_rotation_deg)?;
-    write_group_u32_attr(&group, "target_stimulus_fps", display_settings.target_stimulus_fps)?;
+    write_group_f64_attr(&group, "monitor_rotation_deg", snapshot.monitor_rotation_deg())?;
+    write_group_u32_attr(&group, "target_stimulus_fps", snapshot.target_stimulus_fps())?;
 
     Ok(())
 }
@@ -751,13 +778,9 @@ mod tests {
             sweep_start_us: Vec::new(),
             sweep_end_us: Vec::new(),
         };
-        let rig_geometry = crate::config::RigGeometry { viewing_distance_cm: 25.0 };
-        let display_settings = crate::config::DisplaySettings {
-            target_stimulus_fps: 60,
-            monitor_rotation_deg: 0.0,
-        };
-        let result = write_oisi(&tmp, &ds, data, None, None, &schedule, None, None, None, true,
-            &rig_geometry, 10000, 1, &display_settings);
+        // Create a default registry snapshot for the test.
+        let snapshot = crate::params::Registry::new(std::path::Path::new(".")).snapshot();
+        let result = write_oisi(&tmp, &ds, data, &snapshot, None, &schedule, None, None, None, true);
         assert!(result.is_ok(), "write_oisi failed: {:?}", result.err());
 
         let file = hdf5::File::open(&tmp).expect("Should open .oisi file");
