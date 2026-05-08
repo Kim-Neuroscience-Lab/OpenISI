@@ -46,11 +46,18 @@ pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> Retino
     // VFS
     let vfs = compute_vfs(&d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy);
 
-    // Phase and amplitude
-    let azi_phase = azi_smooth.mapv(|z| z.arg());
-    let alt_phase = alt_smooth.mapv(|z| z.arg());
-    let azi_amplitude = azi_smooth.mapv(|z| z.norm());
-    let alt_amplitude = alt_smooth.mapv(|z| z.norm());
+    // Display phase/amplitude maps can follow either the legacy combined path
+    // or Garrett-style delay-subtraction while VFS remains unchanged above.
+    let (azi_phase, alt_phase, azi_amplitude, alt_amplitude) = if params.use_garrett_display_maps {
+        garrett_phase_amp_from_complex(&azi_fwd, &azi_rev, &alt_fwd, &alt_rev)
+    } else {
+        (
+            azi_smooth.mapv(|z| z.arg()),
+            alt_smooth.mapv(|z| z.arg()),
+            azi_smooth.mapv(|z| z.norm()),
+            alt_smooth.mapv(|z| z.norm()),
+        )
+    };
 
     // Convert to visual field degrees
     let azi_phase_degrees = phase_to_degrees(&azi_phase, params.azi_angular_range, params.offset_azi);
@@ -469,6 +476,78 @@ fn compute_vfs(
     vfs
 }
 
+/// Garrett/Marshel delay subtraction for display phase maps.
+///
+/// This path is used only for displayed azimuth/altitude phase maps.
+/// VFS computation continues to use the combined 2φ gradients pipeline.
+fn garrett_phase_amp_from_complex(
+    azi_fwd: &Array2<Complex64>,
+    azi_rev: &Array2<Complex64>,
+    alt_fwd: &Array2<Complex64>,
+    alt_rev: &Array2<Complex64>,
+) -> (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) {
+    let azi_fwd_p = azi_fwd.mapv(|z| (-z).arg());
+    let azi_rev_p = azi_rev.mapv(|z| (-z).arg());
+    let alt_fwd_p = alt_fwd.mapv(|z| (-z).arg());
+    let alt_rev_p = alt_rev.mapv(|z| (-z).arg());
+
+    let mut delay_azi = Array2::zeros(azi_fwd_p.raw_dim());
+    Zip::from(&mut delay_azi)
+        .and(&azi_fwd_p)
+        .and(&azi_rev_p)
+        .for_each(|d, &fwd, &rev| {
+            *d = (Complex64::from_polar(1.0, fwd) + Complex64::from_polar(1.0, rev)).arg();
+        });
+
+    let mut delay_alt = Array2::zeros(alt_fwd_p.raw_dim());
+    Zip::from(&mut delay_alt)
+        .and(&alt_fwd_p)
+        .and(&alt_rev_p)
+        .for_each(|d, &fwd, &rev| {
+            *d = (Complex64::from_polar(1.0, fwd) + Complex64::from_polar(1.0, rev)).arg();
+        });
+
+    // Garrett non-negative delay convention.
+    delay_azi.mapv_inplace(|d| d + 0.5 * PI * (1.0 - d.signum()));
+    delay_alt.mapv_inplace(|d| d + 0.5 * PI * (1.0 - d.signum()));
+
+    let mut kmap_azi = Array2::zeros(azi_fwd_p.raw_dim());
+    Zip::from(&mut kmap_azi)
+        .and(&azi_fwd_p)
+        .and(&azi_rev_p)
+        .and(&delay_azi)
+        .for_each(|k, &fwd, &rev, &d| {
+            let f = Complex64::from_polar(1.0, fwd - d).arg();
+            let r = Complex64::from_polar(1.0, rev - d).arg();
+            *k = 0.5 * (f - r);
+        });
+
+    let mut kmap_alt = Array2::zeros(alt_fwd_p.raw_dim());
+    Zip::from(&mut kmap_alt)
+        .and(&alt_fwd_p)
+        .and(&alt_rev_p)
+        .and(&delay_alt)
+        .for_each(|k, &fwd, &rev, &d| {
+            let f = Complex64::from_polar(1.0, fwd - d).arg();
+            let r = Complex64::from_polar(1.0, rev - d).arg();
+            *k = 0.5 * (f - r);
+        });
+
+    let mut azi_amp = Array2::zeros(azi_fwd.raw_dim());
+    Zip::from(&mut azi_amp)
+        .and(azi_fwd)
+        .and(azi_rev)
+        .for_each(|a, &f, &r| *a = 0.5 * (f.norm() + r.norm()));
+
+    let mut alt_amp = Array2::zeros(alt_fwd.raw_dim());
+    Zip::from(&mut alt_amp)
+        .and(alt_fwd)
+        .and(alt_rev)
+        .for_each(|a, &f, &r| *a = 0.5 * (f.norm() + r.norm()));
+
+    (kmap_azi, kmap_alt, azi_amp, alt_amp)
+}
+
 /// Convert phase (radians) to visual field degrees.
 fn phase_to_degrees(phase: &Array2<f64>, angular_range: f64, offset: f64) -> Array2<f64> {
     let scale = angular_range / (2.0 * PI);
@@ -645,6 +724,52 @@ mod tests {
         let vfs = compute_vfs(&ones, &zeros, &zeros, &ones);
         for &v in vfs.iter() {
             assert!((v - 1.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_garrett_phase_amp_shapes() {
+        let a = Array2::from_elem((4, 4), Complex64::new(1.0, 0.0));
+        let b = Array2::from_elem((4, 4), Complex64::new(0.5, 0.25));
+        let (k_azi, k_alt, amp_azi, amp_alt) = garrett_phase_amp_from_complex(&a, &b, &a, &b);
+        assert_eq!(k_azi.dim(), (4, 4));
+        assert_eq!(k_alt.dim(), (4, 4));
+        assert_eq!(amp_azi.dim(), (4, 4));
+        assert_eq!(amp_alt.dim(), (4, 4));
+    }
+
+    #[test]
+    fn test_vfs_unchanged_by_display_mode() {
+        let maps = crate::ComplexMaps {
+            azi_fwd: Array2::from_elem((6, 6), Complex64::new(1.0, 0.2)),
+            azi_rev: Array2::from_elem((6, 6), Complex64::new(0.8, -0.1)),
+            alt_fwd: Array2::from_elem((6, 6), Complex64::new(0.9, 0.3)),
+            alt_rev: Array2::from_elem((6, 6), Complex64::new(1.1, -0.2)),
+        };
+
+        let p_base = crate::AnalysisParams {
+            smoothing_sigma: 1.0,
+            rotation_k: 0,
+            azi_angular_range: 100.0,
+            alt_angular_range: 100.0,
+            offset_azi: 0.0,
+            offset_alt: 0.0,
+            epsilon: 1e-6,
+            use_garrett_display_maps: false,
+            snr_threshold_enabled: false,
+            snr_threshold_value: 2.0,
+            snr_prefer_spectral: true,
+            snr_use_transparent_mask: true,
+            segmentation: None,
+        };
+        let mut p_garrett = p_base.clone();
+        p_garrett.use_garrett_display_maps = true;
+
+        let r_base = compute_retinotopy(&maps, &p_base);
+        let r_garrett = compute_retinotopy(&maps, &p_garrett);
+
+        for (a, b) in r_base.vfs.iter().zip(r_garrett.vfs.iter()) {
+            assert!((a - b).abs() < 1e-10);
         }
     }
 }

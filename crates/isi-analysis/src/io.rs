@@ -829,6 +829,11 @@ mod tests {
             offset_azi: 0.0,
             offset_alt: 0.0,
             epsilon: 1e-6,
+            use_garrett_display_maps: false,
+            snr_threshold_enabled: false,
+            snr_threshold_value: 2.0,
+            snr_prefer_spectral: true,
+            snr_use_transparent_mask: true,
             segmentation: None,
         }
     }

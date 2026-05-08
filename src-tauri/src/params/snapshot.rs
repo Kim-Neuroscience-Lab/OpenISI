@@ -187,6 +187,11 @@ impl RegistrySnapshot {
     snapshot_getter!(OffsetAzi, F64);
     snapshot_getter!(OffsetAlt, F64);
     snapshot_getter!(Epsilon, F64);
+    snapshot_getter!(UseGarrettDisplayMaps, Bool);
+    snapshot_getter!(SnrThresholdEnabled, Bool);
+    snapshot_getter!(SnrThresholdValue, F64);
+    snapshot_getter!(SnrPreferSpectral, Bool);
+    snapshot_getter!(SnrUseTransparentMask, Bool);
 
     // Analysis Segmentation
     snapshot_getter!(SignMapFilterSigma, F64);

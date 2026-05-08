@@ -83,6 +83,13 @@ const viz = {
     analysisFile: null,         // path to current .oisi for map loading
     availableResults: new Set(),// set of available result map names
     segData: null,              // {width, height, labels: [i32], area_signs: [i8], borders: [u8]} or null
+    // Retinotopy display preferences and optional SNR mask cache.
+    useGarrettDisplayMaps: false,
+    snrThresholdEnabled: false,
+    snrThresholdValue: 2.0,
+    snrPreferSpectral: true,
+    snrUseTransparentMask: true,
+    currentSnrMask: null,       // boolean[] mask aligned with mapRawData
 };
 
 // Restore persisted viz preferences from localStorage.
@@ -444,6 +451,89 @@ function setBaseMode(mode) {
     }
 }
 
+function isRetinotopyPhaseMap(name) {
+    return name === "azi_phase_degrees"
+        || name === "alt_phase_degrees"
+        || name === "azi_phase"
+        || name === "alt_phase";
+}
+
+function axisForMap(name) {
+    if (name.startsWith("azi_")) return "azi";
+    if (name.startsWith("alt_")) return "alt";
+    return null;
+}
+
+function robustSnrMask(values, threshold) {
+    const finite = values.filter(v => Number.isFinite(v));
+    if (finite.length === 0) {
+        return values.map(() => false);
+    }
+
+    const sorted = [...finite].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 0
+        ? 0.5 * (sorted[mid - 1] + sorted[mid])
+        : sorted[mid];
+
+    const absDev = finite.map(v => Math.abs(v - median)).sort((a, b) => a - b);
+    const madMid = Math.floor(absDev.length / 2);
+    const mad = absDev.length % 2 === 0
+        ? 0.5 * (absDev[madMid - 1] + absDev[madMid])
+        : absDev[madMid];
+
+    let scale = 1.4826 * mad;
+    if (!(scale > 0) || !Number.isFinite(scale)) {
+        const mean = finite.reduce((acc, v) => acc + v, 0) / finite.length;
+        const variance = finite.reduce((acc, v) => acc + ((v - mean) ** 2), 0) / finite.length;
+        scale = Math.sqrt(variance);
+    }
+    if (!(scale > 0) || !Number.isFinite(scale)) {
+        scale = 1.0;
+    }
+
+    return values.map(v => Number.isFinite(v) && ((v - median) / scale) >= threshold);
+}
+
+async function refreshRetinotopyDisplayPrefs() {
+    const descriptors = await invoke("get_param_descriptors", { group: "retinotopy" });
+    const lookup = new Map(descriptors.map(d => [d.id, d.value]));
+    viz.useGarrettDisplayMaps = Boolean(lookup.get("analysis.use_garrett_display_maps"));
+    viz.snrThresholdEnabled = Boolean(lookup.get("analysis.snr_threshold_enabled"));
+    viz.snrThresholdValue = Number(lookup.get("analysis.snr_threshold_value") ?? 2.0);
+    viz.snrPreferSpectral = Boolean(lookup.get("analysis.snr_prefer_spectral") ?? true);
+    viz.snrUseTransparentMask = Boolean(lookup.get("analysis.snr_use_transparent_mask") ?? true);
+}
+
+async function buildSnrMaskForMap(mapName) {
+    viz.currentSnrMask = null;
+    if (!viz.analysisFile || !viz.snrThresholdEnabled || !isRetinotopyPhaseMap(mapName)) {
+        return;
+    }
+
+    const axis = axisForMap(mapName);
+    if (!axis) return;
+
+    const snrName = axis === "azi" ? "snr_azi" : "snr_alt";
+    const ampName = axis === "azi" ? "azi_amplitude" : "alt_amplitude";
+
+    const loadSpectralFirst = viz.snrPreferSpectral && viz.availableResults.has(snrName);
+    if (loadSpectralFirst) {
+        const snr = await invoke("read_result", { path: viz.analysisFile, name: snrName });
+        if (snr?.type === "scalar_map" && Array.isArray(snr.data)) {
+            viz.currentSnrMask = snr.data.map(v => Number.isFinite(v) && v >= viz.snrThresholdValue);
+            return;
+        }
+    }
+
+    if (viz.availableResults.has(ampName)) {
+        const amp = await invoke("read_result", { path: viz.analysisFile, name: ampName });
+        if (amp?.type === "scalar_map" && Array.isArray(amp.data)) {
+            viz.currentSnrMask = robustSnrMask(amp.data, viz.snrThresholdValue);
+        }
+    }
+}
+
 /// Build ImageData from loaded result data, rendered by type.
 function buildMapImageData() {
     const { width, height } = viz.mapDimensions || {};
@@ -492,9 +582,17 @@ function buildMapImageData() {
     const maskedMaps = new Set(["vfs_thresholded", "eccentricity", "magnification"]);
     const isMasked = maskedMaps.has(viz.mapName);
 
+    const applySnrMask = viz.snrThresholdEnabled
+        && isRetinotopyPhaseMap(viz.mapName)
+        && Array.isArray(viz.currentSnrMask)
+        && viz.currentSnrMask.length === data.length;
+    const snrMask = applySnrMask ? viz.currentSnrMask : null;
+
     let min = Infinity, max = -Infinity;
-    for (const v of data) {
-        if (isFinite(v) && (!isMasked || v !== 0.0)) {
+    for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        const passSnr = !snrMask || snrMask[i];
+        if (isFinite(v) && passSnr && (!isMasked || v !== 0.0)) {
             if (v < min) min = v;
             if (v > max) max = v;
         }
@@ -505,6 +603,10 @@ function buildMapImageData() {
     for (let i = 0; i < data.length; i++) {
         if (isMasked && data[i] === 0.0) {
             imgData.data[i * 4 + 3] = 0; // transparent
+            continue;
+        }
+        if (snrMask && !snrMask[i] && viz.snrUseTransparentMask) {
+            imgData.data[i * 4 + 3] = 0;
             continue;
         }
         const t = (data[i] - min) / range;
@@ -519,6 +621,7 @@ function buildMapImageData() {
 
 /// Load any result by name from the current analysis file. Unified command.
 async function setMapName(mapName) {
+    await refreshRetinotopyDisplayPrefs();
     viz.mapName = mapName;
     saveVizState();
     updatePopupGroup("popup-map", mapName);
@@ -528,6 +631,7 @@ async function setMapName(mapName) {
         viz.mapImageData = null;
         viz.mapRawData = null;
         viz.currentResultType = null;
+        viz.currentSnrMask = null;
         renderMapLayer();
         return;
     }
@@ -550,6 +654,7 @@ async function setMapName(mapName) {
             }
         }
 
+        await buildSnrMaskForMap(mapName);
         viz.mapImageData = buildMapImageData();
         renderMapLayer();
     } catch (e) {
@@ -557,6 +662,7 @@ async function setMapName(mapName) {
         viz.mapImageData = null;
         viz.mapRawData = null;
         viz.currentResultType = null;
+        viz.currentSnrMask = null;
         renderMapLayer();
     }
 }
@@ -586,6 +692,7 @@ async function setAnalysisFile(filePath) {
     if (!filePath) {
         viz.anatomicalImageData = null;
         viz.mapImageData = null;
+        viz.currentSnrMask = null;
         viz.segData = null;
         viz.availableResults = new Set();
         renderMapLayer();

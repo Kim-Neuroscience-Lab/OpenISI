@@ -53,6 +53,11 @@ pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<St
         offset_azi: snap.offset_azi(),
         offset_alt: snap.offset_alt(),
         epsilon: snap.epsilon(),
+        use_garrett_display_maps: snap.use_garrett_display_maps(),
+        snr_threshold_enabled: snap.snr_threshold_enabled(),
+        snr_threshold_value: snap.snr_threshold_value(),
+        snr_prefer_spectral: snap.snr_prefer_spectral(),
+        snr_use_transparent_mask: snap.snr_use_transparent_mask(),
         segmentation: seg_params,
     };
 
@@ -82,6 +87,11 @@ pub fn get_analysis_params(state: State<'_, SharedState>) -> AppResult<serde_jso
         "offset_azi": reg.offset_azi(),
         "offset_alt": reg.offset_alt(),
         "epsilon": reg.epsilon(),
+        "use_garrett_display_maps": reg.use_garrett_display_maps(),
+        "snr_threshold_enabled": reg.snr_threshold_enabled(),
+        "snr_threshold_value": reg.snr_threshold_value(),
+        "snr_prefer_spectral": reg.snr_prefer_spectral(),
+        "snr_use_transparent_mask": reg.snr_use_transparent_mask(),
         "segmentation": {
             "sign_map_filter_sigma": reg.sign_map_filter_sigma(),
             "sign_map_threshold": reg.sign_map_threshold(),

@@ -85,6 +85,26 @@ define_params! {
         "analysis.epsilon", Rig, Retinotopy,
         "Epsilon", "", StaticConstraint::MinF64(0.0);
 
+    UseGarrettDisplayMaps: Bool = false,
+        "analysis.use_garrett_display_maps", Rig, Retinotopy,
+        "Use Garrett Display Maps", "", StaticConstraint::None;
+
+    SnrThresholdEnabled: Bool = false,
+        "analysis.snr_threshold_enabled", Rig, Retinotopy,
+        "SNR Threshold Enabled", "", StaticConstraint::None;
+
+    SnrThresholdValue: F64 = 2.0,
+        "analysis.snr_threshold_value", Rig, Retinotopy,
+        "SNR Threshold", "", StaticConstraint::MinF64(0.0);
+
+    SnrPreferSpectral: Bool = true,
+        "analysis.snr_prefer_spectral", Rig, Retinotopy,
+        "Prefer Spectral SNR", "", StaticConstraint::None;
+
+    SnrUseTransparentMask: Bool = true,
+        "analysis.snr_use_transparent_mask", Rig, Retinotopy,
+        "Use Transparent SNR Mask", "", StaticConstraint::None;
+
     // ── Analysis Segmentation ─────────────────────────────────────────
     SignMapFilterSigma: F64 = 9.0,
         "analysis.segmentation.sign_map_filter_sigma", Rig, Segmentation,

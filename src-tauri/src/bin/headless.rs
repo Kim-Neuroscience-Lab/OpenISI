@@ -800,6 +800,11 @@ fn cmd_analyze(args: &[String]) {
         offset_azi: snap.offset_azi(),
         offset_alt: snap.offset_alt(),
         epsilon: snap.epsilon(),
+        use_garrett_display_maps: snap.use_garrett_display_maps(),
+        snr_threshold_enabled: snap.snr_threshold_enabled(),
+        snr_threshold_value: snap.snr_threshold_value(),
+        snr_prefer_spectral: snap.snr_prefer_spectral(),
+        snr_use_transparent_mask: snap.snr_use_transparent_mask(),
         segmentation: seg_params,
     };
 

@@ -20,11 +20,33 @@ pub struct AnalysisParams {
     pub offset_alt: f64,
     /// Epsilon for dF/F divide-by-zero protection
     pub epsilon: f64,
+    /// Use Garrett-style delay subtraction for azimuth/altitude display maps.
+    /// False keeps the legacy combined 2φ display path.
+    #[serde(default = "default_use_garrett_display_maps")]
+    pub use_garrett_display_maps: bool,
+    /// Enable SNR-thresholded retinotopy display masking in the UI.
+    #[serde(default = "default_snr_threshold_enabled")]
+    pub snr_threshold_enabled: bool,
+    /// SNR cutoff used for display masking.
+    #[serde(default = "default_snr_threshold_value")]
+    pub snr_threshold_value: f64,
+    /// Prefer spectral SNR maps (`snr_azi`, `snr_alt`) when available.
+    #[serde(default = "default_snr_prefer_spectral")]
+    pub snr_prefer_spectral: bool,
+    /// True = transparent below threshold, false = keep map but scale from suprathreshold pixels.
+    #[serde(default = "default_snr_use_transparent_mask")]
+    pub snr_use_transparent_mask: bool,
     /// Garrett et al. 2014 / Juavinett et al. 2017 segmentation parameters.
     /// None = skip segmentation.
     #[serde(default)]
     pub segmentation: Option<SegmentationParams>,
 }
+
+fn default_use_garrett_display_maps() -> bool { false }
+fn default_snr_threshold_enabled() -> bool { false }
+fn default_snr_threshold_value() -> f64 { 2.0 }
+fn default_snr_prefer_spectral() -> bool { true }
+fn default_snr_use_transparent_mask() -> bool { true }
 
 /// Parameters for visual area segmentation (Garrett et al. 2014 / Juavinett et al. 2017).
 /// Values from Table 1 of Garrett et al. and the Nature Protocols reference implementation.
