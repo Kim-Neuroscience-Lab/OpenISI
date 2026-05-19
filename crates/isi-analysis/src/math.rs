@@ -36,14 +36,29 @@ pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> Retino
     let alt_combined = combine_directions(&alt_fwd, &alt_rev);
 
     // Gaussian smooth in complex plane
+    #[cfg(feature = "gpu")]
+    let azi_smooth = crate::compute::gpu_smooth_complex(&azi_combined, params.smoothing_sigma);
+    #[cfg(feature = "gpu")]
+    let alt_smooth = crate::compute::gpu_smooth_complex(&alt_combined, params.smoothing_sigma);
+    #[cfg(not(feature = "gpu"))]
     let azi_smooth = gaussian_smooth_complex(&azi_combined, params.smoothing_sigma);
+    #[cfg(not(feature = "gpu"))]
     let alt_smooth = gaussian_smooth_complex(&alt_combined, params.smoothing_sigma);
 
     // Phase gradients (amplitude-weighted)
+    #[cfg(feature = "gpu")]
+    let (d_azi_dx, d_azi_dy) = crate::compute::gpu_phase_gradients(&azi_smooth);
+    #[cfg(feature = "gpu")]
+    let (d_alt_dx, d_alt_dy) = crate::compute::gpu_phase_gradients(&alt_smooth);
+    #[cfg(not(feature = "gpu"))]
     let (d_azi_dx, d_azi_dy) = phase_gradients(&azi_smooth);
+    #[cfg(not(feature = "gpu"))]
     let (d_alt_dx, d_alt_dy) = phase_gradients(&alt_smooth);
 
     // VFS
+    #[cfg(feature = "gpu")]
+    let vfs = crate::compute::gpu_compute_vfs(&d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy);
+    #[cfg(not(feature = "gpu"))]
     let vfs = compute_vfs(&d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy);
 
     // Display phase/amplitude maps can follow either the legacy combined path
@@ -388,6 +403,7 @@ fn combine_directions(fwd: &Array2<Complex64>, rev: &Array2<Complex64>) -> Array
 }
 
 /// Gaussian smooth a complex map (smooth real and imaginary parts separately).
+#[cfg(not(feature = "gpu"))]
 fn gaussian_smooth_complex(map: &Array2<Complex64>, sigma: f64) -> Array2<Complex64> {
     if sigma <= 0.0 {
         return map.clone();
@@ -415,6 +431,7 @@ fn gaussian_smooth_complex(map: &Array2<Complex64>, sigma: f64) -> Array2<Comple
 ///
 /// dφ/dx = Im{ conj(Z) · ∂Z/∂x }
 /// dφ/dy = Im{ conj(Z) · ∂Z/∂y }
+#[cfg(not(feature = "gpu"))]
 fn phase_gradients(map: &Array2<Complex64>) -> (Array2<f64>, Array2<f64>) {
     let (h, w) = map.dim();
 
@@ -456,6 +473,7 @@ fn phase_gradients(map: &Array2<Complex64>) -> (Array2<f64>, Array2<f64>) {
 }
 
 /// VFS = sin(θ_alt - θ_azi) where θ = atan2(dy, dx) of the phase gradient.
+#[cfg(not(feature = "gpu"))]
 fn compute_vfs(
     d_azi_dx: &Array2<f64>,
     d_azi_dy: &Array2<f64>,

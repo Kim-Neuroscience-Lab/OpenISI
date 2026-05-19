@@ -31,8 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::{
     AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps, ProgressSink,
     RawProcessingResult, SnrMaps,
-    math,
 };
+#[cfg(not(feature = "gpu"))]
+use crate::math;
 
 // ---------------------------------------------------------------------------
 // Capability detection — what can the system do with this file?
@@ -385,7 +386,9 @@ fn compute_complex_maps_new_format(
         .map_err(|e| AnalysisError::Hdf5(format!("opening camera/frames: {e}")))?;
     let all_frames: Array3<u16> = frames_ds.read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera/frames: {e}")))?;
-    let (t_cam, h, w) = all_frames.dim();
+    let t_cam = all_frames.dim().0;
+    #[cfg(not(feature = "gpu"))]
+    let (_, h, w) = all_frames.dim();
 
     // Read unified camera timestamps (seconds from t=0).
     let cam_ts_sec: Vec<f64> = file.dataset("acquisition/camera/timestamps_sec")
@@ -427,23 +430,32 @@ fn compute_complex_maps_new_format(
     progress.set_stage("Computing baseline");
     progress.set_progress(0.2);
 
-    // Compute global mean (baseline) from all frames.
-    let n_pixels = h * w;
-    let mut baseline_flat = vec![0.0f64; n_pixels];
-    for t in 0..t_cam {
-        let frame = all_frames.slice(ndarray::s![t, .., ..]);
-        if let Some(data) = frame.as_slice() {
-            for px in 0..n_pixels {
-                baseline_flat[px] += data[px] as f64;
+    // GPU path: convert frames to tensor once, compute baseline on device.
+    #[cfg(feature = "gpu")]
+    let frames_tensor = crate::compute::frames_u16_to_tensor(&all_frames);
+    #[cfg(feature = "gpu")]
+    let baseline_tensor = crate::compute::baseline_mean(&frames_tensor);
+
+    // CPU path: manual baseline accumulation.
+    #[cfg(not(feature = "gpu"))]
+    let baseline_sum = {
+        let n_pixels = h * w;
+        let mut baseline_flat = vec![0.0f64; n_pixels];
+        for t in 0..t_cam {
+            let frame = all_frames.slice(ndarray::s![t, .., ..]);
+            if let Some(data) = frame.as_slice() {
+                for px in 0..n_pixels {
+                    baseline_flat[px] += data[px] as f64;
+                }
             }
         }
-    }
-    let inv_t = 1.0 / t_cam as f64;
-    for px in 0..n_pixels {
-        baseline_flat[px] *= inv_t;
-    }
-    let baseline_sum = ndarray::Array2::from_shape_vec((h, w), baseline_flat)
-        .expect("baseline shape mismatch");
+        let inv_t = 1.0 / t_cam as f64;
+        for px in 0..n_pixels {
+            baseline_flat[px] *= inv_t;
+        }
+        ndarray::Array2::from_shape_vec((h, w), baseline_flat)
+            .expect("baseline shape mismatch")
+    };
 
     // Read sweep schedule for per-repetition processing.
     let sweep_start_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_start_sec")
@@ -458,8 +470,10 @@ fn compute_complex_maps_new_format(
 
     let mut accumulator = CycleAccumulator::new();
     let n_sweeps = sweep_start_sec.len().min(sweep_end_sec.len()).min(sweep_sequence.len());
-    let baseline_slice = baseline_sum.as_slice().unwrap();
     let eps = params.epsilon;
+
+    #[cfg(not(feature = "gpu"))]
+    let baseline_slice = baseline_sum.as_slice().unwrap();
 
     // Process each individual sweep (repetition) separately, then average in CycleAccumulator.
     for sweep_i in 0..n_sweeps {
@@ -488,38 +502,59 @@ fn compute_complex_maps_new_format(
             sweep_i + 1, n_sweeps, cond, frame_indices.len()));
         progress.set_progress(0.3 + 0.6 * sweep_i as f64 / n_sweeps as f64);
 
-        let n = frame_indices.len();
-        let mut frames_f32 = Array3::<f32>::zeros((n, h, w));
-
-        // Extract and compute dF/F.
-        for (fi, &cam_i) in frame_indices.iter().enumerate() {
-            let src = all_frames.slice(ndarray::s![cam_i, .., ..]);
-            let mut dst = frames_f32.slice_mut(ndarray::s![fi, .., ..]);
-            if let (Some(src_data), Some(dst_data)) = (src.as_slice(), dst.as_slice_mut()) {
-                for px in 0..n_pixels {
-                    let raw = src_data[px] as f64;
-                    let base = baseline_slice[px];
-                    dst_data[px] = ((raw - base) / (base + eps)) as f32;
-                }
-            }
-        }
-
-        // Timestamps for this sweep's frames.
         let timestamps: Vec<f64> = frame_indices.iter()
             .map(|&i| cam_ts_sec[i])
             .collect();
 
-        // DFT projection for this single sweep.
-        let complex_map = math::dft_projection(&frames_f32, &timestamps, is_fwd);
-        accumulator.add(complex_map, is_azi, is_fwd);
+        // === GPU path: all operations stay on device ===
+        #[cfg(feature = "gpu")]
+        {
+            let complex_map = crate::compute::gpu_sweep_dft(
+                &frames_tensor, &baseline_tensor, &frame_indices, &timestamps, is_fwd, eps,
+            );
+            accumulator.add(complex_map, is_azi, is_fwd);
 
-        // SNR: compute once per axis from the first forward sweep only.
-        if is_fwd && ((is_azi && accumulator.snr_azi.is_none()) || (!is_azi && accumulator.snr_alt.is_none())) {
-            let snr = math::compute_snr_map(&frames_f32, &timestamps);
-            if is_azi {
-                accumulator.snr_azi = Some(snr);
-            } else {
-                accumulator.snr_alt = Some(snr);
+            if is_fwd && ((is_azi && accumulator.snr_azi.is_none()) || (!is_azi && accumulator.snr_alt.is_none())) {
+                let snr = crate::compute::gpu_sweep_snr(
+                    &frames_tensor, &baseline_tensor, &frame_indices, &timestamps, eps,
+                );
+                if is_azi {
+                    accumulator.snr_azi = Some(snr);
+                } else {
+                    accumulator.snr_alt = Some(snr);
+                }
+            }
+        }
+
+        // === CPU path: manual dF/F extraction + ndarray DFT ===
+        #[cfg(not(feature = "gpu"))]
+        {
+            let n = frame_indices.len();
+            let n_pixels = h * w;
+            let mut frames_f32 = Array3::<f32>::zeros((n, h, w));
+
+            for (fi, &cam_i) in frame_indices.iter().enumerate() {
+                let src = all_frames.slice(ndarray::s![cam_i, .., ..]);
+                let mut dst = frames_f32.slice_mut(ndarray::s![fi, .., ..]);
+                if let (Some(src_data), Some(dst_data)) = (src.as_slice(), dst.as_slice_mut()) {
+                    for px in 0..n_pixels {
+                        let raw = src_data[px] as f64;
+                        let base = baseline_slice[px];
+                        dst_data[px] = ((raw - base) / (base + eps)) as f32;
+                    }
+                }
+            }
+
+            let complex_map = math::dft_projection(&frames_f32, &timestamps, is_fwd);
+            accumulator.add(complex_map, is_azi, is_fwd);
+
+            if is_fwd && ((is_azi && accumulator.snr_azi.is_none()) || (!is_azi && accumulator.snr_alt.is_none())) {
+                let snr = math::compute_snr_map(&frames_f32, &timestamps);
+                if is_azi {
+                    accumulator.snr_azi = Some(snr);
+                } else {
+                    accumulator.snr_alt = Some(snr);
+                }
             }
         }
     }

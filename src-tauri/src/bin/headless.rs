@@ -813,9 +813,204 @@ fn cmd_analyze(args: &[String]) {
 
     println!("Analyzing {}...", path.display());
     match isi_analysis::analyze(path, &params, &progress, &cancel) {
-        Ok(()) => println!("Analysis complete"),
+        Ok(()) => {
+            println!("Analysis complete");
+            // Export figures: `analyze <file> --figures [dir]`
+            let has_figures_flag = args.iter().any(|a| a == "--figures");
+            let fig_dir = if has_figures_flag {
+                // Use dir after --figures, or default to "figures" next to the .oisi file.
+                let flag_pos = args.iter().position(|a| a == "--figures").unwrap();
+                let custom_dir = args.get(flag_pos + 1).filter(|s| !s.starts_with("-"));
+                Some(custom_dir.map(|s| s.as_str()).unwrap_or_else(|| {
+                    // Default: <oisi_dir>/<oisi_stem>_figures/
+                    ""
+                }))
+            } else { None };
+            let fig_dir = fig_dir.map(|d| {
+                if d.is_empty() {
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+                    parent.join(format!("{stem}_figures")).to_string_lossy().to_string()
+                } else {
+                    d.to_string()
+                }
+            });
+            if let Some(ref dir) = fig_dir {
+                export_all_figures(path, dir);
+            }
+        }
         Err(e) => eprintln!("Analysis failed: {e}"),
     }
+}
+
+fn export_all_figures(oisi_path: &std::path::Path, out_dir: &str) {
+    let dir = std::path::Path::new(out_dir);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("Failed to create output dir: {e}");
+        return;
+    }
+
+    let caps = match isi_analysis::io::inspect(oisi_path) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Failed to inspect: {e}"); return; }
+    };
+
+    println!("Exporting figures to {}/", out_dir);
+
+    for result in &caps.results {
+        let name = &result.name;
+        let rtype = &result.result_type;
+
+        if rtype == "sign_array" { continue; } // metadata, not a map
+
+        let out_path = dir.join(format!("{name}.png"));
+
+        if rtype == "scalar_map" {
+            match isi_analysis::io::read_result_map(oisi_path, name) {
+                Ok(data) => {
+                    let (h, w) = data.dim();
+                    // Determine if this is a masked map (0 = transparent).
+                    let is_masked = matches!(name.as_str(),
+                        "vfs_thresholded" | "eccentricity" | "magnification");
+
+                    let mut min = f64::INFINITY;
+                    let mut max = f64::NEG_INFINITY;
+                    for &v in data.iter() {
+                        if v.is_finite() && (!is_masked || v != 0.0) {
+                            if v < min { min = v; }
+                            if v > max { max = v; }
+                        }
+                    }
+                    if !min.is_finite() { min = 0.0; max = 1.0; }
+                    let range = (max - min).max(1e-10);
+
+                    let mut rgba = vec![0u8; h * w * 4];
+                    for (i, &v) in data.iter().enumerate() {
+                        if is_masked && v == 0.0 {
+                            // Transparent — white background.
+                            rgba[i * 4] = 255;
+                            rgba[i * 4 + 1] = 255;
+                            rgba[i * 4 + 2] = 255;
+                            rgba[i * 4 + 3] = 255;
+                            continue;
+                        }
+                        let t = ((v - min) / range).clamp(0.0, 1.0);
+                        let (r, g, b) = jet(t);
+                        rgba[i * 4] = r;
+                        rgba[i * 4 + 1] = g;
+                        rgba[i * 4 + 2] = b;
+                        rgba[i * 4 + 3] = 255;
+                    }
+                    write_rgba_png(&out_path, w as u32, h as u32, &rgba);
+                    println!("  {name}.png ({w}x{h}, {rtype})");
+                }
+                Err(e) => eprintln!("  {name}: read failed: {e}"),
+            }
+        } else if rtype == "bool_mask" {
+            // Read as f64 (HDF5 auto-converts u8→f64), render as black on white.
+            match isi_analysis::io::read_result_map(oisi_path, name) {
+                Ok(data) => {
+                    let (h, w) = data.dim();
+                    let mut rgba = vec![255u8; h * w * 4]; // white background
+                    for (i, &v) in data.iter().enumerate() {
+                        if v > 0.5 {
+                            rgba[i * 4] = 0;
+                            rgba[i * 4 + 1] = 0;
+                            rgba[i * 4 + 2] = 0;
+                        }
+                    }
+                    write_rgba_png(&out_path, w as u32, h as u32, &rgba);
+                    println!("  {name}.png ({w}x{h}, {rtype})");
+                }
+                Err(e) => eprintln!("  {name}: read failed: {e}"),
+            }
+        } else if rtype == "label_map" {
+            // Read as f64, color by label.
+            match isi_analysis::io::read_result_map(oisi_path, name) {
+                Ok(data) => {
+                    let (h, w) = data.dim();
+                    // Read area_signs for coloring.
+                    let signs: Vec<i32> = match hdf5::File::open(oisi_path) {
+                        Ok(f) => f.dataset("results/area_signs")
+                            .and_then(|ds| ds.read_1d::<i32>())
+                            .map(|a| a.to_vec())
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    };
+
+                    let mut rgba = vec![255u8; h * w * 4]; // white background
+                    for (i, &v) in data.iter().enumerate() {
+                        let label = v as i32;
+                        if label > 0 && label <= signs.len() as i32 {
+                            let sign = signs[(label - 1) as usize];
+                            if sign > 0 {
+                                rgba[i * 4] = 220; rgba[i * 4 + 1] = 50; rgba[i * 4 + 2] = 50;
+                            } else {
+                                rgba[i * 4] = 50; rgba[i * 4 + 1] = 50; rgba[i * 4 + 2] = 220;
+                            }
+                        }
+                    }
+                    write_rgba_png(&out_path, w as u32, h as u32, &rgba);
+                    println!("  {name}.png ({w}x{h}, {rtype})");
+                }
+                Err(e) => eprintln!("  {name}: read failed: {e}"),
+            }
+        }
+    }
+
+    // Also export anatomical if present.
+    if caps.has_anatomical {
+        match isi_analysis::io::read_anatomical(oisi_path) {
+            Ok(anat) => {
+                let (h, w) = anat.dim();
+                let mut rgba = vec![255u8; h * w * 4];
+                for (i, &v) in anat.iter().enumerate() {
+                    rgba[i * 4] = v;
+                    rgba[i * 4 + 1] = v;
+                    rgba[i * 4 + 2] = v;
+                }
+                let out_path = dir.join("anatomical.png");
+                write_rgba_png(&out_path, w as u32, h as u32, &rgba);
+                println!("  anatomical.png ({w}x{h})");
+            }
+            Err(e) => eprintln!("  anatomical: {e}"),
+        }
+    }
+
+    println!("Done — {} figures exported", caps.results.len());
+}
+
+fn write_rgba_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
+    let file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("  Failed to create {}: {e}", path.display()); return; }
+    };
+    let mut encoder = png::Encoder::new(file, w, h);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = match encoder.write_header() {
+        Ok(w) => w,
+        Err(e) => { eprintln!("  PNG header error: {e}"); return; }
+    };
+    if let Err(e) = writer.write_image_data(rgba) {
+        eprintln!("  PNG write error: {e}");
+    }
+}
+
+fn jet(t: f64) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let (r, g, b) = if t < 0.125 {
+        (0.0, 0.0, 0.5 + t / 0.125 * 0.5)
+    } else if t < 0.375 {
+        (0.0, (t - 0.125) / 0.25, 1.0)
+    } else if t < 0.625 {
+        ((t - 0.375) / 0.25, 1.0, 1.0 - (t - 0.375) / 0.25)
+    } else if t < 0.875 {
+        (1.0, 1.0 - (t - 0.625) / 0.25, 0.0)
+    } else {
+        (1.0 - (t - 0.875) / 0.125 * 0.5, 0.0, 0.0)
+    };
+    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -6,6 +6,7 @@
 //!
 //! No GUI dependency. Used by both the Tauri app and the headless CLI.
 
+pub mod compute;
 pub mod math;
 pub mod segmentation;
 pub mod io;
