@@ -320,7 +320,7 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                                             .map(|reg| reg.snapshot())
                                             .unwrap_or_else(|_| {
                                                 // Poison: create minimal snapshot from defaults.
-                                                crate::params::Registry::new(std::path::Path::new(".")).snapshot()
+                                                crate::params::Registry::new(std::path::Path::new("."), std::path::Path::new(".")).snapshot()
                                             });
                                         (AccumulatedData {
                                             frames: Vec::new(),

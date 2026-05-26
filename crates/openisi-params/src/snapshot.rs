@@ -100,38 +100,96 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
 }
 
 impl RegistrySnapshot {
-    /// Build a snapshot from a JSON tree produced by `to_json_for_target`.
-    /// Walks `PARAM_DEFS` filtered to `target`; for each param, follows
-    /// its `toml_path` through `root`. Missing paths fall through to
-    /// the param's `default` — necessary for forward compatibility
-    /// when older `.oisi` files predate a parameter's introduction.
-    /// Schema-mismatched values (e.g. string where number expected)
-    /// error out via `ParamsError::Config`.
+    /// Build a snapshot from a JSON tree produced by `to_json_for_target`
+    /// (e.g. a `.oisi` file's `/analysis_params` attribute).
     ///
-    /// Constructs the snapshot directly from `PARAM_DEFS` defaults
-    /// initially, then overlays values from the JSON. Other targets
-    /// (params not in `target`) keep their defaults — the snapshot
-    /// is fully populated.
+    /// **Strict, fail-loud schema — no silent fallbacks.** This
+    /// reconstructs the exact parameters a recorded result was produced
+    /// with; silently substituting a code default would corrupt
+    /// provenance and break reproducibility. Therefore:
+    /// - Every param with `persist == target` MUST be present in `root`.
+    ///   A missing key is a hard `ParamsError::Config` naming what's
+    ///   absent. Files predating a parameter are handled upstream by the
+    ///   explicit migration gate (`isi_analysis::io::is_pre_2026_analysis_params`),
+    ///   not by silently defaulting here.
+    /// - Any leaf key in `root` that is NOT a registered `target` param
+    ///   is a hard error (unknown / typo'd key) — mirrors the TOML
+    ///   loader's `deny_unknown`-style strictness in `toml_io`.
+    /// - Schema-mismatched values (string where number expected, integer
+    ///   out of range) error out via `json_value_to_param`.
+    ///
+    /// Params of *other* targets keep their `PARAM_DEFS` defaults so the
+    /// returned snapshot is fully populated.
     pub fn from_json_tree(
         target: super::PersistTarget,
         root: &serde_json::Value,
     ) -> crate::error::ParamsResult<Self> {
-        // Start from defaults for every param.
+        use crate::error::ParamsError;
+
+        // Start from defaults for every param (other targets stay default).
         let mut values: Vec<ParamValue> =
             PARAM_DEFS.iter().map(|def| def.default.clone()).collect();
 
-        // Overlay values from the JSON tree for params in this target.
+        // Overlay values for params in this target; a missing key is fatal.
+        let mut known_paths: std::collections::HashSet<&'static str> =
+            std::collections::HashSet::new();
+        let mut missing: Vec<&'static str> = Vec::new();
         for def in PARAM_DEFS.iter() {
             if def.persist != target {
                 continue;
             }
-            let Some(json_value) = navigate_dotted(root, def.toml_path) else {
-                continue; // missing → leave default
-            };
-            values[def.id as usize] = json_value_to_param(&def.default, json_value, def.toml_path)?;
+            known_paths.insert(def.toml_path);
+            match navigate_dotted(root, def.toml_path) {
+                Some(json_value) => {
+                    values[def.id as usize] =
+                        json_value_to_param(&def.default, json_value, def.toml_path)?;
+                }
+                None => missing.push(def.toml_path),
+            }
+        }
+        if !missing.is_empty() {
+            return Err(ParamsError::Config(format!(
+                "registry tree for {target:?} is missing required key(s): {}. \
+                 The recorded parameters are incomplete for the current schema — \
+                 re-run analysis or migrate the file.",
+                missing.join(", ")
+            )));
+        }
+
+        // Reject any leaf key that is not a registered param for this target.
+        let mut unknown: Vec<String> = Vec::new();
+        collect_unknown_json_leaves(root, "", &known_paths, &mut unknown);
+        if !unknown.is_empty() {
+            return Err(ParamsError::Config(format!(
+                "registry tree for {target:?} has unknown key(s) not defined in the \
+                 parameter registry: {}",
+                unknown.join(", ")
+            )));
         }
 
         Ok(Self { values })
+    }
+}
+
+/// Walk a JSON object tree and append the dotted path of every leaf value
+/// that is not a known `toml_path` for the target. Mirrors
+/// `toml_io::collect_unknown_leaves` for the JSON provenance form, so the
+/// `.oisi` reload path rejects unknown keys exactly as the TOML loader does.
+fn collect_unknown_json_leaves(
+    val: &serde_json::Value,
+    prefix: &str,
+    known: &std::collections::HashSet<&'static str>,
+    out: &mut Vec<String>,
+) {
+    if let serde_json::Value::Object(map) = val {
+        for (k, v) in map {
+            let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+            if v.is_object() {
+                collect_unknown_json_leaves(v, &path, known, out);
+            } else if !known.contains(path.as_str()) {
+                out.push(path);
+            }
+        }
     }
 }
 
@@ -158,14 +216,33 @@ fn json_value_to_param(
     match template {
         ParamValue::Bool(_) => json.as_bool().map(ParamValue::Bool)
             .ok_or_else(|| cfg(format!("expected bool at {path}"))),
-        ParamValue::U16(_) => json.as_u64().map(|v| ParamValue::U16(v as u16))
-            .ok_or_else(|| cfg(format!("expected integer at {path}"))),
-        ParamValue::U32(_) => json.as_u64().map(|v| ParamValue::U32(v as u32))
-            .ok_or_else(|| cfg(format!("expected integer at {path}"))),
-        ParamValue::I32(_) => json.as_i64().map(|v| ParamValue::I32(v as i32))
-            .ok_or_else(|| cfg(format!("expected integer at {path}"))),
-        ParamValue::Usize(_) => json.as_u64().map(|v| ParamValue::Usize(v as usize))
-            .ok_or_else(|| cfg(format!("expected non-negative integer at {path}"))),
+        // Integer types: range-checked, never silently truncating. A value
+        // outside the target type's range is a hard error, not a wrapped
+        // number — silent coercion would corrupt provenance.
+        ParamValue::U16(_) => {
+            let n = json.as_u64()
+                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
+            u16::try_from(n).map(ParamValue::U16)
+                .map_err(|_| cfg(format!("value {n} at {path} out of range for u16 (0..={})", u16::MAX)))
+        }
+        ParamValue::U32(_) => {
+            let n = json.as_u64()
+                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
+            u32::try_from(n).map(ParamValue::U32)
+                .map_err(|_| cfg(format!("value {n} at {path} out of range for u32 (0..={})", u32::MAX)))
+        }
+        ParamValue::I32(_) => {
+            let n = json.as_i64()
+                .ok_or_else(|| cfg(format!("expected integer at {path}")))?;
+            i32::try_from(n).map(ParamValue::I32)
+                .map_err(|_| cfg(format!("value {n} at {path} out of range for i32 ({}..={})", i32::MIN, i32::MAX)))
+        }
+        ParamValue::Usize(_) => {
+            let n = json.as_u64()
+                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
+            usize::try_from(n).map(ParamValue::Usize)
+                .map_err(|_| cfg(format!("value {n} at {path} out of range for usize")))
+        }
         ParamValue::F64(_) => json.as_f64()
             .or_else(|| json.as_i64().map(|i| i as f64))
             .map(ParamValue::F64)
@@ -498,5 +575,85 @@ impl RegistrySnapshot {
         let mean = self.mean_luminance();
         let contrast = self.contrast();
         (mean - contrast * mean).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod from_json_tree_tests {
+    use super::*;
+    use crate::{PersistTarget, Registry};
+    use std::path::Path;
+
+    fn default_snapshot() -> RegistrySnapshot {
+        // Paths are unused — we only snapshot PARAM_DEFS defaults, no load.
+        Registry::new(Path::new("."), Path::new(".")).snapshot()
+    }
+
+    fn default_analysis_tree() -> serde_json::Value {
+        default_snapshot().to_json_for_target(PersistTarget::Analysis)
+    }
+
+    /// A tree written by `to_json_for_target` round-trips back to the same
+    /// values — the writer and the strict reader agree on the schema.
+    #[test]
+    fn round_trips_complete_tree() {
+        let tree = default_analysis_tree();
+        let snap = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
+            .expect("complete tree should load");
+        let def_snap = default_snapshot();
+        for def in PARAM_DEFS.iter().filter(|d| d.persist == PersistTarget::Analysis) {
+            assert_eq!(snap.get(def.id), def_snap.get(def.id), "mismatch at {}", def.toml_path);
+        }
+    }
+
+    /// A missing analysis key is fatal — no silent default. Names the key.
+    #[test]
+    fn missing_key_is_fatal() {
+        let mut tree = default_analysis_tree();
+        let victim = PARAM_DEFS.iter()
+            .find(|d| d.persist == PersistTarget::Analysis)
+            .expect("at least one Analysis param");
+        // Drop the whole top-level section so its leaf(s) go missing.
+        let top = victim.toml_path.split('.').next().unwrap().to_string();
+        tree.as_object_mut().unwrap().remove(&top);
+
+        let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
+            .expect_err("missing key must fail");
+        assert!(format!("{err}").contains("missing required key"), "got: {err}");
+    }
+
+    /// An unknown leaf key is fatal (deny-unknown parity with the TOML loader).
+    #[test]
+    fn unknown_key_is_fatal() {
+        let mut tree = default_analysis_tree();
+        tree.as_object_mut().unwrap()
+            .insert("bogus_stage".into(), serde_json::json!({ "nonsense": 1 }));
+        let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
+            .expect_err("unknown key must fail");
+        assert!(format!("{err}").contains("unknown key"), "got: {err}");
+    }
+
+    /// An out-of-range integer is fatal — never silently truncated/wrapped.
+    #[test]
+    fn out_of_range_integer_is_fatal() {
+        let mut tree = default_analysis_tree();
+        let int_param = PARAM_DEFS.iter().find(|d| {
+            d.persist == PersistTarget::Analysis
+                && matches!(d.default, ParamValue::U16(_) | ParamValue::U32(_) | ParamValue::I32(_))
+        });
+        let Some(p) = int_param else { return; }; // no integer analysis param to exercise
+
+        // Set the leaf well beyond u32::MAX — out of range for u16/u32/i32 alike.
+        let huge = serde_json::json!(u64::from(u32::MAX) + 1_000_000);
+        let parts: Vec<&str> = p.toml_path.split('.').collect();
+        let mut cur = &mut tree;
+        for seg in &parts[..parts.len() - 1] {
+            cur = cur.as_object_mut().unwrap().get_mut(*seg).unwrap();
+        }
+        cur.as_object_mut().unwrap().insert(parts[parts.len() - 1].to_string(), huge);
+
+        let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
+            .expect_err("out-of-range integer must fail");
+        assert!(format!("{err}").contains("out of range"), "got: {err}");
     }
 }

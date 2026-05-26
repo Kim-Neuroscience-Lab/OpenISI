@@ -113,7 +113,9 @@ fn load_registry() -> AppResult<Registry> {
             candidate_paths.join(", ")
         )))?;
 
-    let mut registry = Registry::new(&config_dir);
+    // Behavior-preserving placeholder: shipped == user == config_dir,
+    // pending proper dev/prod path resolution.
+    let mut registry = Registry::new(&config_dir, &config_dir);
     registry.load_rig().map_err(|e| AppError::Config(
         format!("load rig config from {}: {e}", config_dir.display())
     ))?;
@@ -215,6 +217,7 @@ fn cmd_info() -> AppResult<()> {
             println!("  Binning: max {}x{}, stepping h={} v={}", max_h, max_v, step_h, step_v);
         }
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -241,7 +244,7 @@ fn cmd_validate_display(args: &[String]) -> AppResult<()> {
 
     let dxgi_output = match monitor::find_dxgi_output(idx) {
         Ok(o) => o,
-        Err(e) => { eprintln!("Failed to find DXGI output: {e}"); return; }
+        Err(e) => { eprintln!("Failed to find DXGI output: {e}"); return Ok(()); }
     };
 
     let mut qpc_freq = 0i64;
@@ -283,6 +286,7 @@ fn cmd_validate_display(args: &[String]) -> AppResult<()> {
     } else {
         println!("Match:    OK ({:.1}% difference)", mismatch * 100.0);
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -351,7 +355,7 @@ fn cmd_validate_timing(args: &[String]) -> AppResult<()> {
             Ok(None) => std::thread::sleep(Duration::from_millis(
                 snap.camera_first_frame_poll_ms() as u64
             )),
-            Err(e) => { eprintln!("Frame error: {e}"); return; }
+            Err(e) => { eprintln!("Frame error: {e}"); return Ok(()); }
         }
     }
 
@@ -387,7 +391,7 @@ fn cmd_validate_timing(args: &[String]) -> AppResult<()> {
         match stim_evt_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(StimulusEvt::Ready) => break,
             Ok(_) => {}
-            Err(_) => { eprintln!("Stimulus thread timeout"); return; }
+            Err(_) => { eprintln!("Stimulus thread timeout"); return Ok(()); }
         }
     }
 
@@ -437,7 +441,7 @@ fn cmd_validate_timing(args: &[String]) -> AppResult<()> {
 
     let dxgi_output = match monitor::find_dxgi_output(stim_idx) {
         Ok(o) => o,
-        Err(e) => { eprintln!("DXGI: {e}"); return; }
+        Err(e) => { eprintln!("DXGI: {e}"); return Ok(()); }
     };
     let mut stim_timestamps: Vec<i64> = Vec::new();
     for _ in 0..200 {
@@ -535,6 +539,7 @@ fn cmd_validate_timing(args: &[String]) -> AppResult<()> {
     print!("{tc}");
     println!("Clock offset: mean={:.1}µs, uncertainty={:.1}µs",
         offset_mean, clock_offset_uncertainty_us);
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -629,7 +634,7 @@ fn cmd_acquire(args: &[String]) -> AppResult<()> {
         match stim_evt_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(StimulusEvt::Ready) => { println!("Stimulus thread ready"); break; }
             Ok(_) => {}
-            Err(_) => { eprintln!("Stimulus thread did not become ready in 10s"); return; }
+            Err(_) => { eprintln!("Stimulus thread did not become ready in 10s"); return Ok(()); }
         }
     }
 
@@ -670,7 +675,7 @@ fn cmd_acquire(args: &[String]) -> AppResult<()> {
         match recorder.get_latest_frame() {
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(snap.camera_first_frame_poll_ms() as u64)),
-            Err(e) => { eprintln!("Frame read error: {e}"); return; }
+            Err(e) => { eprintln!("Frame read error: {e}"); return Ok(()); }
         }
     }
     println!("Camera streaming");
@@ -782,6 +787,7 @@ fn cmd_acquire(args: &[String]) -> AppResult<()> {
     } else {
         eprintln!("No stimulus dataset — skipping export");
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1710,7 +1716,8 @@ fn translate_pre_2026_analysis_params(
 ) -> AppResult<serde_json::Value> {
     // Base = registry defaults. We overlay the old tree's stage methods
     // and tunables on top of this.
-    let default_registry = openisi_params::Registry::new(std::path::Path::new("/tmp/migrate"));
+    let migrate_dir = std::path::Path::new("/tmp/migrate");
+    let default_registry = openisi_params::Registry::new(migrate_dir, migrate_dir);
     let mut new_tree = default_registry
         .snapshot()
         .to_json_for_target(openisi_params::PersistTarget::Analysis);

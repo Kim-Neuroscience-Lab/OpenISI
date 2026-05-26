@@ -36,7 +36,8 @@ pub fn list_experiments(state: State<'_, SharedState>) -> AppResult<Vec<Experime
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "toml") {
                 // Try to load via a temporary registry to read the experiment params.
-                let mut tmp_reg = crate::params::Registry::new(path.parent().unwrap_or(std::path::Path::new(".")));
+                let cfg_parent = path.parent().unwrap_or(std::path::Path::new("."));
+                let mut tmp_reg = crate::params::Registry::new(cfg_parent, cfg_parent);
                 if crate::params::toml_io::load_experiment(&mut tmp_reg, &path).is_ok() {
                     let snap = tmp_reg.snapshot();
                     summaries.push(ExperimentSummary {

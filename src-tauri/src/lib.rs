@@ -40,7 +40,11 @@ fn try_run() -> AppResult<()> {
 
     let config_dir = find_config_dir(&exe_dir)?;
 
-    let mut registry = Registry::new(&config_dir);
+    // Behavior-preserving placeholder: shipped == user == config_dir, as
+    // before the two-layer split. Proper dev/prod resolution (Tauri
+    // resource_dir for shipped, app_config_dir for the user layer) is a
+    // follow-up step.
+    let mut registry = Registry::new(&config_dir, &config_dir);
     registry.load_rig().map_err(|e| AppError::Config(format!(
         "load rig params from {}: {e}", config_dir.display()
     )))?;

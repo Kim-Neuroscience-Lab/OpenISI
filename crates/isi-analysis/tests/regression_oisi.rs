@@ -222,7 +222,7 @@ fn device_stability_vs_embedded_results() {
             openisi_params::PersistTarget::Analysis,
             &tree,
         ).expect("from_json_tree failed"),
-        None => openisi_params::Registry::new(std::path::Path::new("/tmp/regression"))
+        None => openisi_params::Registry::new(std::path::Path::new("/tmp/regression"), std::path::Path::new("/tmp/regression"))
             .snapshot(),
     };
     let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);

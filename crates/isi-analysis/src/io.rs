@@ -1319,7 +1319,8 @@ mod tests {
     /// writing results. Construction flows through the SSoT param
     /// registry → bridge, the same path production uses.
     fn test_params() -> crate::AnalysisParams {
-        let reg = openisi_params::Registry::new(std::path::Path::new("/tmp/test"));
+        let dir = std::path::Path::new("/tmp/test");
+        let reg = openisi_params::Registry::new(dir, dir);
         crate::bridge::analysis_params_from_snapshot(&reg.snapshot())
     }
 

@@ -17,14 +17,30 @@ use crate::error::{ParamsError, ParamsResult};
 
 // ─── Loading ──────────────────────────────────────────────────────────────────
 
-/// Load a TOML file for one `PersistTarget`. Unknown keys (paths not in the
-/// registry for that target) are a hard error, not silently ignored. Keys
-/// that fail to parse to the declared type are also a hard error.
+/// Which config layer a TOML file represents — drives whether reads
+/// mark params as user overrides (so `save_user_*` later serializes
+/// them) or apply them silently as the shipped baseline.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LoadLayer {
+    /// Shipped/baseline read. Values populate `values[]` via the
+    /// internal `set_from_shipped`; `user_overrides` is NOT touched.
+    Shipped,
+    /// User-layer read (either from `user_dir/<target>.toml` or from a
+    /// user-chosen template path). Values populate `values[]` via the
+    /// public `set` which marks them in `user_overrides`.
+    User,
+}
+
+/// Load a TOML file for one `PersistTarget` at the given layer. Unknown
+/// keys (paths not in the registry for that target) are a hard error,
+/// not silently ignored. Keys that fail to parse to the declared type
+/// are also a hard error.
 fn load_for_target(
     registry: &mut Registry,
     path: &Path,
     target: PersistTarget,
     label: &str,
+    layer: LoadLayer,
 ) -> ParamsResult<()> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| ParamsError::Config(format!("Failed to read {label} ({}): {e}", path.display())))?;
@@ -33,7 +49,7 @@ fn load_for_target(
     })?;
 
     // 1. Set every registered param for this target whose key is present.
-    //    Wrapped in `batch()` so the N individual `set()` validations don't
+    //    Wrapped in `batch()` so the N individual set validations don't
     //    fire N change events — at most one event is emitted when the load
     //    completes.
     let mut known_paths: std::collections::HashSet<&'static str> =
@@ -52,7 +68,10 @@ fn load_for_target(
                 let pv = toml_to_param_value(def.id, val).map_err(|e| {
                     ParamsError::Config(format!("{label}: {e}"))
                 })?;
-                reg.set(def.id, pv)?;
+                match layer {
+                    LoadLayer::Shipped => reg.set_from_shipped(def.id, pv)?,
+                    LoadLayer::User => reg.set(def.id, pv)?,
+                }
             }
         }
         Ok(())
@@ -72,19 +91,50 @@ fn load_for_target(
     Ok(())
 }
 
-/// Load rig.toml into the registry, setting all Rig-target parameters.
-pub fn load_rig(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
-    load_for_target(registry, path, PersistTarget::Rig, "rig.toml")
+// ── Shipped-layer loaders (baseline; do NOT mark user_overrides) ─────
+
+/// Load the shipped rig.toml into the registry's baseline.
+pub fn load_shipped_rig(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Rig, "rig.toml (shipped)", LoadLayer::Shipped)
 }
 
-/// Load analysis.toml into the registry, setting all Analysis-target parameters.
-pub fn load_analysis(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
-    load_for_target(registry, path, PersistTarget::Analysis, "analysis.toml")
+/// Load the shipped analysis.toml into the registry's baseline.
+pub fn load_shipped_analysis(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Analysis, "analysis.toml (shipped)", LoadLayer::Shipped)
 }
 
-/// Load experiment.toml into the registry, setting all Experiment-target parameters.
+/// Load the shipped experiment.toml into the registry's baseline.
+pub fn load_shipped_experiment(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Experiment, "experiment.toml (shipped)", LoadLayer::Shipped)
+}
+
+// ── User-layer loaders (overlay; mark user_overrides) ────────────────
+
+/// Overlay the user's rig.toml on top of the baseline. Params present
+/// in the file are marked as user overrides so `save_user_rig` will
+/// re-serialize them.
+pub fn load_user_rig(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Rig, "rig.toml (user)", LoadLayer::User)
+}
+
+/// Overlay the user's analysis.toml on top of the baseline.
+pub fn load_user_analysis(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Analysis, "analysis.toml (user)", LoadLayer::User)
+}
+
+/// Overlay the user's experiment.toml on top of the baseline.
+pub fn load_user_experiment(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
+    load_for_target(registry, path, PersistTarget::Experiment, "experiment.toml (user)", LoadLayer::User)
+}
+
+/// Load a stand-alone experiment template from an arbitrary path
+/// (typically chosen by the user via a file dialog). All params present
+/// are applied as user overrides — opening a template is equivalent to
+/// the user setting each value by hand. Distinct from the layered
+/// `load_user_experiment`, which targets the canonical user-overrides
+/// file at `user_dir/experiment.toml`.
 pub fn load_experiment(registry: &mut Registry, path: &Path) -> ParamsResult<()> {
-    load_for_target(registry, path, PersistTarget::Experiment, "experiment.toml")
+    load_for_target(registry, path, PersistTarget::Experiment, "experiment template", LoadLayer::User)
 }
 
 /// Walk a TOML table and append the dotted path of every leaf value that
@@ -159,8 +209,48 @@ pub fn load_experiment_file(
 
 // ─── Saving ───────────────────────────────────────────────────────────────────
 
-/// Save params for one `PersistTarget` to a TOML file.
-fn save_for_target(
+/// Write a TOML root to `path`, creating parent directories on demand.
+/// Common tail for both the user-layer and full-snapshot savers.
+fn write_toml(
+    path: &Path,
+    root: toml::map::Map<String, toml::Value>,
+    label: &str,
+) -> ParamsResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ParamsError::Config(format!("Failed to create {} for {label}: {e}", parent.display()))
+        })?;
+    }
+    let toml_str = toml::to_string_pretty(&toml::Value::Table(root))
+        .map_err(|e| ParamsError::Config(format!("Failed to serialize {label}: {e}")))?;
+    std::fs::write(path, toml_str)
+        .map_err(|e| ParamsError::Config(format!("Failed to write {} ({label}): {e}", path.display())))
+}
+
+/// Serialize only the params currently in `registry.user_overrides`
+/// whose persist target matches. The shipped baseline is never written
+/// — this is the user layer.
+fn save_user_for_target(
+    registry: &Registry,
+    path: &Path,
+    target: PersistTarget,
+    label: &str,
+) -> ParamsResult<()> {
+    let mut root = toml::map::Map::new();
+    for def in PARAM_DEFS.iter() {
+        if def.persist != target { continue; }
+        if !registry.is_user_override(def.id) { continue; }
+        let value = registry.get(def.id);
+        let toml_val = param_value_to_toml(value);
+        insert_at_path(&mut root, def.toml_path, toml_val)?;
+    }
+    write_toml(path, root, label)
+}
+
+/// Serialize every param with the given persist target — full snapshot,
+/// independent of `user_overrides`. Used by the named-experiment-template
+/// feature (`save_experiment_as`), not by the layered auto-persist path.
+fn save_full_for_target(
     registry: &Registry,
     path: &Path,
     target: PersistTarget,
@@ -173,39 +263,33 @@ fn save_for_target(
         let toml_val = param_value_to_toml(value);
         insert_at_path(&mut root, def.toml_path, toml_val)?;
     }
-    let toml_str = toml::to_string_pretty(&toml::Value::Table(root))
-        .map_err(|e| ParamsError::Config(format!("Failed to serialize {label}: {e}")))?;
-    std::fs::write(path, toml_str)
-        .map_err(|e| ParamsError::Config(format!("Failed to write {} ({label}): {e}", path.display())))
+    write_toml(path, root, label)
 }
 
-/// Save all Rig-target parameters to a TOML file.
-pub fn save_rig(registry: &Registry, path: &Path) -> ParamsResult<()> {
-    save_for_target(registry, path, PersistTarget::Rig, "rig.toml")
+// ── User-layer savers (sparse; user_overrides only) ──────────────────
+
+/// Write the user layer's rig.toml — only params currently marked as
+/// user overrides for the Rig target. Creates `path`'s parent dir lazily.
+pub fn save_user_rig(registry: &Registry, path: &Path) -> ParamsResult<()> {
+    save_user_for_target(registry, path, PersistTarget::Rig, "rig.toml (user)")
 }
 
-/// Save all Analysis-target parameters to a TOML file.
-pub fn save_analysis(registry: &Registry, path: &Path) -> ParamsResult<()> {
-    save_for_target(registry, path, PersistTarget::Analysis, "analysis.toml")
+/// Write the user layer's analysis.toml.
+pub fn save_user_analysis(registry: &Registry, path: &Path) -> ParamsResult<()> {
+    save_user_for_target(registry, path, PersistTarget::Analysis, "analysis.toml (user)")
 }
 
-/// Save all Experiment-target parameters to a TOML file.
+/// Write the user layer's experiment.toml.
+pub fn save_user_experiment(registry: &Registry, path: &Path) -> ParamsResult<()> {
+    save_user_for_target(registry, path, PersistTarget::Experiment, "experiment.toml (user)")
+}
+
+/// Save a stand-alone experiment template — full snapshot of every
+/// Experiment-target param to an arbitrary user-chosen path. Distinct
+/// from `save_user_experiment`, which writes only user overrides to
+/// the layered file. Used by the `save_experiment_as` Tauri command.
 pub fn save_experiment(registry: &Registry, path: &Path) -> ParamsResult<()> {
-    let mut root = toml::map::Map::new();
-
-    for def in PARAM_DEFS.iter() {
-        if def.persist != PersistTarget::Experiment {
-            continue;
-        }
-        let value = registry.get(def.id);
-        let toml_val = param_value_to_toml(value);
-        insert_at_path(&mut root, def.toml_path, toml_val)?;
-    }
-
-    let toml_str = toml::to_string_pretty(&toml::Value::Table(root))
-        .map_err(|e| ParamsError::Config(format!("Failed to serialize experiment: {e}")))?;
-    std::fs::write(path, toml_str)
-        .map_err(|e| ParamsError::Config(format!("Failed to write {}: {e}", path.display())))
+    save_full_for_target(registry, path, PersistTarget::Experiment, "experiment template")
 }
 
 /// Save experiment params + metadata to a .experiment.toml file.
@@ -302,14 +386,33 @@ fn toml_to_param_value(id: ParamId, val: &toml::Value) -> ParamsResult<ParamValu
     match &def.default {
         ParamValue::Bool(_) => val.as_bool().map(ParamValue::Bool)
             .ok_or_else(|| cfg(format!("expected bool for {}", def.toml_path))),
-        ParamValue::U16(_) => val.as_integer().map(|v| ParamValue::U16(v as u16))
-            .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path))),
-        ParamValue::U32(_) => val.as_integer().map(|v| ParamValue::U32(v as u32))
-            .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path))),
-        ParamValue::I32(_) => val.as_integer().map(|v| ParamValue::I32(v as i32))
-            .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path))),
-        ParamValue::Usize(_) => val.as_integer().map(|v| ParamValue::Usize(v as usize))
-            .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path))),
+        // Integer types: range-checked, never silently truncating. TOML
+        // integers are i64; a value outside the target type's range is a
+        // hard error rather than a wrapped number.
+        ParamValue::U16(_) => {
+            let n = val.as_integer()
+                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
+            u16::try_from(n).map(ParamValue::U16)
+                .map_err(|_| cfg(format!("value {n} for {} out of range for u16 (0..={})", def.toml_path, u16::MAX)))
+        }
+        ParamValue::U32(_) => {
+            let n = val.as_integer()
+                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
+            u32::try_from(n).map(ParamValue::U32)
+                .map_err(|_| cfg(format!("value {n} for {} out of range for u32 (0..={})", def.toml_path, u32::MAX)))
+        }
+        ParamValue::I32(_) => {
+            let n = val.as_integer()
+                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
+            i32::try_from(n).map(ParamValue::I32)
+                .map_err(|_| cfg(format!("value {n} for {} out of range for i32 ({}..={})", def.toml_path, i32::MIN, i32::MAX)))
+        }
+        ParamValue::Usize(_) => {
+            let n = val.as_integer()
+                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
+            usize::try_from(n).map(ParamValue::Usize)
+                .map_err(|_| cfg(format!("value {n} for {} out of range for usize", def.toml_path)))
+        }
         ParamValue::F64(_) => {
             if let Some(f) = val.as_float() {
                 Ok(ParamValue::F64(f))

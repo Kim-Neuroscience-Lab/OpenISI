@@ -388,10 +388,18 @@ pub fn write_oisi(
         write_checked_1d(&camera_group, "sequence_numbers", seq_i64)?;
     }
 
-    // Flush + close the HDF5 file before renaming. Dropping `file`
-    // closes the underlying file handle; `flush()` first ensures the
-    // libhdf5 in-memory buffers reach disk. On platforms where rename
-    // requires the source to be closed (Windows), this ordering matters.
+    // Flush + close the HDF5 file before renaming. HDF5's default weak-
+    // close semantics keep the file open as long as any subobject
+    // (group/dataset/attribute) is alive, so `drop(file)` alone is a
+    // no-op for the OS file handle while these group bindings are still
+    // in scope. Drop them explicitly first; on Windows the rename below
+    // fails with "file in use" otherwise. Any new long-lived
+    // group/dataset binding added in this function needs to be dropped
+    // here too.
+    drop(camera_group);
+    drop(sync_group);
+    drop(stim_group);
+    drop(acq_group);
     file.flush().map_err(|e| fs_err(format!("Failed to flush .oisi.partial: {e}")))?;
     drop(file);
 
@@ -802,7 +810,7 @@ mod tests {
             sweep_end_us: Vec::new(),
         };
         // Create a default registry snapshot for the test.
-        let snapshot = crate::params::Registry::new(std::path::Path::new(".")).snapshot();
+        let snapshot = crate::params::Registry::new(std::path::Path::new("."), std::path::Path::new(".")).snapshot();
         let result = write_oisi(&tmp, &ds, data, &snapshot, None, &schedule, None, None, None, true);
         assert!(result.is_ok(), "write_oisi failed: {:?}", result.err());
 

@@ -219,8 +219,7 @@ pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing
     let clock_offset_uncertainty_us = offset_variance.sqrt();
 
     // Stimulus rate: measure WaitForVBlank (~200 samples, ~3s).
-    let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)
-                .map_err(|e| AppError::Hardware(e))?;
+    let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)?;
     let mut qpc_freq = 0i64;
     unsafe {
         let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc_freq);

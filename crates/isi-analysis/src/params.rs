@@ -234,14 +234,16 @@ fn navigate<'a>(root: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_
 /// in [`AcquisitionProperties`] and are recorded via
 /// `/rig_params` + `/experiment_params` at capture time.
 ///
-/// **Strict schema:** every field is required (no `#[serde(default)]`),
-/// `deny_unknown_fields` rejects extras. Hand-edited or corrupted
-/// `.oisi` files with missing or unknown fields fail loudly on
-/// deserialize — they do NOT silently load with code-default values.
-/// The orchestrator catches the error and surfaces it as a clean
+/// **Strict schema, enforced at reconstruction (not via serde on this
+/// struct).** The on-disk form is the Registry-tree JSON in the `.oisi`
+/// `/analysis_params` attribute, reloaded through
+/// `RegistrySnapshot::from_json_tree`, which is fail-loud: every analysis
+/// param must be present and known, or it returns `ParamsError::Config` —
+/// corrupted or incomplete files do NOT silently load with code-default
+/// values. The orchestrator catches that error and surfaces a clean
 /// "schema mismatch — re-run analysis" message; the pre-2026 migration
 /// path (`is_pre_2026_analysis_params`) handles known schema drift
-/// distinctly.
+/// distinctly, upstream of reconstruction.
 ///
 /// **No `Default` impl, no serde derives.** `AnalysisParams` is now a
 /// runtime-only struct — its on-disk form lives in the `.oisi` HDF5

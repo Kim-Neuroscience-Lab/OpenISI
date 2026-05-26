@@ -148,7 +148,8 @@ mod tests {
     /// isn't wired into the bridge, this test fails to compile.
     #[test]
     fn default_registry_roundtrips() {
-        let reg = Registry::new(std::path::Path::new("/tmp/openisi-bridge-test"));
+        let dir = std::path::Path::new("/tmp/openisi-bridge-test");
+        let reg = Registry::new(dir, dir);
         let snap = reg.snapshot();
         let _ap = analysis_params_from_snapshot(&snap);
         // Constructor success is the assertion — if any stage failed to

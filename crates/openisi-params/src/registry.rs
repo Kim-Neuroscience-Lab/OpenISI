@@ -27,10 +27,37 @@ pub trait ParamChangeObserver: Send + Sync {
 }
 
 /// The parameter registry. Owns all ~70 parameter values in a flat Vec
-/// indexed by `ParamId as usize`.
+/// indexed by `ParamId as usize`, plus an explicit set of which params
+/// are "user-layer" (came from `set()` or were read from a user-layer
+/// TOML, as opposed to shipped defaults).
+///
+/// Two-layer config model — same shape as git's system/global/local
+/// configs, VS Code's defaults/user settings, systemd drop-ins. Each
+/// layer's on-disk file contains only what was set AT THAT LAYER;
+/// merge happens at read time. No diff inference.
+///
+/// - **Shipped layer** — `shipped_dir/<target>.toml`. Read-only at
+///   runtime, version-controlled, platform-neutral. Defines the
+///   baseline for any param the user hasn't touched. Params absent
+///   from the shipped TOML fall back to `PARAM_DEFS::default`.
+///
+/// - **User layer** — `user_dir/<target>.toml`. Holds only the params
+///   the user has explicitly set via the UI (or that were loaded from
+///   a previous session of the same). Lazily created on first save.
+///
+/// Effective value: `user_layer` ?? `shipped_layer` ?? `PARAM_DEFS::default`.
+/// Tests pass the same path for both dirs — round-trip then writes
+/// user changes back to the same place reads happen.
 pub struct Registry {
     pub(crate) values: Vec<ParamValue>,
-    config_dir: PathBuf,
+    /// Set of `ParamId`s whose current `values[]` entry belongs to the
+    /// user layer (vs. shipped or `PARAM_DEFS` default). `save_*` writes
+    /// exactly these — never more, never fewer. Populated by public
+    /// `set()` and by `load_*` when reading the user TOML; cleared on a
+    /// future `clear_override()`-style API if one is needed.
+    user_overrides: std::collections::HashSet<ParamId>,
+    shipped_dir: PathBuf,
+    user_dir: PathBuf,
 
     // ── Phase 2: hardware context ────────────────────────────────────
     pub(crate) hardware: HardwareContext,
@@ -53,14 +80,20 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Create a new registry with all parameters at their defaults.
-    pub fn new(config_dir: &Path) -> Self {
+    /// Create a new registry with all parameters at their PARAM_DEFS
+    /// defaults. `shipped_dir` is the read-only source for shipped
+    /// TOMLs; `user_dir` is where the user layer reads and writes.
+    /// Tests can pass the same path for both — saves and loads then
+    /// round-trip in one dir without changing the layering semantics.
+    pub fn new(shipped_dir: &Path, user_dir: &Path) -> Self {
         let values: Vec<ParamValue> = PARAM_DEFS.iter().map(|def| def.default.clone()).collect();
         let dynamic_constraints = build_dynamic_constraints();
         let effective_constraints = vec![None; ParamId::count()];
         Self {
             values,
-            config_dir: config_dir.to_path_buf(),
+            user_overrides: std::collections::HashSet::new(),
+            shipped_dir: shipped_dir.to_path_buf(),
+            user_dir: user_dir.to_path_buf(),
             hardware: HardwareContext::default(),
             dynamic_constraints,
             effective_constraints,
@@ -83,9 +116,37 @@ impl Registry {
         &self.values[id as usize]
     }
 
-    /// Set a parameter value, validating against its effective constraint.
-    /// After storing, recomputes dependent constraints and clamps violators.
+    /// Set a parameter value at the user layer, validating against its
+    /// effective constraint. Marks the param as a user override so it
+    /// will be serialized to `user_dir/<target>.toml` on the next
+    /// `save_*`. This is the public API used by UI commands and any
+    /// caller acting on user intent.
     pub fn set(&mut self, id: ParamId, value: ParamValue) -> ParamsResult<()> {
+        self.set_inner(id, value, /* mark_user */ true)
+    }
+
+    /// Apply a value from the shipped layer (during `load_shipped_*`).
+    /// Same validation as `set`, but does NOT mark the param as a user
+    /// override — shipped values are the baseline, not user intent.
+    /// `pub(crate)` so toml_io can call it; not part of the public API.
+    pub(crate) fn set_from_shipped(
+        &mut self,
+        id: ParamId,
+        value: ParamValue,
+    ) -> ParamsResult<()> {
+        self.set_inner(id, value, /* mark_user */ false)
+    }
+
+    /// Shared implementation: validate, store, optionally mark as user
+    /// override, then emit change events. The `mark_user` flag is the
+    /// only difference between the public `set` and the shipped-layer
+    /// loader path.
+    fn set_inner(
+        &mut self,
+        id: ParamId,
+        value: ParamValue,
+        mark_user: bool,
+    ) -> ParamsResult<()> {
         let def = &PARAM_DEFS[id as usize];
 
         // Validate against effective constraint (dynamic override or static).
@@ -94,6 +155,9 @@ impl Registry {
         constraint.validate(&value, &def.constraint)?;
 
         self.values[id as usize] = value;
+        if mark_user {
+            self.user_overrides.insert(id);
+        }
         self.pending_changes.push(id);
 
         // Recompute constraints that depend on this param.
@@ -105,6 +169,14 @@ impl Registry {
         }
 
         Ok(())
+    }
+
+    /// Returns true if the param has a value set via the user layer
+    /// (either by a `set()` call or by `load_user_*` finding it in
+    /// `user_dir/<target>.toml`). Used by `save_*` to decide what to
+    /// serialize.
+    pub(crate) fn is_user_override(&self, id: ParamId) -> bool {
+        self.user_overrides.contains(&id)
     }
 
     // ── Hardware Context ─────────────────────────────────────────────
@@ -255,66 +327,89 @@ impl Registry {
     }
 
     // ── Persistence ──────────────────────────────────────────────────
+    //
+    // Each load_* is a two-step layered read: shipped first (mandatory,
+    // populates the baseline), then user overlay (optional, present iff
+    // the user has saved something in this category before). Each save_*
+    // writes only params currently in `user_overrides` to the user
+    // layer; the shipped TOML is never touched at runtime.
 
-    /// Save all Rig-target parameters to rig.toml.
-    pub fn save_rig(&self) -> ParamsResult<()> {
-        let path = self.config_dir.join("rig.toml");
-        super::toml_io::save_rig(self, &path)
-    }
-
-    /// Save all Analysis-target parameters to analysis.toml.
-    pub fn save_analysis(&self) -> ParamsResult<()> {
-        let path = self.config_dir.join("analysis.toml");
-        super::toml_io::save_analysis(self, &path)
-    }
-
-    /// Save all Experiment-target parameters to experiment.toml.
-    pub fn save_experiment(&self) -> ParamsResult<()> {
-        let path = self.config_dir.join("experiment.toml");
-        super::toml_io::save_experiment(self, &path)
-    }
-
-    /// Load Rig-target parameters from rig.toml.
+    /// Load Rig-target params: shipped/rig.toml is required; if the
+    /// user has a rig.toml in `user_dir`, it overlays on top.
     pub fn load_rig(&mut self) -> ParamsResult<()> {
-        let path = self.config_dir.join("rig.toml");
-        super::toml_io::load_rig(self, &path)
+        let shipped = self.shipped_dir.join("rig.toml");
+        super::toml_io::load_shipped_rig(self, &shipped)?;
+        let user = self.user_dir.join("rig.toml");
+        if user.exists() {
+            super::toml_io::load_user_rig(self, &user)?;
+        }
+        Ok(())
     }
 
-    /// Load Analysis-target parameters from analysis.toml.
+    /// Load Analysis-target params: shipped/analysis.toml is required;
+    /// user/analysis.toml overlays if present.
     pub fn load_analysis(&mut self) -> ParamsResult<()> {
-        let path = self.config_dir.join("analysis.toml");
-        super::toml_io::load_analysis(self, &path)
+        let shipped = self.shipped_dir.join("analysis.toml");
+        super::toml_io::load_shipped_analysis(self, &shipped)?;
+        let user = self.user_dir.join("analysis.toml");
+        if user.exists() {
+            super::toml_io::load_user_analysis(self, &user)?;
+        }
+        Ok(())
     }
 
-    /// Load Experiment-target parameters from experiment.toml.
+    /// Load Experiment-target params: shipped/experiment.toml is required;
+    /// user/experiment.toml overlays if present.
     pub fn load_experiment(&mut self) -> ParamsResult<()> {
-        let path = self.config_dir.join("experiment.toml");
-        super::toml_io::load_experiment(self, &path)
+        let shipped = self.shipped_dir.join("experiment.toml");
+        super::toml_io::load_shipped_experiment(self, &shipped)?;
+        let user = self.user_dir.join("experiment.toml");
+        if user.exists() {
+            super::toml_io::load_user_experiment(self, &user)?;
+        }
+        Ok(())
     }
 
-    /// Path to the experiments directory (mirrors ConfigManager::experiments_dir).
+    /// Persist the Rig user layer: writes only params currently in
+    /// `user_overrides` to `user_dir/rig.toml`. The shipped TOML is
+    /// never written from runtime. Creates `user_dir` lazily if needed.
+    pub fn save_rig(&self) -> ParamsResult<()> {
+        let path = self.user_dir.join("rig.toml");
+        super::toml_io::save_user_rig(self, &path)
+    }
+
+    /// Persist the Analysis user layer.
+    pub fn save_analysis(&self) -> ParamsResult<()> {
+        let path = self.user_dir.join("analysis.toml");
+        super::toml_io::save_user_analysis(self, &path)
+    }
+
+    /// Persist the Experiment user layer.
+    pub fn save_experiment(&self) -> ParamsResult<()> {
+        let path = self.user_dir.join("experiment.toml");
+        super::toml_io::save_user_experiment(self, &path)
+    }
+
+    /// Path to the experiments directory. If `experiments_directory`
+    /// param is set, use that. Otherwise fall back to `user_dir/experiments`
+    /// — this dir must be writable, so it cannot be the shipped layer.
     pub fn experiments_dir(&self) -> PathBuf {
         let dir = self.experiments_directory();
         if !dir.is_empty() {
             PathBuf::from(dir)
         } else {
-            self.config_dir.join("experiments")
+            self.user_dir.join("experiments")
         }
     }
 
-    /// Config directory accessor.
-    pub fn config_dir(&self) -> &Path {
-        &self.config_dir
+    /// Shipped-layer directory accessor (read-only, version-controlled).
+    pub fn shipped_dir(&self) -> &Path {
+        &self.shipped_dir
     }
 
-    /// Rig TOML path.
-    pub fn rig_path(&self) -> PathBuf {
-        self.config_dir.join("rig.toml")
-    }
-
-    /// Experiment TOML path.
-    pub fn experiment_path(&self) -> PathBuf {
-        self.config_dir.join("experiment.toml")
+    /// User-layer directory accessor (read+write, per-user).
+    pub fn user_dir(&self) -> &Path {
+        &self.user_dir
     }
 
     /// Get the ParamDef for a given ID.
@@ -375,14 +470,15 @@ mod tests {
 
     #[test]
     fn defaults_load_without_panic() {
-        let reg = Registry::new(&config_dir());
+        let dir = config_dir();
+        let reg = Registry::new(&dir, &dir);
         assert_eq!(reg.values.len(), ParamId::count());
     }
 
     #[test]
     fn defaults_match_toml() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.load_rig().expect("load rig.toml");
         reg.load_experiment().expect("load experiment.toml");
 
@@ -414,16 +510,28 @@ mod tests {
     #[test]
     fn rig_toml_round_trip() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.load_rig().expect("load rig.toml");
+
+        // Mark every Rig param as a user override so the sparse user-layer
+        // saver writes all of them — exercises a full serialize round-trip
+        // through the production save_user_rig / load_user_rig path.
+        let rig_values: Vec<(ParamId, ParamValue)> = PARAM_DEFS
+            .iter()
+            .filter(|d| d.persist == PersistTarget::Rig)
+            .map(|d| (d.id, reg.get(d.id).clone()))
+            .collect();
+        for (id, val) in rig_values {
+            reg.set(id, val).expect("re-set rig param as user override");
+        }
 
         // Save to temp file
         let tmp = std::env::temp_dir().join("openisi_test_rig_roundtrip.toml");
-        super::super::toml_io::save_rig(&reg, &tmp).expect("save rig");
+        super::super::toml_io::save_user_rig(&reg, &tmp).expect("save rig");
 
         // Load into new registry and compare
-        let mut reg2 = Registry::new(&dir);
-        super::super::toml_io::load_rig(&mut reg2, &tmp).expect("reload rig");
+        let mut reg2 = Registry::new(&dir, &dir);
+        super::super::toml_io::load_user_rig(&mut reg2, &tmp).expect("reload rig");
 
         for def in PARAM_DEFS.iter() {
             if def.persist == PersistTarget::Rig {
@@ -443,13 +551,13 @@ mod tests {
     #[test]
     fn experiment_toml_round_trip() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.load_experiment().expect("load experiment.toml");
 
         let tmp = std::env::temp_dir().join("openisi_test_exp_roundtrip.toml");
         super::super::toml_io::save_experiment(&reg, &tmp).expect("save experiment");
 
-        let mut reg2 = Registry::new(&dir);
+        let mut reg2 = Registry::new(&dir, &dir);
         super::super::toml_io::load_experiment(&mut reg2, &tmp).expect("reload experiment");
 
         for def in PARAM_DEFS.iter() {
@@ -470,7 +578,7 @@ mod tests {
     #[test]
     fn static_constraint_rejects_invalid() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         // Exposure must be >= 1
         let result = reg.set(ParamId::CameraExposureUs, ParamValue::U32(0));
         assert!(result.is_err(), "should reject exposure_us = 0");
@@ -479,7 +587,7 @@ mod tests {
     #[test]
     fn static_constraint_accepts_valid() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         let result = reg.set(ParamId::CameraExposureUs, ParamValue::U32(5000));
         assert!(result.is_ok(), "should accept exposure_us = 5000");
         assert_eq!(reg.camera_exposure_us(), 5000);
@@ -490,7 +598,7 @@ mod tests {
     #[test]
     fn hardware_injection_changes_effective_constraint() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         // Before hardware: effective constraint is Static (from ParamDef)
         let c = reg.effective_constraint(ParamId::CameraExposureUs);
@@ -516,7 +624,7 @@ mod tests {
     #[test]
     fn hardware_injection_clamps_out_of_range_values() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         // Set exposure to 1000 (valid for static range 1..1_000_000)
         reg.set(ParamId::CameraExposureUs, ParamValue::U32(1000)).unwrap();
@@ -535,7 +643,7 @@ mod tests {
     #[test]
     fn dynamic_constraint_rejects_out_of_range() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         reg.inject_hardware(HardwareContext {
             camera_min_exposure_us: Some(100),
@@ -555,7 +663,7 @@ mod tests {
     #[test]
     fn batch_mode_groups_changes() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         // In batch mode, pending_changes accumulate.
         reg.batch(|r| {
@@ -575,7 +683,7 @@ mod tests {
     #[test]
     fn snapshot_captures_current_state() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.load_rig().expect("load rig.toml");
         reg.load_experiment().expect("load experiment.toml");
 
@@ -597,7 +705,7 @@ mod tests {
     #[test]
     fn computed_luminance_values() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         // Default: mean=0.5, contrast=1.0
         // high = 0.5 + 1.0 * 0.5 = 1.0
@@ -617,7 +725,7 @@ mod tests {
     #[test]
     fn computed_visual_field_requires_hardware() {
         let dir = config_dir();
-        let reg = Registry::new(&dir);
+        let reg = Registry::new(&dir, &dir);
 
         // Without hardware, visual field is None
         assert!(reg.visual_field_width_deg().is_none());
@@ -627,7 +735,7 @@ mod tests {
     #[test]
     fn computed_visual_field_with_hardware() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0)).unwrap();
 
         reg.inject_hardware(HardwareContext {
@@ -648,7 +756,7 @@ mod tests {
     #[test]
     fn monitor_refresh_constrains_target_fps() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
 
         // Set FPS to 120 (valid with static constraint MinU32(1))
         reg.set(ParamId::TargetStimulusFps, ParamValue::U32(120)).unwrap();
@@ -670,7 +778,7 @@ mod tests {
     #[test]
     fn stimulus_width_constraint_from_geometry() {
         let dir = config_dir();
-        let mut reg = Registry::new(&dir);
+        let mut reg = Registry::new(&dir, &dir);
         reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0)).unwrap();
 
         reg.inject_hardware(HardwareContext {

@@ -691,13 +691,15 @@ fn run_inner(
         let _ = QueryPerformanceFrequency(&mut qpc_freq);
     }
     if qpc_freq == 0 {
-        return Err("QueryPerformanceFrequency returned 0".into());
+        return Err(AcquisitionError::Stimulus(
+            "QueryPerformanceFrequency returned 0".to_string(),
+        ));
     }
 
     // --- Signal ready ---
     evt_tx
         .send(StimulusEvt::Ready)
-        .map_err(|_| "evt_tx closed before Ready".to_string())?;
+        .map_err(|_| AcquisitionError::ChannelClosed { context: "evt_tx closed before Ready" })?;
     eprintln!("[stimulus_thread] ready");
 
     // --- State ---
