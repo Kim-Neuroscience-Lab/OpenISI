@@ -7,6 +7,7 @@ default-run = "openisi"
 
 [dependencies]
 openisi-stimulus = { path = "../crates/openisi-stimulus" }
+openisi-params = { path = "../crates/openisi-params" }
 pco-sdk = { path = "../crates/pco-sdk" }
 isi-analysis = { path = "../crates/isi-analysis" }
 tauri = { version = "2", features = [] }
@@ -41,6 +42,9 @@ windows = { version = "0.59", features = [
     "Win32_Graphics_Dwm",
     "Win32_System_Time",
 ] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

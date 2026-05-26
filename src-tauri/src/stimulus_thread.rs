@@ -53,6 +53,8 @@ use crate::messages::{
 };
 #[cfg(windows)]
 use crate::monitor::find_dxgi_output;
+#[cfg(windows)]
+use crate::error::AcquisitionError;
 
 // =============================================================================
 // Non-Windows stub
@@ -72,7 +74,6 @@ pub fn run(
     _idle_sleep_ms: u32,
     _fps_window_frames: usize,
     _drop_detection_warmup_frames: usize,
-    _drop_detection_threshold: f64,
     _initial_bg_luminance: f64,
 ) {
     eprintln!("[stimulus_thread] Stimulus display is not available on this platform (requires Windows)");
@@ -148,9 +149,10 @@ fn create_fullscreen_window(
     y: i32,
     width: u32,
     height: u32,
-) -> Result<(HWND, isize), String> {
+) -> Result<(HWND, isize), AcquisitionError> {
     unsafe {
-        let hmodule = GetModuleHandleW(None).map_err(|e| format!("GetModuleHandleW: {e}"))?;
+        let hmodule = GetModuleHandleW(None)
+            .map_err(|e| AcquisitionError::Stimulus(format!("GetModuleHandleW: {e}")))?;
         let hinstance = windows::Win32::Foundation::HINSTANCE(hmodule.0);
 
         let class_name: Vec<u16> = "OpenISI_Stimulus\0".encode_utf16().collect();
@@ -182,7 +184,7 @@ fn create_fullscreen_window(
             Some(hinstance),
             None,
         )
-        .map_err(|e| format!("CreateWindowExW: {e}"))?;
+        .map_err(|e| AcquisitionError::Stimulus(format!("CreateWindowExW: {e}")))?;
 
         Ok((hwnd, hinstance.0 as isize))
     }
@@ -193,9 +195,10 @@ fn create_wgpu_surface(
     instance: &wgpu::Instance,
     hwnd: HWND,
     hinstance: isize,
-) -> Result<wgpu::Surface<'static>, String> {
+) -> Result<wgpu::Surface<'static>, AcquisitionError> {
     let hwnd_isize = hwnd.0 as isize;
-    let hwnd_nz = NonZeroIsize::new(hwnd_isize).ok_or("HWND is null")?;
+    let hwnd_nz = NonZeroIsize::new(hwnd_isize)
+        .ok_or_else(|| AcquisitionError::Stimulus("HWND is null".into()))?;
     let mut win32_handle = Win32WindowHandle::new(hwnd_nz);
     win32_handle.hinstance = NonZeroIsize::new(hinstance);
 
@@ -210,7 +213,7 @@ fn create_wgpu_surface(
     unsafe {
         instance
             .create_surface_unsafe(target)
-            .map_err(|e| format!("create_surface_unsafe: {e}"))
+            .map_err(|e| AcquisitionError::Stimulus(format!("create_surface_unsafe: {e}")))
     }
 }
 
@@ -240,10 +243,10 @@ fn render_clear(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     color: wgpu::Color,
-) -> Result<(), String> {
+) -> Result<(), AcquisitionError> {
     let frame = surface
         .get_current_texture()
-        .map_err(|e| format!("get_current_texture: {e}"))?;
+        .map_err(|e| AcquisitionError::Stimulus(format!("get_current_texture: {e}")))?;
     let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
     render_clear_view(device, queue, &view, color);
     frame.present();
@@ -549,8 +552,7 @@ pub fn run(
     preview_cycle_sec: f64,
     idle_sleep_ms: u32,
     _fps_window_frames: usize,
-    _drop_detection_warmup_frames: usize,
-    _drop_detection_threshold: f64,
+    drop_detection_warmup_frames: usize,
     initial_bg_luminance: f64,
 ) {
     if let Err(e) = run_inner(
@@ -564,10 +566,11 @@ pub fn run(
         preview_interval_ms,
         preview_cycle_sec,
         idle_sleep_ms,
+        drop_detection_warmup_frames,
         initial_bg_luminance,
     ) {
         eprintln!("[stimulus_thread] fatal error: {e}");
-        let _ = evt_tx.send(StimulusEvt::Error(e));
+        let _ = evt_tx.send(StimulusEvt::Fatal(e));
     }
 }
 
@@ -583,8 +586,9 @@ fn run_inner(
     preview_interval_ms: u32,
     preview_cycle_sec: f64,
     idle_sleep_ms: u32,
+    drop_detection_warmup_frames: usize,
     initial_bg_luminance: f64,
-) -> Result<(), String> {
+) -> Result<(), AcquisitionError> {
     // --- Create win32 window ---
     let (hwnd, hinstance) = create_fullscreen_window(
         monitor_position.0,
@@ -610,7 +614,7 @@ fn run_inner(
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
     }))
-    .ok_or("No suitable GPU adapter found")?;
+    .ok_or_else(|| AcquisitionError::Stimulus("No suitable GPU adapter found".into()))?;
 
     eprintln!("[stimulus_thread] adapter: {}", adapter.get_info().name);
 
@@ -623,7 +627,7 @@ fn run_inner(
         },
         None,
     ))
-    .map_err(|e| format!("request_device: {e}"))?;
+    .map_err(|e| AcquisitionError::Stimulus(format!("request_device: {e}")))?;
 
     let surface_caps = surface.get_capabilities(&adapter);
     let surface_format = surface_caps
@@ -678,7 +682,8 @@ fn run_inner(
     let preview_interval = Duration::from_millis(preview_interval_ms as u64);
 
     // --- Find DXGI output for WaitForVBlank ---
-    let dxgi_output: IDXGIOutput = find_dxgi_output(monitor_index)?;
+    let dxgi_output: IDXGIOutput = find_dxgi_output(monitor_index)
+        .map_err(|e| AcquisitionError::Stimulus(e.to_string()))?;
 
     // --- QPC frequency ---
     let mut qpc_freq = 0i64;
@@ -705,6 +710,20 @@ fn run_inner(
     let mut start_time_us: i64 = 0;
     let mut preview_start_us: i64 = 0;
     let mut last_present_count: u64 = 0;
+
+    // Drop detection state.
+    //
+    // `drop_detection_warmup_frames` — ignore drops in the first N frames
+    // (composition warm-up, first-render JIT). The DWM present-count
+    // gap is a direct count of missed flips, so we use the gap count
+    // directly; the per-frame Δus-vs-expected ratio test (which would
+    // consume `drop_detection_threshold`) is post-hoc-only and lives
+    // in `crates/openisi-stimulus/src/dataset.rs`.
+    //
+    // Catastrophic-threshold policy lives in the pure helper
+    // `is_catastrophic_drop` (module-level + unit-tested).
+    let mut total_frames_observed: u64 = 0;
+    let mut total_drops: u64 = 0;
 
     // Sweep schedule — records when each sweep started and ended.
     let mut sweep_sequence: Vec<String> = Vec::new();
@@ -820,7 +839,7 @@ fn run_inner(
             unsafe {
                 dxgi_output
                     .WaitForVBlank()
-                    .map_err(|e| format!("WaitForVBlank: {e}"))?;
+                    .map_err(|e| AcquisitionError::Stimulus(format!("WaitForVBlank: {e}")))?;
             }
 
             // Use QPC for sequencer timing (monotonic, no DWM jitter).
@@ -855,7 +874,13 @@ fn run_inner(
             } else {
                 0.0
             };
-            let dir_int = direction_to_int(&sequencer.current_direction);
+            let dir_int = direction_to_int(&sequencer.current_direction).unwrap_or_else(|| {
+                eprintln!(
+                    "[stimulus_thread] unrecognized direction '{}' — rendering baseline",
+                    sequencer.current_direction
+                );
+                0
+            });
             let progress = if sequencer.state == openisi_stimulus::sequencer::State::Sweep {
                 sequencer.get_state_progress() as f32
             } else {
@@ -882,10 +907,37 @@ fn run_inner(
             // This is the QPC value AT the vsync interrupt, not after OS scheduling delay.
             let (vsync_us, _present_count) = if let Some((qpc_vblank, frame_count)) = query_dwm_vsync() {
                 let us = qpc_to_us(qpc_vblank, qpc_freq);
-                // Detect GPU-level frame drops from present count gaps
-                if last_present_count > 0 && frame_count > last_present_count + 1 {
-                    let dropped = frame_count - last_present_count - 1;
-                    eprintln!("[stimulus_thread] DWM present count gap: {} frames dropped", dropped);
+                total_frames_observed += 1;
+                // Detect GPU-level frame drops from present count gaps,
+                // honoring the warmup window (composition / first-render
+                // JIT can produce a few spurious drops at startup).
+                let past_warmup = total_frames_observed > drop_detection_warmup_frames as u64;
+                if past_warmup
+                    && last_present_count > 0
+                    && frame_count > last_present_count + 1
+                {
+                    let gap = frame_count - last_present_count - 1;
+                    total_drops += gap;
+                    eprintln!(
+                        "[stimulus_thread] DWM present-count gap: {} frame(s) dropped (cumulative {}/{})",
+                        gap, total_drops, total_frames_observed
+                    );
+                    // Transient drop event — non-fatal, UI logs it.
+                    let _ = evt_tx.send(StimulusEvt::Error(format!(
+                        "Dropped {gap} stimulus frame(s) (cumulative {total_drops})"
+                    )));
+
+                    // Catastrophic-threshold check (pure helper, see
+                    // `is_catastrophic_drop` for the policy + tests).
+                    if is_catastrophic_drop(total_drops, total_frames_observed, gap) {
+                        let drop_fraction = total_drops as f64 / total_frames_observed as f64;
+                        return Err(AcquisitionError::FrameDrop(format!(
+                            "stimulus drops exceeded catastrophic threshold: \
+                             last gap={gap}, cumulative={total_drops}/{total_frames_observed} \
+                             ({:.2}%)",
+                            drop_fraction * 100.0
+                        )));
+                    }
                 }
                 last_present_count = frame_count;
                 (us, frame_count)
@@ -1012,5 +1064,90 @@ fn run_inner(
             }
             std::thread::sleep(Duration::from_millis(idle_sleep_ms as u64));
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pure drop-detection policy (testable, no Windows/threading deps).
+// ─────────────────────────────────────────────────────────────────────
+
+/// Cumulative-drop fraction above which the run is declared catastrophic.
+/// 5% loss = ~10× the noise floor we see in healthy runs.
+#[cfg(any(windows, test))]
+const CATASTROPHIC_DROP_FRACTION: f64 = 0.05;
+
+/// Single-gap size (in frames) above which the run is declared catastrophic.
+/// ~1 second of blackout at 60 Hz is a clear hardware failure, not a glitch.
+#[cfg(any(windows, test))]
+const CATASTROPHIC_GAP_FRAMES: u64 = 60;
+
+/// Catastrophic-drop policy. Returns `true` when the run should exit
+/// with `AcquisitionError::FrameDrop` instead of continuing.
+///
+/// Two independent triggers, either fires:
+/// - cumulative loss fraction >= `CATASTROPHIC_DROP_FRACTION` (5%)
+/// - last gap size >= `CATASTROPHIC_GAP_FRAMES` (60 frames ≈ 1 s @ 60 Hz)
+///
+/// Pure function — extracted out of the Windows-only render loop so
+/// the policy can be unit-tested on every platform. Available on
+/// Windows for the actual stimulus thread; available everywhere for
+/// tests via `#[cfg(any(windows, test))]`.
+#[cfg(any(windows, test))]
+pub(crate) fn is_catastrophic_drop(
+    cumulative_drops: u64,
+    observed_frames: u64,
+    last_gap_frames: u64,
+) -> bool {
+    if observed_frames == 0 {
+        return false; // can't compute a fraction; not enough info
+    }
+    let fraction = cumulative_drops as f64 / observed_frames as f64;
+    last_gap_frames >= CATASTROPHIC_GAP_FRAMES || fraction >= CATASTROPHIC_DROP_FRACTION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_catastrophic_drop;
+
+    #[test]
+    fn zero_observed_frames_is_not_catastrophic() {
+        // Defensive: can't divide by zero; can't conclude catastrophe.
+        assert!(!is_catastrophic_drop(0, 0, 0));
+        assert!(!is_catastrophic_drop(10, 0, 5));
+    }
+
+    #[test]
+    fn small_drops_under_fraction_threshold_are_safe() {
+        // 4 drops / 100 frames = 4%; gap 1 frame; both below threshold.
+        assert!(!is_catastrophic_drop(4, 100, 1));
+    }
+
+    #[test]
+    fn at_fraction_boundary_is_catastrophic() {
+        // 5 / 100 = exactly 5% → catastrophic (>=, not >).
+        assert!(is_catastrophic_drop(5, 100, 1));
+    }
+
+    #[test]
+    fn over_fraction_threshold_is_catastrophic() {
+        assert!(is_catastrophic_drop(10, 100, 1)); // 10%
+    }
+
+    #[test]
+    fn single_gap_below_threshold_is_safe() {
+        assert!(!is_catastrophic_drop(59, 10_000, 59)); // 0.59% fraction, gap 59
+    }
+
+    #[test]
+    fn single_gap_at_threshold_is_catastrophic() {
+        // gap == CATASTROPHIC_GAP_FRAMES (60) → catastrophic.
+        assert!(is_catastrophic_drop(60, 10_000, 60));
+    }
+
+    #[test]
+    fn single_gap_over_threshold_is_catastrophic_even_with_tiny_fraction() {
+        // 120 drops / 1M frames = 0.012%, but the single gap of 120
+        // is itself catastrophic. Either trigger fires.
+        assert!(is_catastrophic_drop(120, 1_000_000, 120));
     }
 }

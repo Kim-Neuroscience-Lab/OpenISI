@@ -59,8 +59,7 @@ pub fn validate_display(state: State<'_, SharedState>) -> AppResult<crate::sessi
         let sample_count = lock_state(&app.registry, "validate_display registry")?.display_validation_sample_count();
         drop(app); // Release lock during measurement
 
-        let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)
-                .map_err(|e| AppError::Hardware(e))?;
+        let dxgi_output = crate::monitor::find_dxgi_output(monitor_index)?;
 
         let mut qpc_freq = 0i64;
         unsafe {
@@ -322,8 +321,7 @@ pub fn validate_timing(state: State<'_, SharedState>) -> AppResult<crate::timing
 pub fn set_monitor_rotation(state: State<'_, SharedState>, rotation_deg: f64) -> AppResult<()> {
     let app = lock_state(&state, "set_monitor_rotation")?;
     let mut reg = lock_state(&app.registry, "set_monitor_rotation registry")?;
-    reg.set(crate::params::ParamId::MonitorRotationDeg, crate::params::ParamValue::F64(rotation_deg))
-        .map_err(|e| AppError::Validation(e))?;
+    reg.set(crate::params::ParamId::MonitorRotationDeg, crate::params::ParamValue::F64(rotation_deg))?;
     if let Err(e) = reg.save_rig() {
         eprintln!("[params] Failed to save monitor rotation: {e}");
     }
@@ -346,8 +344,7 @@ pub fn get_rig_geometry(state: State<'_, SharedState>) -> AppResult<serde_json::
 pub fn set_viewing_distance(state: State<'_, SharedState>, distance_cm: f64) -> AppResult<()> {
     let app = lock_state(&state, "set_viewing_distance")?;
     let mut reg = lock_state(&app.registry, "set_viewing_distance registry")?;
-    reg.set(crate::params::ParamId::ViewingDistanceCm, crate::params::ParamValue::F64(distance_cm))
-        .map_err(|e| AppError::Validation(e))?;
+    reg.set(crate::params::ParamId::ViewingDistanceCm, crate::params::ParamValue::F64(distance_cm))?;
     if let Err(e) = reg.save_rig() {
         eprintln!("[params] Failed to save viewing distance: {e}");
     }
@@ -396,13 +393,13 @@ pub fn set_ring_overlay(
     use crate::params::{ParamId, ParamValue};
     let app = lock_state(&state, "set_ring_overlay")?;
     let mut reg = lock_state(&app.registry, "set_ring_overlay registry")?;
-    reg.batch(|r| -> Result<(), String> {
+    reg.batch(|r| -> AppResult<()> {
         r.set(ParamId::RingOverlayEnabled, ParamValue::Bool(enabled))?;
         r.set(ParamId::RingOverlayRadiusPx, ParamValue::U32(radius_px))?;
         r.set(ParamId::RingOverlayCenterXPx, ParamValue::U32(center_x_px))?;
         r.set(ParamId::RingOverlayCenterYPx, ParamValue::U32(center_y_px))?;
         Ok(())
-    }).map_err(|e| AppError::Validation(e))?;
+    })?;
     if let Err(e) = reg.save_rig() {
         eprintln!("[params] Failed to save ring overlay: {e}");
     }
@@ -507,8 +504,7 @@ pub fn set_exposure(state: State<'_, SharedState>, exposure_us: u32) -> AppResul
     // Persist to registry.
     {
         let mut reg = lock_state(&app.registry, "set_exposure registry")?;
-        reg.set(crate::params::ParamId::CameraExposureUs, crate::params::ParamValue::U32(exposure_us))
-            .map_err(|e| AppError::Validation(e))?;
+        reg.set(crate::params::ParamId::CameraExposureUs, crate::params::ParamValue::U32(exposure_us))?;
         if let Err(e) = reg.save_rig() {
             eprintln!("[params] Failed to save exposure: {e}");
         }

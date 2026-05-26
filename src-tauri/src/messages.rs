@@ -51,8 +51,13 @@ pub enum StimulusEvt {
     Complete(AcquisitionResult),
     /// Acquisition stopped by user.
     Stopped,
-    /// Thread error.
+    /// Transient error — acquisition continues. Logged to UI but the
+    /// run is still ongoing (e.g. single bad frame, brief render hiccup).
     Error(String),
+    /// Fatal error — the stimulus thread is exiting. The main thread
+    /// MUST stop the acquisition and offer to save partial data. The
+    /// inner `AcquisitionError` carries a stable category code.
+    Fatal(crate::error::AcquisitionError),
 }
 
 /// Preview frame data for the scientist's sidebar.
@@ -133,8 +138,13 @@ pub enum CameraEvt {
     Disconnected,
     /// A new frame is available.
     Frame(CameraFrameData),
-    /// Connection or error.
+    /// Transient error — acquisition continues. Single failed setting,
+    /// brief read hiccup. UI shows but the camera thread keeps running.
     Error(String),
+    /// Fatal error — the camera thread is exiting. Main thread MUST
+    /// stop the acquisition and offer to save partial data. The inner
+    /// `AcquisitionError` carries a stable category code.
+    Fatal(crate::error::AcquisitionError),
 }
 
 /// Info about a detected camera (from enumeration).

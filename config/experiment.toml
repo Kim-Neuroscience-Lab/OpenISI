@@ -1,7 +1,32 @@
+# Two geometry sections, semantically distinct:
+#
+# [geometry] is RIG-level — describes the projection model used to
+# warp the flat stimulus onto the viewer's visual field (spherical /
+# cylindrical / cartesian) and the rendering offsets from the
+# monitor center. These affect what's drawn on the screen.
+#
+# [stimulus_geometry] is STIMULUS-SWEEP-level — describes the
+# extent and zero-offset of the sweep itself (how many degrees the
+# bar traverses, where the visual-field zero is). These feed
+# `AcquisitionProperties` at analysis time so phase maps can be
+# converted to visual-field degrees correctly.
+#
+# Both are persisted into the .oisi at capture time
+# (`/experiment_params`) and read back during analysis.
+
 [geometry]
 horizontal_offset_deg = 0.0
 vertical_offset_deg = 0.0
 projection = "spherical"
+
+[stimulus_geometry]
+azi_angular_range = 100.0
+alt_angular_range = 100.0
+offset_azi = 0.0
+offset_alt = 0.0
+# Number of 90° CCW rotations of camera-frame position maps before
+# analysis (absorbs fixed rig-camera orientation offsets).
+rotation_k = 0
 
 [stimulus]
 envelope = "bar"

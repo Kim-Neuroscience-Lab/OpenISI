@@ -86,8 +86,7 @@ pub fn get_data_directory(state: State<'_, SharedState>) -> AppResult<String> {
 pub fn set_data_directory(state: State<'_, SharedState>, path: String) -> AppResult<()> {
     let app = lock_state(&state, "set_data_directory")?;
     let mut reg = lock_state(&app.registry, "set_data_directory registry")?;
-    reg.set(crate::params::ParamId::DataDirectory, ParamValue::String(path))
-        .map_err(|e| AppError::Validation(e))?;
+    reg.set(crate::params::ParamId::DataDirectory, ParamValue::String(path))?;
     if let Err(e) = reg.save_rig() {
         eprintln!("[params] Failed to save data directory: {e}");
     }
@@ -139,14 +138,10 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
     Ok(path_str)
 }
 
-const SNLC_SAMPLE_DATA_URL: &str =
-    "https://github.com/SNLC/ISI/raw/master/Sample%20Data.zip";
-
 /// Download SNLC sample data from GitHub, extract, and import each subject.
 /// Returns the list of created .oisi file paths.
 #[tauri::command]
 pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<String>> {
-    // Determine output directory.
     let out_dir = {
         let app = lock_state(&state, "import_snlc_sample_data")?;
         let reg = lock_state(&app.registry, "import_snlc_sample_data registry")?;
@@ -158,143 +153,11 @@ pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<S
         }
         std::path::PathBuf::from(data_dir)
     };
-    let _ = std::fs::create_dir_all(&out_dir);
 
-    // Create temp directory for extraction (cleaned up on all paths).
-    let temp_dir = std::env::temp_dir().join("openisi_sample_data");
-    let _ = std::fs::remove_dir_all(&temp_dir); // clean any previous attempt
-    std::fs::create_dir_all(&temp_dir)?;
-
-    // Guard: ensure temp_dir is cleaned up even on early return.
-    struct CleanupGuard(std::path::PathBuf);
-    impl Drop for CleanupGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = CleanupGuard(temp_dir.clone());
-
-    let zip_path = temp_dir.join("sample_data.zip");
-
-    // Download the zip.
-    eprintln!("[commands] downloading SNLC sample data from {SNLC_SAMPLE_DATA_URL}");
-    let response = ureq::get(SNLC_SAMPLE_DATA_URL)
-        .call()
-        .map_err(|e| AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Download failed: {e}"),
-        )))?;
-
-    let mut zip_file = std::fs::File::create(&zip_path)?;
-    std::io::copy(&mut response.into_body().as_reader(), &mut zip_file)?;
-    drop(zip_file);
-    eprintln!("[commands] download complete, extracting...");
-
-    // Extract the zip.
-    let extract_dir = temp_dir.join("extracted");
-    {
-        let file = std::fs::File::open(&zip_path)?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to read zip: {e}"),
-            )))?;
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)
-                .map_err(|e| AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Zip entry error: {e}"),
-                )))?;
-            let entry_path = match entry.enclosed_name() {
-                Some(p) => extract_dir.join(p),
-                None => continue,
-            };
-            if entry.is_dir() {
-                let _ = std::fs::create_dir_all(&entry_path);
-            } else {
-                if let Some(parent) = entry_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let mut out = std::fs::File::create(&entry_path)?;
-                std::io::copy(&mut entry, &mut out)?;
-            }
-        }
-    }
-    // Remove the zip now that it's extracted.
-    let _ = std::fs::remove_file(&zip_path);
-
-    // Find subject directories — any directory that contains .mat files.
-    let mut subject_dirs = Vec::new();
-    find_mat_dirs(&extract_dir, &mut subject_dirs);
-    subject_dirs.sort();
-
-    if subject_dirs.is_empty() {
-        return Err(AppError::Validation(
-            "No subject directories with .mat files found in the sample data.".into(),
-        ));
-    }
-
-    eprintln!("[commands] found {} subject directories", subject_dirs.len());
-
-    // Import each subject directory.
-    let mut imported: Vec<String> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
-    for dir in &subject_dirs {
-        let folder_name = dir.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "import".into());
-        let output_path = out_dir.join(format!("{folder_name}.oisi"));
-
-        match isi_analysis::io::import_snlc_directory(dir, &output_path) {
-            Ok(()) => {
-                let path_str = output_path.to_string_lossy().to_string();
-                eprintln!("[commands] imported sample subject {folder_name} to {path_str}");
-                imported.push(path_str);
-            }
-            Err(e) => {
-                let msg = format!("{folder_name}: {e}");
-                eprintln!("[commands] failed to import sample subject {msg}");
-                errors.push(msg);
-            }
-        }
-    }
-
-    if imported.is_empty() {
-        return Err(AppError::Analysis(isi_analysis::AnalysisError::MissingData(
-            format!("All subjects failed to import:\n{}", errors.join("\n")),
-        )));
-    }
-    if !errors.is_empty() {
-        eprintln!("[commands] {} subjects failed: {}", errors.len(), errors.join("; "));
-    }
-
-    // Cleanup is handled by the CleanupGuard drop.
-    eprintln!("[commands] sample data import complete: {} imported, {} failed",
-        imported.len(), errors.len());
-    Ok(imported)
-}
-
-fn find_mat_dirs(dir: &std::path::Path, results: &mut Vec<std::path::PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let mut has_mat = false;
-    let mut subdirs = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            subdirs.push(path);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("mat") {
-            has_mat = true;
-        }
-    }
-    if has_mat {
-        results.push(dir.to_path_buf());
-    }
-    for sub in subdirs {
-        find_mat_dirs(&sub, results);
-    }
+    let imported = crate::sample_data::import_snlc_sample_bundle(&out_dir)?;
+    Ok(imported.into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
 }
 
 // ════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,7 @@
 
 const { invoke } = window.__TAURI__.core;
 import { buildParamGroup, wireParamListeners, applyParamChanges, fetchGroupDescriptors } from '../param-form.js';
+import { errorToString } from '../lib/errors.js';
 
 let currentFile = null;
 let fileInfo = null;
@@ -24,7 +25,7 @@ export async function render(container) {
     try {
         fileInfo = await invoke("inspect_oisi", { path: currentFile });
     } catch (e) {
-        container.innerHTML = `<div class="card"><p style="color: var(--error);">Failed to inspect: ${e}</p></div>`;
+        container.innerHTML = `<div class="card"><p style="color: var(--error);">Failed to inspect: ${errorToString(e)}</p></div>`;
         return;
     }
 
@@ -37,6 +38,74 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
     const retinotopyDescs = await fetchGroupDescriptors(invoke, "retinotopy");
     const segmentationDescs = await fetchGroupDescriptors(invoke, "segmentation");
     const ring = await invoke("get_ring_overlay");
+
+    // Compute backend label — auto-detected at startup. Display-only
+    // (no override toggle); the best available device is always used.
+    let analysisBackend = "—";
+    try { analysisBackend = await invoke("get_analysis_backend"); }
+    catch (e) { console.warn("get_analysis_backend failed:", errorToString(e)); }
+
+    // Method tunables — one card per pipeline stage with editable
+    // const-default overrides. The SSoT principle: every code-side
+    // tunable (Option<T> + const FOO_DEFAULT) is editable here; no
+    // hidden values that bypass the UI. Fetched after set_active_oisi
+    // so the active .oisi's /analysis_params drives current values.
+    let methodTunablesHtml = "";
+    let analysisParamsSourceBadge = "";
+    try {
+        const resp = await invoke("get_method_tunables");
+        const stages = resp.stages || [];
+        // Provenance badge: when source is bootstrap_default, the user
+        // is editing pristine code defaults — NOT the file's stored
+        // state. Show this explicitly so they don't mistake defaults
+        // for "what's in the file."
+        if (resp.source && resp.source.source === "bootstrap_default") {
+            analysisParamsSourceBadge = `
+                <div class="card" style="border-left:3px solid var(--warning, #c80);">
+                    <div class="form-row">
+                        <strong>Analysis params: bootstrap defaults</strong>
+                    </div>
+                    <div class="form-row" style="font-size:11px; opacity:0.85;">
+                        This .oisi has no <code>/analysis_params</code> attribute
+                        yet — you're editing pristine code defaults. The first
+                        analysis run (or first Tunable edit) will persist the
+                        canonical record into the file.
+                    </div>
+                </div>
+            `;
+        }
+        methodTunablesHtml = stages.map(stage => `
+            <div class="card">
+                <h3>Tunables: ${stage.stage}</h3>
+                ${stage.tunables.map(t => {
+                    const current = t.current !== undefined && t.current !== null ? t.current : "";
+                    const def = t.default;
+                    const min = t.kind && t.kind.min !== undefined ? `min="${t.kind.min}"` : "";
+                    const max = t.kind && t.kind.max !== undefined ? `max="${t.kind.max}"` : "";
+                    const step = t.kind && t.kind.kind === "f64" ? 'step="any"' : 'step="1"';
+                    return `
+                        <div class="form-row">
+                            <label>${t.label}${t.units ? ` (${t.units})` : ""}</label>
+                            <input type="number"
+                                   data-stage="${stage.stage}"
+                                   data-name="${t.name}"
+                                   class="method-tunable"
+                                   placeholder="${def}"
+                                   value="${current}"
+                                   ${min} ${max} ${step}
+                                   style="width:90px">
+                            <button class="btn-tunable-reset"
+                                    data-stage="${stage.stage}"
+                                    data-name="${t.name}"
+                                    style="font-size:11px">Reset</button>
+                        </div>
+                    `;
+                }).join("")}
+            </div>
+        `).join("");
+    } catch (e) {
+        console.warn("get_method_tunables failed:", errorToString(e));
+    }
 
     // Set up the layered preview.
     window.openISI.showPreviewPanel();
@@ -94,11 +163,19 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
                 <label>Dimensions</label>
                 <span class="mono-value">${fileInfo.dimensions ? `${fileInfo.dimensions[1]} \u00d7 ${fileInfo.dimensions[0]}` : "\u2014"}</span>
             </div>
+            <div class="form-row">
+                <label>Compute Backend</label>
+                <span class="mono-value">${analysisBackend}</span>
+            </div>
         </div>
 
         ${buildParamGroup(retinotopyDescs, "Retinotopy")}
 
         ${buildParamGroup(segmentationDescs, "Segmentation")}
+
+        ${analysisParamsSourceBadge}
+
+        ${methodTunablesHtml}
 
         <div class="card">
             <h3>Head Ring</h3>
@@ -165,13 +242,87 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
                 await window.openISI.setMapName(currentMap);
             }
         } catch (e) {
-            statusEl.textContent = `Error: ${e}`;
+            statusEl.textContent = `Error: ${errorToString(e)}`;
             statusEl.style.color = "var(--error)";
         }
     }
 
     // Wire descriptor-driven param inputs: set_params on change, then trigger reanalysis.
     wireParamListeners(container, invoke, () => scheduleReanalyze());
+
+    // Wire method-tunable inputs. On `change`, parse the value, call
+    // set_method_tunable, then trigger reanalysis. The empty-string
+    // case clears the override (sends a default-reset).
+    container.querySelectorAll(".method-tunable").forEach(input => {
+        input.addEventListener("change", async () => {
+            const stage = input.dataset.stage;
+            const name = input.dataset.name;
+            const raw = input.value.trim();
+            if (raw === "") {
+                // Empty input → user wants to reset to default. Same path
+                // as the Reset button.
+                await resetTunable(stage, name, input);
+                return;
+            }
+            const value = Number(raw);
+            if (!Number.isFinite(value)) {
+                alert(`Invalid value for ${stage}.${name}: must be a number`);
+                return;
+            }
+            try {
+                await invoke("set_method_tunable", { stage, name, value });
+                scheduleReanalyze();
+            } catch (e) {
+                alert(`Failed to set ${stage}.${name}: ${errorToString(e)}`);
+            }
+        });
+    });
+
+    container.querySelectorAll(".btn-tunable-reset").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const stage = btn.dataset.stage;
+            const name = btn.dataset.name;
+            const input = container.querySelector(
+                `.method-tunable[data-stage="${stage}"][data-name="${name}"]`
+            );
+            await resetTunable(stage, name, input);
+        });
+    });
+
+    // Reset is "set to JSON null" — backend interprets as "clear
+    // override, fall back to const default". We rebuild the AnalysisParams
+    // from scratch via set_analysis_params with the default for the
+    // active method variant. Simplest: re-fetch tunables (which read
+    // from the .oisi); the user can re-edit if they want a different
+    // explicit value. Reset clears the input + relies on get_method_tunables
+    // to re-render the placeholder.
+    async function resetTunable(stage, name, input) {
+        // We don't yet have a dedicated `clear_method_tunable` command;
+        // for now, signal intent by reading current params, mutating
+        // the field to its default, and re-writing. The simplest UI
+        // signal: clear the input box and let set_method_tunable handle
+        // the explicit default value.
+        try {
+            // Fetch current tunables to find this descriptor's default.
+            // Response shape: { stages: [...], source: {...} }.
+            const resp = await invoke("get_method_tunables");
+            const stages = resp.stages || [];
+            const s = stages.find(s => s.stage === stage);
+            const t = s && s.tunables.find(t => t.name === name);
+            if (!t) { alert(`Tunable ${stage}.${name} not found`); return; }
+            // Set the explicit default value (this writes default back
+            // as an explicit override — semantically equivalent for the
+            // analysis pipeline, though it shows up as `current` in
+            // future renders. A true "clear override" path would
+            // require a backend command that writes Option::None;
+            // future work.)
+            await invoke("set_method_tunable", { stage, name, value: t.default });
+            if (input) { input.value = ""; }
+            scheduleReanalyze();
+        } catch (e) {
+            alert(`Failed to reset ${stage}.${name}: ${errorToString(e)}`);
+        }
+    }
 
     // Ring controls in analysis view.
     function updateAnalysisRing() {
@@ -219,7 +370,7 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
             await invoke("export_map_png", { path: currentFile, mapName, outputPath: outPath });
             document.getElementById("export-status").textContent = `Exported: ${outPath.split(/[\\/]/).pop()}`;
         } catch (e) {
-            document.getElementById("export-status").textContent = `Error: ${e}`;
+            document.getElementById("export-status").textContent = `Error: ${errorToString(e)}`;
         }
     });
 

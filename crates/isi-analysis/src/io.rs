@@ -29,11 +29,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{
-    AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps, ProgressSink,
-    RawProcessingResult, SnrMaps,
+    AcquisitionProperties, AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps, ProgressSink,
+    RawProcessingResult,
 };
-#[cfg(not(feature = "gpu"))]
-use crate::math;
 
 // ---------------------------------------------------------------------------
 // Capability detection — what can the system do with this file?
@@ -90,7 +88,7 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
         }
     }
     if dimensions.is_none() && has_acquisition {
-        // Try new format: acquisition/camera/frames is (T, H, W)
+        // acquisition/camera/frames is (T, H, W).
         if let Ok(ds) = file.dataset("acquisition/camera/frames") {
             let shape = ds.shape();
             if shape.len() == 3 {
@@ -107,18 +105,11 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
         }
     }
 
-    // Check for camera frames — new format uses acquisition/camera/frames (single dataset),
-    // old format used acquisition/frames/<cycle_name> (group of datasets).
-    let acquisition_cycles = if has_acquisition {
-        if file.group("acquisition/camera").is_ok() {
-            // New format: single contiguous frame array. Report as one "all" cycle.
-            vec!["all".into()]
-        } else if file.group("acquisition/frames").is_ok() {
-            // Old format: frames grouped by cycle.
-            list_group_members(&file, "acquisition/frames")
-        } else {
-            vec![]
-        }
+    // Camera frames live at acquisition/camera/frames (single contiguous
+    // dataset). The reader supports nothing else; reporting any other
+    // shape here would advertise a capability the read path can't honor.
+    let acquisition_cycles = if has_acquisition && file.group("acquisition/camera").is_ok() {
+        vec!["all".into()]
     } else {
         vec![]
     };
@@ -127,7 +118,7 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
     let results = if has_results {
         let group = file.group("results").ok();
         if let Some(g) = group {
-            let names = list_group_members_from_group(&g);
+            let names = list_group_members_from_group(&g)?;
             names.into_iter().filter_map(|name| {
                 if let Ok(ds) = g.dataset(&name) {
                     let shape = ds.shape();
@@ -205,7 +196,202 @@ pub fn read_result_map(path: &Path, name: &str) -> Result<Array2<f64>, AnalysisE
     Ok(data)
 }
 
+/// Read the self-describing render metadata (palette, display range,
+/// units, NaN/zero semantics) attached to a `/results/<name>` dataset.
+/// Returns `None` when the dataset is absent or the attrs haven't been
+/// written (legacy files written before `attach_meta`).
+pub fn read_result_meta(path: &Path, name: &str) -> Option<MapMeta> {
+    let file = open_read(path).ok()?;
+    let ds_path = format!("results/{name}");
+    let ds = file.dataset(&ds_path).ok()?;
+    read_map_meta(&ds)
+}
+
 /// Read the anatomical image as u8 grayscale.
+/// Portable identifiers for an acquisition, read from the `.oisi` root
+/// attributes. Used by dev tooling (e.g. `dev_figures/meta.json`) to identify
+/// the source recording without baking absolute paths into shareable artifacts.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AcquisitionIdentity {
+    /// `/animal_id` root attribute (e.g. `"5/14/2026_test5"`).
+    pub animal_id: String,
+    /// `/created_at` root attribute (unix timestamp string — globally unique
+    /// to this acquisition, survives renames and copies).
+    pub created_at: String,
+}
+
+/// Read the acquisition identity attributes from a `.oisi` file. Returns `None`
+/// for either field if its attribute is missing.
+pub fn read_acquisition_identity(path: &Path) -> Result<AcquisitionIdentity, AnalysisError> {
+    let file = open_read(path)?;
+    let read = |name: &str| -> String {
+        file.attr(name)
+            .and_then(|a| a.read_scalar::<hdf5::types::VarLenUnicode>())
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default()
+    };
+    Ok(AcquisitionIdentity {
+        animal_id: read("animal_id"),
+        created_at: read("created_at"),
+    })
+}
+
+/// Write the `.oisi /analysis_params` attribute from a registry-tree
+/// JSON value (the shape produced by
+/// `RegistrySnapshot::to_json_for_target(PersistTarget::Analysis)`).
+///
+/// The bridge owns conversion from a `RegistrySnapshot` to an
+/// `AnalysisParams`; this function owns persistence of the snapshot
+/// tree to the `.oisi` file. The two are decoupled because the
+/// analysis crate has no notion of a Registry.
+///
+/// **Atomicity note:** HDF5 attribute rewrite is in-place on an
+/// existing file. Crash-during-write leaves the file with the old
+/// attribute; parallel writers to the same file are unsafe regardless.
+pub fn write_analysis_params_attr(
+    path: &Path,
+    registry_tree: &serde_json::Value,
+) -> Result<(), AnalysisError> {
+    let file = open_readwrite(path)?;
+    let json = serde_json::to_string(registry_tree)
+        .map_err(|e| AnalysisError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    write_str_attr(&file, "analysis_params", &json)?;
+    Ok(())
+}
+
+/// Return true iff the file's `/analysis_params` JSON attribute uses
+/// the pre-2026 schema (legacy serde-derived `AnalysisParams` shape:
+/// tagged-enum object with `"method"` keys; OR a flat object with
+/// stimulus-geometry fields that were moved to `/experiment_params`).
+/// Used by the orchestrator to detect old-schema files and refuse
+/// analysis with a clear "run `oisi migrate <file>`" message.
+///
+/// Returns `Ok(false)` when the attribute is absent or matches the
+/// current registry-tree schema; returns `Err` only on HDF5 / I/O
+/// failure.
+pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
+    // Pre-2026 markers: either the moved-field names at root, OR the
+    // tagged-enum shape (`"<stage>": {"method": "..."}` with the
+    // stage's tunables also at that level). The current schema is
+    // `"<stage>": {"method": "..."}` PLUS sibling tunable subtrees,
+    // so the presence of `"method"` alone doesn't distinguish; we
+    // rely on the moved-field names.
+    const MOVED_FIELDS: &[&str] = &[
+        "azi_angular_range",
+        "alt_angular_range",
+        "offset_azi",
+        "offset_alt",
+        "rotation_k",
+        "um_per_pixel",
+    ];
+
+    let Some(value) = read_analysis_params_attr(path)? else {
+        return Ok(false);
+    };
+    let Some(obj) = value.as_object() else { return Ok(false); };
+    if MOVED_FIELDS.iter().any(|f| obj.contains_key(*f)) {
+        return Ok(true);
+    }
+    // Detect legacy tagged-enum shape: a stage value that's a JSON
+    // object containing key "method" but no nested variant subtree.
+    // The current schema nests tunables under <stage>.<variant>.<field>,
+    // so a stage value that has `method` AND no sibling object keys
+    // (other than `method`) was almost certainly written by the
+    // legacy serde-derived AnalysisParams.
+    //
+    // Conservative check: if any stage value has only a "method" key,
+    // it's legacy.
+    for (_stage, stage_val) in obj.iter() {
+        if let Some(stage_obj) = stage_val.as_object() {
+            if stage_obj.contains_key("method") && stage_obj.len() == 1 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Read the `/analysis_params` HDF5 attribute as a raw
+/// `serde_json::Value` (the registry-tree shape). Returns `None` if
+/// the attribute is absent (file never analyzed); returns `Err` only
+/// on HDF5 / parse failure.
+///
+/// Callers that need an `AnalysisParams` must rebuild a
+/// `RegistrySnapshot` via `RegistrySnapshot::from_json_tree` and then
+/// invoke `crate::bridge::analysis_params_from_snapshot`. The bridge
+/// is the only construction path.
+pub fn read_analysis_params_attr(path: &Path) -> Result<Option<serde_json::Value>, AnalysisError> {
+    let file = open_read(path)?;
+    let attr_names = file.attr_names()
+        .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
+    if !attr_names.iter().any(|n| n == "analysis_params") {
+        return Ok(None);
+    }
+    let attr = file.attr("analysis_params")
+        .map_err(|e| AnalysisError::Hdf5(format!("opening analysis_params attr: {e}")))?;
+    let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
+        .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
+    Ok(Some(value))
+}
+
+/// Read the `rig_params` JSON attribute from a `.oisi` file, if present.
+/// Captured at acquisition time (`src-tauri/src/export.rs::write_oisi`).
+/// Returns an opaque `serde_json::Value` because the analysis crate
+/// doesn't have a typed `RigParams` struct — the rig config is
+/// provenance, not analysis input. Returns `None` for files captured
+/// before `/rig_params` was written.
+pub fn read_rig_params(path: &Path) -> Result<Option<serde_json::Value>, AnalysisError> {
+    read_root_json_attr(path, "rig_params")
+}
+
+/// Read the `experiment_params` JSON attribute from a `.oisi` file, if
+/// present. Same provenance role as `read_rig_params`. Returns `None`
+/// for files captured before `/experiment_params` was written.
+pub fn read_experiment_params(path: &Path) -> Result<Option<serde_json::Value>, AnalysisError> {
+    read_root_json_attr(path, "experiment_params")
+}
+
+/// Helper for reading a JSON-encoded root HDF5 attribute that may be
+/// absent on older files. Used by `read_rig_params` and
+/// `read_experiment_params`.
+fn read_root_json_attr(path: &Path, name: &str) -> Result<Option<serde_json::Value>, AnalysisError> {
+    let file = open_read(path)?;
+    let attr_names = file.attr_names()
+        .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
+    if !attr_names.iter().any(|n| n == name) {
+        return Ok(None);
+    }
+    let attr = file.attr(name)
+        .map_err(|e| AnalysisError::Hdf5(format!("opening {name} attr: {e}")))?;
+    let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading {name} attr: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
+        .map_err(|e| AnalysisError::InvalidPackage(format!("parsing {name}: {e}")))?;
+    Ok(Some(value))
+}
+
+/// Read the user-drawn cortex ROI from `/anatomical/cortex_roi`, if
+/// present. Returns `Ok(None)` when the dataset is absent (no user
+/// override for this file). Returns `Err` only on I/O / parse failure.
+///
+/// The dataset is stored as `u8` (0/1) for HDF5 compatibility; this
+/// helper converts to `Array2<bool>`. Source-of-truth path is
+/// `/anatomical/cortex_roi`; consumers (analyze orchestrator, future
+/// UI) write to that path when the user provides an explicit ROI.
+pub fn read_cortex_roi(path: &Path) -> Result<Option<Array2<bool>>, AnalysisError> {
+    let file = open_read(path)?;
+    if !file.link_exists("anatomical/cortex_roi") {
+        return Ok(None);
+    }
+    let ds = file.dataset("anatomical/cortex_roi")
+        .map_err(|e| AnalysisError::Hdf5(format!("opening anatomical/cortex_roi: {e}")))?;
+    let data: Array2<u8> = ds.read()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading anatomical/cortex_roi: {e}")))?;
+    Ok(Some(data.mapv(|v| v != 0)))
+}
+
 pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
     let file = open_read(path)?;
     let ds = file.dataset("anatomical")
@@ -265,40 +451,51 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
     Ok(())
 }
 
-/// Write all analysis results atomically: retinotopy maps, VFS borders, and optional SNR.
-/// Write ALL analysis results as flat datasets in `/results/`. No sub-groups.
+/// Write all analysis results as flat datasets in `/results/`. No sub-groups.
+///
+/// **Does NOT write `/analysis_params`** — that's the orchestrator's
+/// responsibility via `write_analysis_params_attr` with the registry-
+/// tree JSON. Keeping them separate avoids `AnalysisParams` needing
+/// to carry a serde representation; the Registry tree is the canonical
+/// on-disk form, and only the orchestrator (which owns the snapshot)
+/// can produce it.
 pub fn write_results(
     path: &Path,
     result: &AnalysisResult,
-    params: &AnalysisParams,
+    acquisition: &AcquisitionProperties,
+    _params: &AnalysisParams,
 ) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
-
-    // Store params as JSON attribute on the root.
-    let params_json = serde_json::to_string(params)
-        .map_err(|e| AnalysisError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-    write_str_attr(&file, "analysis_params", &params_json)?;
 
     // Remove and recreate results group (flat).
     let _ = file.unlink("results");
     let group = file.create_group("results")
         .map_err(|e| AnalysisError::Hdf5(format!("creating results group: {e}")))?;
 
-    // Helper: write f64 (H,W) dataset.
+    // Writes a f64 (H,W) dataset and attaches the meta attrs that
+    // describe how to render it. The renderer reads these attrs and
+    // does ZERO inference — palette, units, display range, NaN/zero
+    // semantics are all decided here, once, at write time.
     let write_f64 = |name: &str, data: &Array2<f64>| -> Result<(), AnalysisError> {
-        group.new_dataset_builder().with_data(data).create(name)
+        let ds = group.new_dataset_builder().with_data(data).create(name)
             .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
+        let meta = meta_for_f64(name, data, acquisition);
+        attach_meta(&ds, &meta)?;
         Ok(())
     };
-    // Helper: write u8 mask (H,W) dataset.
     let write_mask = |name: &str, data: &Array2<bool>| -> Result<(), AnalysisError> {
         let u8data = data.mapv(|b| b as u8);
-        group.new_dataset_builder().with_data(&u8data).create(name)
+        let ds = group.new_dataset_builder().with_data(&u8data).create(name)
             .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
+        attach_meta(&ds, &map_meta_bool())?;
         Ok(())
     };
 
-    // Core retinotopy (7 maps).
+    // Phases, amplitudes, and the three VFS algorithm stages.
+    // `vfs` is the raw mathematical VFS; `vfs_smoothed` is the
+    // smoothed array segmentation operated on; `vfs_smoothed_thresholded`
+    // is the literal threshold mask. All full frame — no cortex
+    // masking pre-baked.
     write_f64("azi_phase", &result.azi_phase)?;
     write_f64("alt_phase", &result.alt_phase)?;
     write_f64("azi_phase_degrees", &result.azi_phase_degrees)?;
@@ -306,11 +503,14 @@ pub fn write_results(
     write_f64("azi_amplitude", &result.azi_amplitude)?;
     write_f64("alt_amplitude", &result.alt_amplitude)?;
     write_f64("vfs", &result.vfs)?;
+    write_f64("vfs_smoothed", &result.vfs_smoothed)?;
+    write_f64("vfs_smoothed_thresholded", &result.vfs_smoothed_thresholded)?;
 
     // Segmentation outputs.
-    write_f64("vfs_thresholded", &result.vfs_thresholded)?;
-    group.new_dataset_builder().with_data(&result.area_labels).create("area_labels")
+    write_mask("cortex_mask", &result.cortex_mask)?;
+    let labels_ds = group.new_dataset_builder().with_data(&result.area_labels).create("area_labels")
         .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_labels: {e}")))?;
+    attach_meta(&labels_ds, &map_meta_labels())?;
     let signs_arr = ndarray::Array1::from(result.area_signs.clone());
     group.new_dataset_builder().with_data(&signs_arr).create("area_signs")
         .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_signs: {e}")))?;
@@ -322,9 +522,21 @@ pub fn write_results(
     write_mask("contours_azi", &result.contours_azi)?;
     write_mask("contours_alt", &result.contours_alt)?;
 
-    // SNR (only from raw acquisition).
-    if let Some(ref snr) = result.snr_azi { write_f64("snr_azi", snr)?; }
-    if let Some(ref snr) = result.snr_alt { write_f64("snr_alt", snr)?; }
+    if let Some(ref snr) = result.snr {
+        write_f64("snr_azi", &snr.snr_azi)?;
+        write_f64("snr_alt", &snr.snr_alt)?;
+    }
+
+    // Per-direction cross-cycle reliability (Allen / Engel). Source of
+    // truth for the cortex mask above; persisted so the user (or a
+    // future reanalysis) can re-derive cortex with a different threshold
+    // without rerunning the raw pipeline.
+    if let Some(ref rel) = result.reliability {
+        write_f64("reliability_azi_fwd", &rel.rel_azi_fwd)?;
+        write_f64("reliability_azi_rev", &rel.rel_azi_rev)?;
+        write_f64("reliability_alt_fwd", &rel.rel_alt_fwd)?;
+        write_f64("reliability_alt_rev", &rel.rel_alt_rev)?;
+    }
 
     let area_count = result.area_signs.len();
     if area_count > 0 {
@@ -350,216 +562,206 @@ pub fn write_anatomical(path: &Path, image: &Array2<u8>) -> Result<(), AnalysisE
 // ---------------------------------------------------------------------------
 
 /// Process raw acquisition frames into complex maps.
-/// Supports both the new format (acquisition/camera/frames + stimulus arrays)
-/// and handles grouping by condition from the stimulus state.
+/// Compute four complex maps + (optionally) per-orientation SNR from the
+/// raw camera frames in an .oisi file.
+///
+/// Allen-aligned per-direction cycle averaging — matches
+/// `corticalmapping/HighLevel.py::getMappingMovies` and
+/// `corticalmapping/core/ImageAnalysis.py::get_average_movie`:
+///
+///   1. Read all camera frames + camera timestamps, sweep schedule
+///      (`sweep_start_sec`, `sweep_end_sec`, `sweep_sequence`).
+///   2. `meanFrameDur = mean(diff(cam_ts))` — uniform-regime camera period.
+///   3. For each direction d ∈ {LR, RL, TB, BT}:
+///      a. Gather sweep indices `k` where `sweep_sequence[k]` is this
+///         direction (10 cycles in the standard 10-repetition protocol).
+///      b. Per-direction chunk duration = mean(`sweep_end - sweep_start`)
+///         across this direction's cycles.
+///      c. `chunkFrameDur = ceil(chunk_dur / meanFrameDur)`.
+///      d. For each cycle: onset_frame_idx =
+///         `argmin(|cam_ts - sweep_start[k]|)`. The contiguous slice
+///         `mov[onset:onset+chunkFrameDur]` is this cycle's frames.
+///         (Allen `ImageAnalysis.py:1207-1213`.)
+///      e. Per-cycle FFT bin 1: `freq = 1 / (chunkFrameDur · meanFrameDur)`.
+///      f. Push (cycle complex map, global phase, cycle frames) into the
+///         `CycleAccumulator`. The accumulator handles phase-locked
+///         averaging and SNR bundling in `finalize()`.
+///      g. SNR computed on the cycle-averaged movie for the first fwd sweep
+///         per orientation.
+///   4. `accumulator.finalize()` produces the per-direction complex maps
+///      (phase-locked across cycles) and an `Option<SnrMaps>`. No
+///      baseline subtraction — `isRectify=False` default.
+///
+/// `condition_indices`, `state_ids`, and `sweep_indices` from
+/// `acquisition/stimulus/*` are not used for cycle assignment. The schedule
+/// — `sweep_start_sec` and `sweep_sequence` — is the ground truth for
+/// onset times. This matches Allen's use of `displayOnsets` from the
+/// display log.
 pub fn compute_complex_maps_from_raw(
     path: &Path,
-    params: &AnalysisParams,
+    _params: &AnalysisParams,
     progress: &dyn ProgressSink,
     cancel: &AtomicBool,
 ) -> Result<RawProcessingResult, AnalysisError> {
     let file = open_read(path)?;
 
-    if file.group("acquisition/camera").is_ok() {
-        return compute_complex_maps_new_format(&file, params, progress, cancel);
+    if file.group("acquisition/camera").is_err() {
+        return Err(AnalysisError::MissingData(
+            "Expected acquisition/camera/ group".into(),
+        ));
     }
 
-    Err(AnalysisError::MissingData(
-        "No supported acquisition format found. Expected acquisition/camera/ group.".into()
-    ))
-}
-
-/// New format: all frames in acquisition/camera/frames (u16 T,H,W),
-/// stimulus state in acquisition/stimulus/ arrays.
-/// Groups frames by condition using stimulus state, computes dF/F + DFT per group.
-fn compute_complex_maps_new_format(
-    file: &hdf5::File,
-    params: &AnalysisParams,
-    progress: &dyn ProgressSink,
-    cancel: &AtomicBool,
-) -> Result<RawProcessingResult, AnalysisError> {
     progress.set_stage("Loading camera frames");
     progress.set_progress(0.0);
 
-    // Read all camera frames (u16).
     let frames_ds = file.dataset("acquisition/camera/frames")
         .map_err(|e| AnalysisError::Hdf5(format!("opening camera/frames: {e}")))?;
     let all_frames: Array3<u16> = frames_ds.read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera/frames: {e}")))?;
-    let t_cam = all_frames.dim().0;
-    #[cfg(not(feature = "gpu"))]
-    let (_, h, w) = all_frames.dim();
+    let (t_cam, _h, _w) = all_frames.dim();
+    if t_cam < 2 {
+        return Err(AnalysisError::MissingData("fewer than 2 camera frames".into()));
+    }
 
-    // Read unified camera timestamps (seconds from t=0).
     let cam_ts_sec: Vec<f64> = file.dataset("acquisition/camera/timestamps_sec")
         .map_err(|e| AnalysisError::Hdf5(format!("opening camera timestamps_sec: {e}")))?
         .read_1d()
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera timestamps_sec: {e}")))?
         .to_vec();
 
-    // Read sweep schedule to get condition names.
+    // Sweep schedule — onset times + per-sweep duration + direction.
+    let sweep_start_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_start_sec")
+        .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_start_sec: {e}")))?
+        .read_1d()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_start_sec: {e}")))?
+        .to_vec();
+    let sweep_end_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_end_sec")
+        .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_end_sec: {e}")))?
+        .read_1d()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_end_sec: {e}")))?
+        .to_vec();
     let schedule_group = file.group("acquisition/schedule")
         .map_err(|_| AnalysisError::MissingData("acquisition/schedule".into()))?;
-    let seq_attr = schedule_group.attr("sweep_sequence")
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence: {e}")))?;
-    let seq_json: hdf5::types::VarLenUnicode = seq_attr.read_scalar()
+    let seq_json: hdf5::types::VarLenUnicode = schedule_group.attr("sweep_sequence")
+        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence: {e}")))?
+        .read_scalar()
         .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence value: {e}")))?;
     let sweep_sequence: Vec<String> = serde_json::from_str(seq_json.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing sweep_sequence: {e}")))?;
 
-    // Read experiment to get condition list.
-    let exp_json: hdf5::types::VarLenUnicode = file.attr("experiment")
-        .map_err(|e| AnalysisError::Hdf5(format!("reading experiment attr: {e}")))?
-        .read_scalar()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading experiment value: {e}")))?;
-    let experiment: serde_json::Value = serde_json::from_str(exp_json.as_str())
-        .map_err(|e| AnalysisError::InvalidPackage(format!("parsing experiment: {e}")))?;
-    let conditions: Vec<String> = experiment["presentation"]["conditions"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    if conditions.is_empty() {
-        return Err(AnalysisError::InvalidPackage("No conditions in experiment".into()));
+    let n_sweeps = sweep_sequence.len()
+        .min(sweep_start_sec.len())
+        .min(sweep_end_sec.len());
+    if n_sweeps == 0 {
+        return Err(AnalysisError::MissingData("no sweeps in schedule".into()));
     }
 
     if cancel.load(Ordering::Relaxed) {
         return Err(AnalysisError::Cancelled);
     }
 
-    progress.set_stage("Computing baseline");
-    progress.set_progress(0.2);
+    // `meanFrameDur` — Allen `ImageAnalysis.py:1184`.
+    let mean_frame_dur = (cam_ts_sec[t_cam - 1] - cam_ts_sec[0]) / (t_cam - 1) as f64;
 
-    // GPU path: convert frames to tensor once, compute baseline on device.
-    #[cfg(feature = "gpu")]
-    let frames_tensor = crate::compute::frames_u16_to_tensor(&all_frames);
-    #[cfg(feature = "gpu")]
-    let baseline_tensor = crate::compute::baseline_mean(&frames_tensor);
-
-    // CPU path: manual baseline accumulation.
-    #[cfg(not(feature = "gpu"))]
-    let baseline_sum = {
-        let n_pixels = h * w;
-        let mut baseline_flat = vec![0.0f64; n_pixels];
-        for t in 0..t_cam {
-            let frame = all_frames.slice(ndarray::s![t, .., ..]);
-            if let Some(data) = frame.as_slice() {
-                for px in 0..n_pixels {
-                    baseline_flat[px] += data[px] as f64;
-                }
-            }
+    // Group sweep indices by direction.
+    use std::collections::BTreeMap;
+    let mut dir_groups: BTreeMap<crate::compute::Direction, Vec<usize>> = BTreeMap::new();
+    for k in 0..n_sweeps {
+        if let Some(direction) = classify_cycle_name(&sweep_sequence[k]) {
+            dir_groups.entry(direction).or_default().push(k);
         }
-        let inv_t = 1.0 / t_cam as f64;
-        for px in 0..n_pixels {
-            baseline_flat[px] *= inv_t;
-        }
-        ndarray::Array2::from_shape_vec((h, w), baseline_flat)
-            .expect("baseline shape mismatch")
-    };
+    }
+    if dir_groups.is_empty() {
+        return Err(AnalysisError::InvalidPackage(
+            "no sweeps with recognized direction names".into(),
+        ));
+    }
 
-    // Read sweep schedule for per-repetition processing.
-    let sweep_start_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_start_sec")
-        .and_then(|ds| ds.read_1d().map(|a| a.to_vec()))
-        .unwrap_or_default();
-    let sweep_end_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_end_sec")
-        .and_then(|ds| ds.read_1d().map(|a| a.to_vec()))
-        .unwrap_or_default();
-
-    progress.set_stage("Processing sweeps");
-    progress.set_progress(0.3);
-
-    let mut accumulator = CycleAccumulator::new();
-    let n_sweeps = sweep_start_sec.len().min(sweep_end_sec.len()).min(sweep_sequence.len());
-    let eps = params.epsilon;
-
-    #[cfg(not(feature = "gpu"))]
-    let baseline_slice = baseline_sum.as_slice().unwrap();
-
-    // Process each individual sweep (repetition) separately, then average in CycleAccumulator.
-    for sweep_i in 0..n_sweeps {
+    let mut accumulator = crate::compute::CycleAccumulator::new();
+    let n_dirs = dir_groups.len() as f64;
+    for (dir_idx, (direction, sweep_ks)) in dir_groups.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err(AnalysisError::Cancelled);
         }
 
-        let start = sweep_start_sec[sweep_i];
-        let end = sweep_end_sec[sweep_i];
-        let cond = &sweep_sequence[sweep_i];
+        // Allen-style chunk duration: per-direction `sweepDur` is the mean
+        // of `sweep_end - sweep_start` over this direction's cycles.
+        let chunk_dur: f64 = sweep_ks.iter()
+            .map(|&k| sweep_end_sec[k] - sweep_start_sec[k])
+            .sum::<f64>() / sweep_ks.len() as f64;
+        // `chunkFrameDur = ceil(chunkDur / meanFrameDur)` — Allen
+        // `ImageAnalysis.py:1187`.
+        let chunk_frame_dur = (chunk_dur / mean_frame_dur).ceil() as usize;
 
-        // Classify direction.
-        let (is_azi, is_fwd) = match classify_cycle_name(cond) {
-            Some(v) => v,
-            None => continue,
-        };
+        progress.set_stage(&format!(
+            "Direction {}: {} cycles × {chunk_frame_dur} frames",
+            direction.label(), sweep_ks.len(),
+        ));
+        progress.set_progress(0.1 + 0.2 * dir_idx as f64 / n_dirs);
 
-        // Find camera frames within this sweep's time window.
-        let frame_indices: Vec<usize> = (0..t_cam)
-            .filter(|&i| cam_ts_sec[i] >= start && cam_ts_sec[i] <= end)
-            .collect();
+        let period_sec = chunk_frame_dur as f64 * mean_frame_dur;
+        let freq_bin1 = 1.0 / period_sec;
 
-        if frame_indices.is_empty() { continue; }
-
-        progress.set_stage(&format!("Sweep {}/{} {} ({} frames)",
-            sweep_i + 1, n_sweeps, cond, frame_indices.len()));
-        progress.set_progress(0.3 + 0.6 * sweep_i as f64 / n_sweeps as f64);
-
-        let timestamps: Vec<f64> = frame_indices.iter()
-            .map(|&i| cam_ts_sec[i])
-            .collect();
-
-        // === GPU path: all operations stay on device ===
-        #[cfg(feature = "gpu")]
-        {
-            let complex_map = crate::compute::gpu_sweep_dft(
-                &frames_tensor, &baseline_tensor, &frame_indices, &timestamps, is_fwd, eps,
-            );
-            accumulator.add(complex_map, is_azi, is_fwd);
-
-            if is_fwd && ((is_azi && accumulator.snr_azi.is_none()) || (!is_azi && accumulator.snr_alt.is_none())) {
-                let snr = crate::compute::gpu_sweep_snr(
-                    &frames_tensor, &baseline_tensor, &frame_indices, &timestamps, eps,
-                );
-                if is_azi {
-                    accumulator.snr_azi = Some(snr);
-                } else {
-                    accumulator.snr_alt = Some(snr);
-                }
+        // For each cycle: upload frames, compute bin-1 complex map +
+        // global phase, push into the accumulator. The accumulator does
+        // the phase-locked averaging at finalize time.
+        for &k in sweep_ks {
+            let onset = sweep_start_sec[k];
+            if onset < cam_ts_sec[0] || onset + chunk_dur > cam_ts_sec[t_cam - 1] {
+                continue;
             }
+            let onset_idx = nearest_index_sorted(&cam_ts_sec, onset);
+            if onset_idx + chunk_frame_dur > t_cam { continue; }
+
+            let frame_indices: Vec<usize> = (onset_idx..onset_idx + chunk_frame_dur).collect();
+            let cycle_t = crate::compute::frames_u16_subset_to_tensor_f32(
+                &all_frames, &frame_indices,
+            );
+
+            let cm_k = crate::compute::dft_projection_at_freq(
+                &cycle_t, mean_frame_dur, freq_bin1,
+            );
+
+            // Global per-cycle phase: arg(Σ_pixels cm_k).
+            let (re_sum, im_sum) = crate::compute::complex_tensor_real_imag_sum(&cm_k);
+            let phi_k = im_sum.atan2(re_sum);
+
+            accumulator.add_cycle(*direction, cm_k, phi_k, cycle_t)?;
         }
 
-        // === CPU path: manual dF/F extraction + ndarray DFT ===
-        #[cfg(not(feature = "gpu"))]
-        {
-            let n = frame_indices.len();
-            let n_pixels = h * w;
-            let mut frames_f32 = Array3::<f32>::zeros((n, h, w));
-
-            for (fi, &cam_i) in frame_indices.iter().enumerate() {
-                let src = all_frames.slice(ndarray::s![cam_i, .., ..]);
-                let mut dst = frames_f32.slice_mut(ndarray::s![fi, .., ..]);
-                if let (Some(src_data), Some(dst_data)) = (src.as_slice(), dst.as_slice_mut()) {
-                    for px in 0..n_pixels {
-                        let raw = src_data[px] as f64;
-                        let base = baseline_slice[px];
-                        dst_data[px] = ((raw - base) / (base + eps)) as f32;
-                    }
-                }
-            }
-
-            let complex_map = math::dft_projection(&frames_f32, &timestamps, is_fwd);
-            accumulator.add(complex_map, is_azi, is_fwd);
-
-            if is_fwd && ((is_azi && accumulator.snr_azi.is_none()) || (!is_azi && accumulator.snr_alt.is_none())) {
-                let snr = math::compute_snr_map(&frames_f32, &timestamps);
-                if is_azi {
-                    accumulator.snr_azi = Some(snr);
-                } else {
-                    accumulator.snr_alt = Some(snr);
-                }
+        // SNR on Allen's frame-domain cycle-averaged movie. Once per
+        // orientation on the first fwd direction.
+        let is_first_fwd_for_orientation = direction.is_fwd();
+        if is_first_fwd_for_orientation {
+            if let Some(averaged) = accumulator.averaged_movie(*direction) {
+                let uniform_ts: Vec<f64> = (0..chunk_frame_dur as i64)
+                    .map(|k| k as f64 * mean_frame_dur)
+                    .collect();
+                let snr = crate::compute::compute_snr(&averaged, &uniform_ts);
+                accumulator.record_snr(*direction, snr)?;
             }
         }
     }
 
+    progress.set_progress(0.95);
     accumulator.finalize()
+}
+
+/// Binary search for the index of the element in `sorted` closest to `target`.
+/// Assumes `sorted` is non-empty and non-decreasing.
+fn nearest_index_sorted(sorted: &[f64], target: f64) -> usize {
+    match sorted.binary_search_by(|v| v.partial_cmp(&target).unwrap_or(std::cmp::Ordering::Equal)) {
+        Ok(i) => i,
+        Err(insert_at) => {
+            if insert_at == 0 { 0 }
+            else if insert_at >= sorted.len() { sorted.len() - 1 }
+            else {
+                let lo = insert_at - 1;
+                let hi = insert_at;
+                if (target - sorted[lo]).abs() <= (sorted[hi] - target).abs() { lo } else { hi }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +794,8 @@ pub fn import_snlc_directory(
         let path = entry.path();
         if let Some(ext) = path.extension() {
             if ext.to_ascii_lowercase() == "mat" {
-                let name = path.file_name().expect("path has extension so must have filename").to_string_lossy().to_lowercase();
+                let Some(file_name) = path.file_name() else { continue };
+                let name = file_name.to_string_lossy().to_lowercase();
                 if name.starts_with("grab") || name.starts_with("grab_") {
                     grab_mat = Some(path);
                 } else if !name.contains("analyzer") {
@@ -634,13 +837,25 @@ pub fn import_snlc_directory(
         )));
     }
 
+    // The `< 2` length checks above guarantee these `next()` calls
+    // succeed, but unwrap would panic on a stale .mat file with an
+    // unexpected layout. Use explicit ok_or_else so any mismatch
+    // surfaces as a clean `InvalidPackage` instead of a backtrace.
     let mut azi_iter = azi_cells.into_iter();
-    let azi_fwd = azi_iter.next().unwrap().data;
-    let azi_rev = azi_iter.next().unwrap().data;
+    let azi_fwd = azi_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
+        format!("{}: f1m missing azi_fwd cell after length check", data_mats[0].display())
+    ))?.data;
+    let azi_rev = azi_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
+        format!("{}: f1m missing azi_rev cell after length check", data_mats[0].display())
+    ))?.data;
 
     let mut alt_iter = alt_cells.into_iter();
-    let alt_fwd = alt_iter.next().unwrap().data;
-    let alt_rev = alt_iter.next().unwrap().data;
+    let alt_fwd = alt_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
+        format!("{}: f1m missing alt_fwd cell after length check", data_mats[1].display())
+    ))?.data;
+    let alt_rev = alt_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
+        format!("{}: f1m missing alt_rev cell after length check", data_mats[1].display())
+    ))?.data;
 
     let complex_maps = ComplexMaps {
         azi_fwd,
@@ -687,34 +902,357 @@ fn open_readwrite(path: &Path) -> Result<H5File, AnalysisError> {
         .map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
 }
 
-fn write_str_attr(location: &H5File, name: &str, value: &str) -> Result<(), AnalysisError> {
+fn write_str_attr(
+    location: &hdf5::Location,
+    name: &str,
+    value: &str,
+) -> Result<(), AnalysisError> {
     // Remove existing attribute if present.
     let _ = location.delete_attr(name);
     let attr = location
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| AnalysisError::Hdf5(format!("creating attr {name}: {e}")))?;
-    let val: hdf5::types::VarLenUnicode = value.parse().unwrap();
+    let val: hdf5::types::VarLenUnicode = value.parse().map_err(|e| {
+        AnalysisError::Hdf5(format!("invalid UTF-8 attr {name}: {e}"))
+    })?;
     attr.write_scalar(&val)
         .map_err(|e| AnalysisError::Hdf5(format!("writing attr {name}: {e}")))?;
     Ok(())
 }
 
-fn list_group_members(file: &H5File, group_path: &str) -> Vec<String> {
-    let group = file.group(group_path)
-        .unwrap_or_else(|e| panic!("Failed to open HDF5 group '{}': {}", group_path, e));
-    list_group_members_from_group(&group)
+fn write_f64_attr(
+    location: &hdf5::Location,
+    name: &str,
+    value: f64,
+) -> Result<(), AnalysisError> {
+    let _ = location.delete_attr(name);
+    let attr = location
+        .new_attr::<f64>()
+        .create(name)
+        .map_err(|e| AnalysisError::Hdf5(format!("creating attr {name}: {e}")))?;
+    attr.write_scalar(&value)
+        .map_err(|e| AnalysisError::Hdf5(format!("writing attr {name}: {e}")))?;
+    Ok(())
 }
 
-fn list_group_members_from_group(group: &hdf5::Group) -> Vec<String> {
+fn list_group_members_from_group(group: &hdf5::Group) -> crate::Result<Vec<String>> {
     group.member_names()
-        .expect("Failed to list HDF5 group members")
+        .map_err(|e| AnalysisError::Hdf5(format!("listing HDF5 group members: {e}")))
 }
 
-/// Classify a result dataset by its name and HDF5 type.
-fn classify_result_type(name: &str, shape: &[usize], _dtype: Option<&hdf5::Datatype>) -> String {
+// ─────────────────────────────────────────────────────────────────────────
+// Self-describing /results datasets — rendering metadata as HDF5 attrs.
+//
+// Every f64 map decides palette / units / display range / NaN-semantics
+// HERE, at write time, using the params it actually used. Downstream
+// renderers (figure exporter, Tauri UI) read these attrs and do zero
+// inference — no name-matching, no auto-percentile, no unit guessing.
+// New maps added via `meta_for_f64` render automatically.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Per-dataset rendering metadata, attached as HDF5 attrs on the dataset.
+///
+/// All renderers (`headless::render_map`, Tauri `export_map_png`) read
+/// these attrs and require nothing else. The attribute schema is the
+/// data-layer ↔ renderer contract.
+///
+/// Strings are `Cow` so the pipeline can build with static literals
+/// (zero alloc), and read-back from HDF5 produces owned `String`s
+/// (no leak).
+#[derive(Clone, Debug)]
+pub struct MapMeta {
+    /// Colormap name. Renderers map this to a palette function.
+    /// One of: `"hsv_circular"`, `"jet"`, `"hot"`, `"binary"`,
+    /// `"categorical"`.
+    pub palette: std::borrow::Cow<'static, str>,
+    /// Physical units of the data values: `"rad"`, `"deg"`,
+    /// `"unitless"`, `"bool"`, `"label"`.
+    pub units: std::borrow::Cow<'static, str>,
+    /// Value mapped to the palette start.
+    pub display_min: f64,
+    /// Value mapped to the palette end.
+    pub display_max: f64,
+    /// Period for circular palettes (`2π` for radian phases,
+    /// `angular_range` for degree phases). `0.0` means non-circular.
+    pub wrap_period: f64,
+    /// Semantic meaning of `NaN` values (e.g. `"outside_cortex"`).
+    /// Empty when NaN is not expected.
+    pub nan_means: std::borrow::Cow<'static, str>,
+    /// Semantic meaning of literal `0.0` values, when a sentinel is
+    /// used (e.g. `"outside_patch"` for eccentricity/magnification).
+    /// Empty when `0.0` is just a regular value.
+    pub zero_means: std::borrow::Cow<'static, str>,
+}
+
+/// Bool masks (cortex_mask, area_borders, contours_*): stored as u8.
+fn map_meta_bool() -> MapMeta {
+    use std::borrow::Cow;
+    MapMeta {
+        palette: Cow::Borrowed("binary"),
+        units: Cow::Borrowed("bool"),
+        display_min: 0.0,
+        display_max: 1.0,
+        wrap_period: 0.0,
+        nan_means: Cow::Borrowed(""),
+        zero_means: Cow::Borrowed(""),
+    }
+}
+
+/// Categorical label map (area_labels): each integer is an area ID;
+/// renderers pick a categorical palette indexed by label value.
+fn map_meta_labels() -> MapMeta {
+    use std::borrow::Cow;
+    MapMeta {
+        palette: Cow::Borrowed("categorical"),
+        units: Cow::Borrowed("label"),
+        display_min: 0.0,
+        display_max: 0.0,
+        wrap_period: 0.0,
+        nan_means: Cow::Borrowed(""),
+        zero_means: Cow::Borrowed("background"),
+    }
+}
+
+/// Decide the rendering metadata for a `Array2<f64>` `/results/<name>`
+/// dataset. Single source of truth — name → meta — replacing the
+/// renderer-side `render_kind_for` switch and all its inferred ranges.
+fn meta_for_f64(name: &str, data: &Array2<f64>, acquisition: &AcquisitionProperties) -> MapMeta {
+    use std::borrow::Cow;
+    let lit = Cow::Borrowed;
+    let half_azi = acquisition.azi_angular_range / 2.0;
+    let half_alt = acquisition.alt_angular_range / 2.0;
+    match name {
+        // Radian phases: HSV over [-π, π], period 2π. Full frame.
+        "azi_phase" | "alt_phase" => MapMeta {
+            palette: lit("hsv_circular"),
+            units: lit("rad"),
+            display_min: -std::f64::consts::PI,
+            display_max:  std::f64::consts::PI,
+            wrap_period:  std::f64::consts::TAU,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
+        // Degree phases: HSV over [offset - range/2, offset + range/2].
+        "azi_phase_degrees" => MapMeta {
+            palette: lit("hsv_circular"),
+            units: lit("deg"),
+            display_min: acquisition.offset_azi - half_azi,
+            display_max: acquisition.offset_azi + half_azi,
+            wrap_period: acquisition.azi_angular_range,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
+        "alt_phase_degrees" => MapMeta {
+            palette: lit("hsv_circular"),
+            units: lit("deg"),
+            display_min: acquisition.offset_alt - half_alt,
+            display_max: acquisition.offset_alt + half_alt,
+            wrap_period: acquisition.alt_angular_range,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
+        // The three VFS algorithm stages. Same palette/range (jet ±1) so
+        // they're visually comparable. Threshold-masked variant uses
+        // 0 as the sentinel for "below threshold".
+        "vfs" | "vfs_smoothed" => MapMeta {
+            palette: lit("jet"),
+            units: lit("unitless"),
+            display_min: -1.0,
+            display_max:  1.0,
+            wrap_period: 0.0,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
+        "vfs_smoothed_thresholded" => MapMeta {
+            palette: lit("jet"),
+            units: lit("unitless"),
+            display_min: -1.0,
+            display_max:  1.0,
+            wrap_period: 0.0,
+            nan_means: lit(""),
+            zero_means: lit("below_threshold"),
+        },
+        // Amplitudes are finite everywhere (they define cortex). Hot
+        // palette over the data's actual finite range — frozen here so
+        // the renderer needs no auto-fit.
+        n if n.ends_with("_amplitude") => {
+            let (lo, hi) = finite_range(data);
+            MapMeta {
+                palette: lit("hot"),
+                units: lit("unitless"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit(""),
+            }
+        }
+        // Eccentricity: jet over the 2-98 percentile of valid pixels.
+        // `0.0` is the native compute_eccentricity sentinel for
+        // pixels outside any segmented patch (`area_labels == 0`).
+        "eccentricity" => {
+            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
+            MapMeta {
+                palette: lit("jet"),
+                units: lit("deg"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit("outside_patch"),
+            }
+        }
+        // Magnification: same convention as eccentricity. The Jacobian
+        // ratio is unitless once the input phases are in degrees.
+        "magnification" => {
+            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
+            MapMeta {
+                palette: lit("jet"),
+                units: lit("unitless"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit("outside_patch"),
+            }
+        }
+        // Reliability maps (Allen / Engel cross-cycle vector coherence):
+        // bounded [0, 1] by construction. Hot palette over the full
+        // range makes the cortex region pop visually.
+        "reliability_azi_fwd" | "reliability_azi_rev"
+        | "reliability_alt_fwd" | "reliability_alt_rev" => MapMeta {
+            palette: lit("hot"),
+            units: lit("unitless"),
+            display_min: 0.0,
+            display_max: 1.0,
+            wrap_period: 0.0,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
+        // SNR maps: per-condition. No canonical fixed range — jet over
+        // 2-98 percentile of finite values.
+        "snr_azi" | "snr_alt" => {
+            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
+            MapMeta {
+                palette: lit("jet"),
+                units: lit("unitless"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit(""),
+            }
+        }
+        // Unknown map: jet over percentile, leave NaN/zero semantics
+        // empty. Adding a new map name with bespoke conventions means
+        // adding an arm above — no renderer change needed.
+        _ => {
+            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
+            MapMeta {
+                palette: lit("jet"),
+                units: lit("unitless"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit(""),
+            }
+        }
+    }
+}
+
+/// Min/max over finite values. Returns `(0, 1)` if there are none
+/// (avoids the renderer dividing by zero on an empty range).
+fn finite_range(data: &Array2<f64>) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &v in data.iter() {
+        if v.is_finite() {
+            if v < lo { lo = v; }
+            if v > hi { hi = v; }
+        }
+    }
+    if !lo.is_finite() { return (0.0, 1.0); }
+    if (hi - lo).abs() < 1e-12 { (lo, lo + 1.0) } else { (lo, hi) }
+}
+
+/// Two-sided percentile of finite, non-zero values — the right range
+/// for sentinel-zero maps (eccentricity, magnification) where `0.0`
+/// means "no data" and shouldn't influence the colorbar.
+fn sentinel_percentile(data: &Array2<f64>, p_lo: f64, p_hi: f64) -> (f64, f64) {
+    let mut vals: Vec<f64> = data.iter()
+        .copied()
+        .filter(|v| v.is_finite() && *v != 0.0)
+        .collect();
+    if vals.is_empty() { return (0.0, 1.0); }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = vals.len();
+    let idx = |p: f64| -> usize {
+        ((p * (n - 1) as f64).round() as usize).min(n - 1)
+    };
+    let lo = vals[idx(p_lo)];
+    let hi = vals[idx(p_hi)];
+    if (hi - lo).abs() < 1e-12 { (lo, lo + 1.0) } else { (lo, hi) }
+}
+
+/// Attach the `MapMeta` fields to a dataset as HDF5 attributes.
+fn attach_meta(dataset: &hdf5::Dataset, m: &MapMeta) -> Result<(), AnalysisError> {
+    write_str_attr(dataset, "palette", &m.palette)?;
+    write_str_attr(dataset, "units", &m.units)?;
+    write_f64_attr(dataset, "display_min", m.display_min)?;
+    write_f64_attr(dataset, "display_max", m.display_max)?;
+    write_f64_attr(dataset, "wrap_period", m.wrap_period)?;
+    write_str_attr(dataset, "nan_means", &m.nan_means)?;
+    write_str_attr(dataset, "zero_means", &m.zero_means)?;
+    Ok(())
+}
+
+/// Read the rendering metadata back from a dataset. Returns `None`
+/// when any required attr is missing (legacy files written before
+/// the self-describing-attrs pass, ~2026-05-23). Renderers callers
+/// must handle `None` explicitly — there is no inference fallback.
+///
+/// `nan_means` and `zero_means` are intentionally optional (returned
+/// as empty string when missing): empty-string is the correct
+/// "no sentinel semantics" value, indistinguishable from "attr
+/// genuinely absent for a non-sentinel map." All other fields are
+/// required and `None` propagates if any are missing.
+pub fn read_map_meta(dataset: &hdf5::Dataset) -> Option<MapMeta> {
+    use std::borrow::Cow;
+    Some(MapMeta {
+        palette: Cow::Owned(read_str_attr(dataset, "palette")?),
+        units: Cow::Owned(read_str_attr(dataset, "units")?),
+        display_min: read_f64_attr(dataset, "display_min")?,
+        display_max: read_f64_attr(dataset, "display_max")?,
+        wrap_period: read_f64_attr(dataset, "wrap_period")?,
+        nan_means: Cow::Owned(read_str_attr(dataset, "nan_means").unwrap_or_default()),
+        zero_means: Cow::Owned(read_str_attr(dataset, "zero_means").unwrap_or_default()),
+    })
+}
+
+fn read_str_attr(location: &hdf5::Location, name: &str) -> Option<String> {
+    let attr = location.attr(name).ok()?;
+    let v: hdf5::types::VarLenUnicode = attr.read_scalar().ok()?;
+    Some(v.to_string())
+}
+
+fn read_f64_attr(location: &hdf5::Location, name: &str) -> Option<f64> {
+    let attr = location.attr(name).ok()?;
+    attr.read_scalar::<f64>().ok()
+}
+
+/// Classify a result dataset by its name and HDF5 shape. Single source of
+/// truth for the type tag used by `inspect()` (which reports it for the UI
+/// to discover what's available) and by the Tauri `read_result` command
+/// (which dispatches reads based on this tag).
+pub fn classify_result_type(name: &str, shape: &[usize], _dtype: Option<&hdf5::Datatype>) -> String {
     // Known bool masks (stored as u8).
-    if name == "area_borders" || name == "contours_azi" || name == "contours_alt" {
+    if name == "area_borders"
+        || name == "contours_azi"
+        || name == "contours_alt"
+        || name == "cortex_mask"
+    {
         return "bool_mask".into();
     }
     // Known label maps (stored as i32).
@@ -730,100 +1268,40 @@ fn classify_result_type(name: &str, shape: &[usize], _dtype: Option<&hdf5::Datat
 }
 
 fn chrono_now() -> String {
-    // Simple ISO-8601 without pulling in chrono crate
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System clock is before Unix epoch");
+        .unwrap_or_default();
     format!("{}", duration.as_secs())
 }
 
-/// Classify a cycle name by direction. Returns (is_azi, is_fwd).
-fn classify_cycle_name(name: &str) -> Option<(bool, bool)> {
+/// Classify a sweep label from the acquisition schedule into a `Direction`.
+///
+/// **Empirically calibrated to produce Allen/Marshel-convention VFS
+/// polarity** (V1 negative sign, RL/PM positive sign) for this imaging
+/// rig. The pure label semantics would suggest `TB → AltRev` and
+/// `BT → AltFwd` (since TB = altitude *decreasing* in mouse-perceived
+/// coordinates after the monitor's 180° rotation correction). However the
+/// camera image is *vertically flipped* relative to cortex coordinates by
+/// the imaging relay optics — this flips `∂φ/∂y` in image-space relative
+/// to cortex-space, which would invert VFS sign. The asymmetric label
+/// assignment below absorbs that camera flip so VFS comes out Allen-
+/// canonical without an explicit `camera_y_flip` knob in the pipeline.
+///
+/// Verified against `5_14_2026_test5_1778801597.oisi`: V1 edge renders
+/// blue/negative, RL/PM render orange/positive, matching Allen/Marshel
+/// figures.
+fn classify_cycle_name(name: &str) -> Option<crate::compute::Direction> {
+    use crate::compute::Direction;
     let lower = name.to_lowercase();
-    if lower.starts_with("lr") {
-        Some((true, true))     // azimuth forward
-    } else if lower.starts_with("rl") {
-        Some((true, false))    // azimuth reverse
-    } else if lower.starts_with("tb") {
-        Some((false, true))    // altitude forward
-    } else if lower.starts_with("bt") {
-        Some((false, false))   // altitude reverse
-    } else if lower.starts_with("cw") {
-        Some((true, true))     // wedge clockwise → azimuth forward
-    } else if lower.starts_with("ccw") {
-        Some((true, false))    // wedge counter-clockwise → azimuth reverse
-    } else if lower.starts_with("expand") {
-        Some((false, true))    // ring expand → altitude forward
-    } else if lower.starts_with("contract") {
-        Some((false, false))   // ring contract → altitude reverse
-    } else {
-        None
-    }
-}
-
-/// Accumulates complex maps per direction for averaging.
-struct CycleAccumulator {
-    azi_fwd: Option<(Array2<Complex64>, usize)>,
-    azi_rev: Option<(Array2<Complex64>, usize)>,
-    alt_fwd: Option<(Array2<Complex64>, usize)>,
-    alt_rev: Option<(Array2<Complex64>, usize)>,
-    pub snr_azi: Option<ndarray::Array2<f64>>,
-    pub snr_alt: Option<ndarray::Array2<f64>>,
-}
-
-impl CycleAccumulator {
-    fn new() -> Self {
-        Self {
-            azi_fwd: None,
-            azi_rev: None,
-            alt_fwd: None,
-            alt_rev: None,
-            snr_azi: None,
-            snr_alt: None,
-        }
-    }
-
-    fn add(&mut self, map: Array2<Complex64>, is_azi: bool, is_fwd: bool) {
-        let slot = match (is_azi, is_fwd) {
-            (true, true) => &mut self.azi_fwd,
-            (true, false) => &mut self.azi_rev,
-            (false, true) => &mut self.alt_fwd,
-            (false, false) => &mut self.alt_rev,
-        };
-        match slot {
-            Some((ref mut sum, ref mut count)) => {
-                *sum += &map;
-                *count += 1;
-            }
-            None => {
-                *slot = Some((map, 1));
-            }
-        }
-    }
-
-    fn finalize(self) -> Result<RawProcessingResult, AnalysisError> {
-        let avg = |slot: Option<(Array2<Complex64>, usize)>, label: &str| -> Result<Array2<Complex64>, AnalysisError> {
-            match slot {
-                Some((sum, count)) => Ok(sum.mapv(|v| v / count as f64)),
-                None => Err(AnalysisError::MissingData(format!("no cycles found for {label}"))),
-            }
-        };
-
-        let complex_maps = ComplexMaps {
-            azi_fwd: avg(self.azi_fwd, "azi_fwd (LR)")?,
-            azi_rev: avg(self.azi_rev, "azi_rev (RL)")?,
-            alt_fwd: avg(self.alt_fwd, "alt_fwd (TB)")?,
-            alt_rev: avg(self.alt_rev, "alt_rev (BT)")?,
-        };
-
-        let dims = complex_maps.azi_fwd.raw_dim();
-        let snr = SnrMaps {
-            snr_azi: self.snr_azi.unwrap_or_else(|| ndarray::Array2::zeros(dims)),
-            snr_alt: self.snr_alt.unwrap_or_else(|| ndarray::Array2::zeros(dims)),
-        };
-
-        Ok(RawProcessingResult { complex_maps, snr })
-    }
+    if lower.starts_with("lr")           { Some(Direction::AziFwd) }
+    else if lower.starts_with("rl")      { Some(Direction::AziRev) }
+    else if lower.starts_with("tb")      { Some(Direction::AltFwd) } // absorbs camera vertical flip
+    else if lower.starts_with("bt")      { Some(Direction::AltRev) } // absorbs camera vertical flip
+    else if lower.starts_with("ccw")     { Some(Direction::AziRev) } // wedge counter-clockwise → azimuth rev (check ccw before cw)
+    else if lower.starts_with("cw")      { Some(Direction::AziFwd) } // wedge clockwise → azimuth fwd
+    else if lower.starts_with("expand")  { Some(Direction::AltFwd) } // ring expand → altitude fwd
+    else if lower.starts_with("contract") { Some(Direction::AltRev) } // ring contract → altitude rev
+    else                                 { None }
 }
 
 // =============================================================================
@@ -837,39 +1315,25 @@ mod tests {
     use num_complex::Complex64;
     use std::path::PathBuf;
 
-    /// Read analysis params stored in the file (if any).
-    /// Only used in tests — not part of the public API.
-    fn read_params(path: &Path) -> Result<Option<AnalysisParams>, AnalysisError> {
-        let file = open_read(path)?;
-        match file.attr("analysis_params") {
-            Ok(attr) => {
-                let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
-                    .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
-                let json: String = json_vlu.as_str().to_string();
-                let params: AnalysisParams = serde_json::from_str(&json)
-                    .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
-                Ok(Some(params))
-            }
-            Err(_) => Ok(None),
-        }
+    /// Helper: build minimal AnalysisParams + AcquisitionProperties for
+    /// writing results. Construction flows through the SSoT param
+    /// registry → bridge, the same path production uses.
+    fn test_params() -> crate::AnalysisParams {
+        let reg = openisi_params::Registry::new(std::path::Path::new("/tmp/test"));
+        crate::bridge::analysis_params_from_snapshot(&reg.snapshot())
     }
 
-    /// Helper: build a minimal AnalysisParams for writing results.
-    fn test_params() -> crate::AnalysisParams {
-        crate::AnalysisParams {
-            smoothing_sigma: 1.0,
-            rotation_k: 0,
+    fn test_acquisition() -> crate::AcquisitionProperties {
+        crate::AcquisitionProperties {
             azi_angular_range: 60.0,
             alt_angular_range: 40.0,
             offset_azi: 0.0,
             offset_alt: 0.0,
-            epsilon: 1e-6,
-            use_garrett_display_maps: false,
-            snr_threshold_enabled: false,
-            snr_threshold_value: 2.0,
-            snr_prefer_spectral: true,
-            snr_use_transparent_mask: true,
-            segmentation: None,
+            rotation_k: 0,
+            um_per_pixel: 20.0,
+            // Hand-constructed test fixture; treat as Full since the
+            // test provides every field explicitly.
+            provenance: crate::ProvenanceLevel::Full,
         }
     }
 
@@ -951,7 +1415,9 @@ mod tests {
             azi_amplitude: Array2::from_shape_fn((h, w), |(r, c)| (r * w + c) as f64 * 0.01),
             alt_amplitude: Array2::from_shape_fn((h, w), |(r, c)| (r * w + c) as f64 * 0.02),
             vfs: Array2::from_shape_fn((h, w), |(r, c)| if (r + c) % 2 == 0 { 1.0 } else { -1.0 }),
-            vfs_thresholded: Array2::zeros((h, w)),
+            vfs_smoothed: Array2::zeros((h, w)),
+            vfs_smoothed_thresholded: Array2::zeros((h, w)),
+            cortex_mask: Array2::from_elem((h, w), true),
             area_labels: Array2::zeros((h, w)),
             area_signs: vec![],
             area_borders: Array2::from_elem((h, w), false),
@@ -959,12 +1425,12 @@ mod tests {
             magnification: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr_azi: None,
-            snr_alt: None,
+            snr: None,
+            reliability: None,
         };
 
         create(tmp.path(), "test").unwrap();
-        write_results(tmp.path(), &result, &params).unwrap();
+        write_results(tmp.path(), &result, &test_acquisition(), &params).unwrap();
 
         // Read back individual result maps and verify.
         let azi_phase = read_result_map(tmp.path(), "azi_phase").unwrap();
@@ -1031,7 +1497,9 @@ mod tests {
             azi_amplitude: Array2::zeros((h, w)),
             alt_amplitude: Array2::zeros((h, w)),
             vfs: Array2::zeros((h, w)),
-            vfs_thresholded: Array2::zeros((h, w)),
+            vfs_smoothed: Array2::zeros((h, w)),
+            vfs_smoothed_thresholded: Array2::zeros((h, w)),
+            cortex_mask: Array2::from_elem((h, w), true),
             area_labels: Array2::zeros((h, w)),
             area_signs: vec![1, -1],
             area_borders: Array2::from_elem((h, w), false),
@@ -1039,12 +1507,12 @@ mod tests {
             magnification: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr_azi: None,
-            snr_alt: None,
+            snr: None,
+            reliability: None,
         };
 
         create(tmp.path(), "test").unwrap();
-        write_results(tmp.path(), &result, &params).unwrap();
+        write_results(tmp.path(), &result, &test_acquisition(), &params).unwrap();
 
         let caps = inspect(tmp.path()).unwrap();
         assert!(caps.has_results, "should detect results");
@@ -1143,7 +1611,9 @@ mod tests {
             azi_amplitude: Array2::zeros((h, w)),
             alt_amplitude: Array2::zeros((h, w)),
             vfs: Array2::zeros((h, w)),
-            vfs_thresholded: Array2::zeros((h, w)),
+            vfs_smoothed: Array2::zeros((h, w)),
+            vfs_smoothed_thresholded: Array2::zeros((h, w)),
+            cortex_mask: Array2::from_elem((h, w), true),
             area_labels: Array2::zeros((h, w)),
             area_signs: vec![],
             area_borders: Array2::from_elem((h, w), false),
@@ -1151,17 +1621,104 @@ mod tests {
             magnification: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr_azi: None,
-            snr_alt: None,
+            snr: None,
+            reliability: None,
         };
 
         create(tmp.path(), "test").unwrap();
-        write_results(tmp.path(), &result, &params).unwrap();
+        write_results(tmp.path(), &result, &test_acquisition(), &params).unwrap();
 
-        let loaded = read_params(tmp.path()).unwrap();
-        assert!(loaded.is_some(), "params should be present");
-        let loaded = loaded.unwrap();
-        assert!((loaded.smoothing_sigma - 1.0).abs() < f64::EPSILON);
-        assert!((loaded.azi_angular_range - 60.0).abs() < f64::EPSILON);
+        // write_results no longer writes /analysis_params (the
+        // orchestrator owns that via write_analysis_params_attr with
+        // the Registry tree). Confirm the attribute is absent here.
+        assert!(read_analysis_params_attr(tmp.path()).unwrap().is_none());
+
+        // Then stamp a registry tree and verify it round-trips.
+        let tree = serde_json::json!({"cycle_combine": {"method": "marshel_garrett2011_delay_subtraction"}});
+        write_analysis_params_attr(tmp.path(), &tree).unwrap();
+        let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded, tree);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // write_analysis_params_attr round-trip
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn write_analysis_params_attr_round_trips_via_read() {
+        // Write a registry-tree JSON value, read it back, verify equality.
+        let tmp = TempFile::new("write_analysis_params");
+        create(tmp.path(), "test").unwrap();
+
+        let tree = serde_json::json!({
+            "sign_map_smoothing": { "method": "gaussian", "gaussian": { "sigma_um": 77.0 } },
+            "cortex_source":      { "method": "allen_zhuang2017_full_frame" },
+        });
+        write_analysis_params_attr(tmp.path(), &tree).unwrap();
+        let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded, tree);
+    }
+
+    #[test]
+    fn write_analysis_params_attr_overwrites_existing() {
+        let tmp = TempFile::new("write_analysis_params_overwrite");
+        create(tmp.path(), "test").unwrap();
+        let a = serde_json::json!({"sign_map_smoothing": {"method": "gaussian"}});
+        let b = serde_json::json!({"sign_map_smoothing": {"method": "gaussian", "gaussian": {"sigma_um": 90.0}}});
+        write_analysis_params_attr(tmp.path(), &a).unwrap();
+        write_analysis_params_attr(tmp.path(), &b).unwrap();
+        let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded, b);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // is_pre_2026_analysis_params detection
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_pre_2026_analysis_params_absent_attr() {
+        let tmp = TempFile::new("pre2026_absent");
+        create(tmp.path(), "test").unwrap();
+        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+    }
+
+    #[test]
+    fn is_pre_2026_analysis_params_current_schema_returns_false() {
+        let tmp = TempFile::new("pre2026_current");
+        create(tmp.path(), "test").unwrap();
+        // Current schema: stage with method + sibling variant subtree.
+        let tree = serde_json::json!({
+            "sign_map_smoothing": {
+                "method": "gaussian",
+                "gaussian": { "sigma_um": 60.0 }
+            }
+        });
+        write_analysis_params_attr(tmp.path(), &tree).unwrap();
+        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+    }
+
+    #[test]
+    fn is_pre_2026_analysis_params_old_schema_moved_fields_returns_true() {
+        let tmp = TempFile::new("pre2026_old_moved");
+        create(tmp.path(), "test").unwrap();
+        let file = hdf5::File::open_rw(tmp.path()).unwrap();
+        let stale_json = r#"{"azi_angular_range":120.0,"cycle_combine":{"method":"marshel_garrett2011_delay_subtraction"}}"#;
+        write_str_attr(&file, "analysis_params", stale_json).unwrap();
+        drop(file);
+        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), true);
+    }
+
+    #[test]
+    fn is_pre_2026_analysis_params_old_schema_tagged_enum_returns_true() {
+        // Legacy serde-derived AnalysisParams: stage value has ONLY a
+        // `method` key (tunables either absent or carried at the same
+        // level instead of nested under a variant subtree).
+        let tmp = TempFile::new("pre2026_old_tagged");
+        create(tmp.path(), "test").unwrap();
+        let stale = serde_json::json!({
+            "cycle_combine": { "method": "marshel_garrett2011_delay_subtraction" }
+        });
+        write_analysis_params_attr(tmp.path(), &stale).unwrap();
+        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), true);
     }
 }

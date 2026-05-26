@@ -4,6 +4,7 @@ members = [
     "src-tauri",
     "crates/openisi-stimulus",
     "crates/pco-sdk",
+    "crates/openisi-params",
     "crates/isi-analysis",
 ]
 

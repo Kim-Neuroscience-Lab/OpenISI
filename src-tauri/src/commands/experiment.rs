@@ -237,7 +237,7 @@ fn experiment_to_json(snap: &RegistrySnapshot) -> serde_json::Value {
 
 /// Apply experiment fields from a JSON value to the registry.
 fn apply_experiment_json(reg: &mut crate::params::Registry, json: &serde_json::Value) -> AppResult<()> {
-    reg.batch(|r| -> Result<(), String> {
+    reg.batch(|r| -> AppResult<()> {
         // Geometry
         if let Some(g) = json.get("geometry") {
             if let Some(v) = g.get("horizontal_offset_deg").and_then(|v| v.as_f64()) {
@@ -306,6 +306,6 @@ fn apply_experiment_json(reg: &mut crate::params::Registry, json: &serde_json::V
             if let Some(v) = t.get("inter_direction_sec").and_then(|v| v.as_f64()) { r.set(ParamId::InterDirectionSec, ParamValue::F64(v))?; }
         }
         Ok(())
-    }).map_err(|e| AppError::Validation(e))?;
+    })?;
     Ok(())
 }

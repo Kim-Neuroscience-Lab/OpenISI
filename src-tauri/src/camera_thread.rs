@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use pco_sdk::{Frame, Sdk};
 
+use crate::error::AcquisitionError;
 use crate::messages::{CameraCmd, CameraConnectedInfo, CameraDeviceInfo, CameraEvt, CameraFrameData};
 
 /// System tuning values passed to the camera thread at startup.
@@ -61,7 +62,17 @@ pub fn run(
                 return;
             }
             Ok(_) => {} // Ignore other commands when disconnected.
-            Err(_) => return,
+            Err(_) => {
+                // The main thread's cmd sender is gone — that means the
+                // app is exiting / has crashed. Emit one last Fatal so
+                // the UI (if anything's still listening) sees a clean
+                // signal before the thread terminates.
+                eprintln!("[camera] cmd channel closed by sender — exiting");
+                let _ = evt_tx.send(CameraEvt::Fatal(AcquisitionError::ChannelClosed {
+                    context: "camera cmd channel (main thread gone)",
+                }));
+                return;
+            }
         }
     }
 }
@@ -80,7 +91,13 @@ fn no_sdk_loop(cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
             }
             Ok(CameraCmd::Shutdown) => return,
             Ok(_) => {}
-            Err(_) => return,
+            Err(_) => {
+                // Main thread gone — same Fatal signal as the SDK-loaded path.
+                let _ = evt_tx.send(CameraEvt::Fatal(AcquisitionError::ChannelClosed {
+                    context: "camera cmd channel (no-sdk loop)",
+                }));
+                return;
+            }
         }
     }
 }
@@ -284,6 +301,13 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
                 Ok(CameraCmd::Enumerate) => {}
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    // Main thread is gone mid-acquisition. This is a
+                    // hard fatal — we can't keep accumulating frames
+                    // forever. Emit Fatal so the UI (if anything
+                    // restored its receive end) gets the final signal.
+                    let _ = evt_tx.send(CameraEvt::Fatal(
+                        AcquisitionError::DisconnectedDuringAcquisition,
+                    ));
                     should_exit = true;
                     break;
                 }

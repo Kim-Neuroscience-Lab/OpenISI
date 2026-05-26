@@ -200,10 +200,7 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
         Some(&session_meta),
         anatomical.as_ref(),
         pending.completed_normally,
-    ).map_err(|e| AppError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("Failed to write .oisi: {e}"),
-    )))?;
+    )?;
 
     // Update summary with file path.
     let mut app = lock_state(&state, "save_acquisition update summary")?;

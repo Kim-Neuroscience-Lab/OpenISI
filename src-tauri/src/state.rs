@@ -121,6 +121,21 @@ pub struct AppState {
 
     // ── Pending save (awaiting user confirmation) ─────────────────
     pub pending_save: Option<PendingSave>,
+
+    // ── Active .oisi (the file the UI currently has open) ─────────
+    /// Path to the `.oisi` file the UI currently has selected. Set by
+    /// `set_active_oisi` when the user opens a file in the library
+    /// view; read by `get_analysis_params` / `set_analysis_params` to
+    /// target the right file. `None` when no file is open.
+    ///
+    /// **Concurrency invariant:** callers MUST capture this at the
+    /// start of any long-running operation. Re-reading mid-run would
+    /// allow a UI `set_active_oisi(other_file)` to silently reroute
+    /// writes to a different file. All existing callers
+    /// (`run_analysis`, `get_/set_analysis_params`) take the path
+    /// explicitly as an argument or capture it under the lock at the
+    /// start of the command — the path is never observed mid-operation.
+    pub active_oisi_path: Option<std::path::PathBuf>,
 }
 
 /// Data awaiting user save confirmation after acquisition.
@@ -166,6 +181,7 @@ impl AppState {
             acquisition: None,
             last_acquisition_summary: None,
             pending_save: None,
+            active_oisi_path: None,
         }
     }
 
@@ -197,9 +213,13 @@ impl AppState {
         let position = monitor.position;
 
         // Read system tuning and initial background from registry.
+        // Note: `drop_detection_threshold` is read by the DatasetConfig
+        // path (post-hoc Δus ratio check inside `openisi-stimulus`),
+        // NOT by the live stimulus thread — the thread uses absolute
+        // DWM present-count gaps directly. So we don't pass it here.
         let (preview_width_px, preview_interval_ms, preview_cycle_sec,
              idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
-             drop_detection_threshold, initial_bg) = match self.registry.lock() {
+             initial_bg) = match self.registry.lock() {
             Ok(reg) => (
                 reg.preview_width_px(),
                 reg.preview_interval_ms(),
@@ -207,7 +227,6 @@ impl AppState {
                 reg.idle_sleep_ms(),
                 reg.fps_window_frames(),
                 reg.drop_detection_warmup_frames(),
-                reg.drop_detection_threshold(),
                 reg.background_luminance(),
             ),
             Err(_) => {
@@ -223,7 +242,7 @@ impl AppState {
                     cmd_rx, evt_tx, monitor_index, width, height, position,
                     preview_width_px, preview_interval_ms, preview_cycle_sec,
                     idle_sleep_ms, fps_window_frames, drop_detection_warmup_frames,
-                    drop_detection_threshold, initial_bg,
+                    initial_bg,
                 );
             })
         {

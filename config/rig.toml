@@ -1,6 +1,11 @@
 [camera]
 exposure_us = 1000
 binning = 4
+# Spatial calibration: micrometers per camera pixel. Used to convert
+# physical-unit smoothing sigmas (e.g. sigma_um) into pixel counts at
+# runtime. 20 µm/px matches typical mouse-cortex imaging (Allen Brain
+# Observatory). Override per-rig when the camera setup differs.
+um_per_pixel = 20.0
 
 [geometry]
 viewing_distance_cm = 10.0
@@ -14,34 +19,6 @@ center_y_px = 512
 [display]
 target_stimulus_fps = 60
 monitor_rotation_deg = 180.0
-
-[analysis]
-smoothing_sigma = 2.0
-rotation_k = 0
-azi_angular_range = 100.0
-alt_angular_range = 100.0
-offset_azi = 0.0
-offset_alt = 0.0
-epsilon = 0.0000000001
-use_garrett_display_maps = false
-snr_threshold_enabled = false
-snr_threshold_value = 2.0
-snr_prefer_spectral = true
-snr_use_transparent_mask = true
-
-[analysis.segmentation]
-sign_map_filter_sigma = 9.0
-sign_map_threshold = 0.35
-open_radius = 2
-close_radius = 10
-dilate_radius = 3
-pad_border = 30
-spur_iterations = 4
-split_overlap_threshold = 1.1
-merge_overlap_threshold = 0.1
-merge_dilate_radius = 3
-merge_close_radius = 5
-eccentricity_radius = 30.0
 
 [system]
 camera_frame_send_interval_ms = 33
@@ -58,5 +35,5 @@ drop_detection_warmup_frames = 10
 drop_detection_threshold = 1.5
 
 [paths]
-data_directory = ""
+data_directory = "/Users/Adam/openisi/data"
 experiments_directory = ""

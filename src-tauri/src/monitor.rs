@@ -284,23 +284,24 @@ mod platform {
     }
 
     /// Find the DXGI output (IDXGIOutput) for a given monitor index.
-    pub fn find_dxgi_output(monitor_index: usize) -> Result<IDXGIOutput, String> {
+    pub fn find_dxgi_output(monitor_index: usize) -> crate::error::AppResult<IDXGIOutput> {
+        use crate::error::AppError;
         let monitors = enumerate_hmonitors();
         if monitor_index >= monitors.len() {
-            return Err(format!(
+            return Err(AppError::Hardware(format!(
                 "Monitor index {} out of range (have {})",
                 monitor_index,
                 monitors.len()
-            ));
+            )));
         }
 
         let target_info = get_monitor_info_ex(monitors[monitor_index])
-            .ok_or_else(|| format!("Failed to get info for monitor {}", monitor_index))?;
+            .ok_or_else(|| AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index)))?;
         let target_rect = target_info.monitorInfo.rcMonitor;
 
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()
-                .map_err(|e| format!("CreateDXGIFactory1 failed: {}", e))?;
+                .map_err(|e| AppError::Hardware(format!("CreateDXGIFactory1 failed: {}", e)))?;
 
             let mut adapter_idx: u32 = 0;
             loop {
@@ -333,25 +334,26 @@ mod platform {
             }
         }
 
-        Err(format!(
+        Err(AppError::Hardware(format!(
             "No DXGI output found for monitor index {}",
             monitor_index
-        ))
+        )))
     }
 
     /// Get the desktop position (x, y) of a monitor by index.
-    pub fn get_monitor_position(monitor_index: usize) -> Result<(i32, i32), String> {
+    pub fn get_monitor_position(monitor_index: usize) -> crate::error::AppResult<(i32, i32)> {
+        use crate::error::AppError;
         let hmonitors = enumerate_hmonitors();
         if monitor_index >= hmonitors.len() {
-            return Err(format!(
+            return Err(AppError::Hardware(format!(
                 "Monitor index {} out of range (have {})",
                 monitor_index,
                 hmonitors.len()
-            ));
+            )));
         }
 
         let info = get_monitor_info_ex(hmonitors[monitor_index])
-            .ok_or_else(|| format!("Failed to get info for monitor {}", monitor_index))?;
+            .ok_or_else(|| AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index)))?;
 
         let rc = info.monitorInfo.rcMonitor;
         Ok((rc.left, rc.top))
@@ -373,8 +375,10 @@ mod platform {
     }
 
     /// Not available on this platform.
-    pub fn get_monitor_position(_monitor_index: usize) -> Result<(i32, i32), String> {
-        Err("Monitor position detection requires Windows".into())
+    pub fn get_monitor_position(_monitor_index: usize) -> crate::error::AppResult<(i32, i32)> {
+        Err(crate::error::AppError::Hardware(
+            "Monitor position detection requires Windows".into(),
+        ))
     }
 }
 

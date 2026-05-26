@@ -4,6 +4,12 @@ target/
 *.dll
 *.pdb
 
+# Vendored libtorch (downloaded by scripts/setup.sh)
+vendor/
+
+# Dev debugging output (per docs/ANALYSIS_COMPUTE.md)
+dev_figures/
+
 # Data files
 *.oisi
 *.h5

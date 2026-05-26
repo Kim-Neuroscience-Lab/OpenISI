@@ -22,8 +22,8 @@ pub use acquire::{
     WorkspaceStatus,
 };
 pub use analysis::{
-    export_map_png, get_analysis_params, inspect_oisi, read_anatomical, read_result,
-    run_analysis, set_analysis_params,
+    export_map_png, get_analysis_backend, get_analysis_params, inspect_oisi, read_anatomical,
+    read_result, run_analysis, set_active_oisi,
 };
 pub use experiment::{
     get_duration_summary, get_experiment, list_experiments, load_experiment, save_experiment_as,

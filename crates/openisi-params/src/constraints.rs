@@ -21,52 +21,36 @@ pub enum EffectiveConstraint {
 
 impl EffectiveConstraint {
     /// Validate a ParamValue against this effective constraint.
-    pub fn validate(&self, value: &ParamValue, static_constraint: &StaticConstraint) -> Result<(), String> {
+    /// Errors are `ParamsError::Validation` — no `Result<_, String>`
+    /// "internal helper" exemption.
+    pub fn validate(&self, value: &ParamValue, static_constraint: &StaticConstraint) -> crate::error::ParamsResult<()> {
+        use crate::error::ParamsError;
+        let oor = |v: &dyn std::fmt::Display, min: &dyn std::fmt::Display, max: &dyn std::fmt::Display| {
+            ParamsError::Validation(format!("value {v} out of range [{min}, {max}]"))
+        };
         match self {
             EffectiveConstraint::Static => static_constraint.validate(value),
             EffectiveConstraint::RangeU16(min, max) => {
                 if let ParamValue::U16(v) = value {
-                    if *v >= *min && *v <= *max {
-                        Ok(())
-                    } else {
-                        Err(format!("value {v} out of range [{min}, {max}]"))
-                    }
-                } else {
-                    Ok(())
-                }
+                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
+                } else { Ok(()) }
             }
             EffectiveConstraint::RangeU32(min, max) => {
                 if let ParamValue::U32(v) = value {
-                    if *v >= *min && *v <= *max {
-                        Ok(())
-                    } else {
-                        Err(format!("value {v} out of range [{min}, {max}]"))
-                    }
-                } else {
-                    Ok(())
-                }
+                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
+                } else { Ok(()) }
             }
             EffectiveConstraint::RangeF64(min, max) => {
                 if let ParamValue::F64(v) = value {
-                    if *v >= *min && *v <= *max {
-                        Ok(())
-                    } else {
-                        Err(format!("value {v} out of range [{min}, {max}]"))
-                    }
-                } else {
-                    Ok(())
-                }
+                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
+                } else { Ok(()) }
             }
             EffectiveConstraint::MinF64(min) => {
                 if let ParamValue::F64(v) = value {
-                    if *v >= *min {
-                        Ok(())
-                    } else {
-                        Err(format!("value {v} below minimum {min}"))
+                    if *v >= *min { Ok(()) } else {
+                        Err(ParamsError::Validation(format!("value {v} below minimum {min}")))
                     }
-                } else {
-                    Ok(())
-                }
+                } else { Ok(()) }
             }
         }
     }

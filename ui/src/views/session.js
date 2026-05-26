@@ -4,6 +4,7 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 import { buildParamInput, buildParamGroup, wireParamListeners, applyParamChanges, fetchGroupDescriptors } from '../param-form.js';
+import { errorToString } from '../lib/errors.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Section definitions
@@ -245,7 +246,7 @@ async function renderSetup(body) {
             el.textContent = `${v.measured_refresh_hz.toFixed(2)} Hz, ${v.jitter_us.toFixed(1)} µs jitter`;
             await refreshStatuses();
         } catch (e) {
-            el.textContent = `Error: ${e}`;
+            el.textContent = `Error: ${errorToString(e)}`;
         }
     });
 
@@ -412,7 +413,7 @@ async function renderFocus(body) {
             statusEl.textContent = "Captured";
             statusEl.style.color = "var(--success)";
         } catch (e) {
-            statusEl.textContent = `Error: ${e}`;
+            statusEl.textContent = `Error: ${errorToString(e)}`;
             statusEl.style.color = "var(--error)";
         }
     });
@@ -701,7 +702,7 @@ async function renderProtocol(body) {
             await invoke("load_experiment", { path });
             renderProtocol(body); // Re-render with loaded experiment.
         } catch (err) {
-            alert("Failed to load experiment: " + err);
+            alert("Failed to load experiment: " + errorToString(err));
         }
     });
 
@@ -714,7 +715,7 @@ async function renderProtocol(body) {
             document.getElementById("experiment-save-name").value = "";
             renderProtocol(body); // Re-render to update picker.
         } catch (err) {
-            alert("Failed to save experiment: " + err);
+            alert("Failed to save experiment: " + errorToString(err));
         }
     });
 
@@ -901,7 +902,7 @@ async function renderProtocol(body) {
             previewStatus.textContent = "Running";
             previewStatus.style.color = "var(--success)";
         } catch (e) {
-            previewStatus.textContent = `Error: ${e}`;
+            previewStatus.textContent = `Error: ${errorToString(e)}`;
             previewStatus.style.color = "var(--error)";
         }
     });
@@ -911,7 +912,7 @@ async function renderProtocol(body) {
             previewStatus.textContent = "Stopped";
             previewStatus.style.color = "var(--text-secondary)";
         } catch (e) {
-            previewStatus.textContent = `Error: ${e}`;
+            previewStatus.textContent = `Error: ${errorToString(e)}`;
             previewStatus.style.color = "var(--error)";
         }
     });
@@ -1068,7 +1069,7 @@ async function renderAcquire(body) {
                 renderAcquire(body);
             } catch (e) {
                 btnTiming.disabled = false;
-                btnTiming.textContent = `Error: ${e}`;
+                btnTiming.textContent = `Error: ${errorToString(e)}`;
                 setTimeout(() => { btnTiming.textContent = "Validate Timing (~3s)"; btnTiming.disabled = false; }, 3000);
             }
         });
@@ -1108,7 +1109,7 @@ async function renderAcquire(body) {
             await invoke("start_acquisition");
             document.getElementById("acq-state").textContent = "Starting...";
         } catch (e) {
-            document.getElementById("acq-state").textContent = `Error: ${e}`;
+            document.getElementById("acq-state").textContent = `Error: ${errorToString(e)}`;
         }
     });
 
@@ -1167,7 +1168,7 @@ async function renderAcquire(body) {
                     window.openISI.showView("analysis");
                 });
             } catch (e) {
-                statusEl.textContent = `Error: ${e}`;
+                statusEl.textContent = `Error: ${errorToString(e)}`;
                 statusEl.style.color = "var(--error)";
             }
         });

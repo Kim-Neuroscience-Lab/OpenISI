@@ -6,6 +6,7 @@ pub mod export;
 pub mod messages;
 pub mod monitor;
 pub mod params;
+pub mod sample_data;
 pub mod session;
 pub mod state;
 pub mod stimulus_thread;
@@ -13,30 +14,46 @@ pub mod timing;
 
 use std::sync::{Arc, Mutex};
 
+use error::{AppError, AppResult};
 use params::Registry;
 use state::AppState;
 
+/// Public entry point. Thin wrapper around `try_run()` that prints any
+/// startup error in a single readable line and exits non-zero. No panic,
+/// no stack trace — the user is a scientist, not a developer.
 pub fn run() {
-    // Load config from the config directory.
-    // Try: 1) <exe_dir>/config  2) <exe_dir>/../config  3) <exe_dir>/../../config
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    if let Err(e) = try_run() {
+        eprintln!("openisi: {e}");
+        std::process::exit(1);
+    }
+}
 
-    let config_dir = find_config_dir(&exe_dir);
+/// All startup logic. Returns `Result` so config / setup failures
+/// surface cleanly through `?`-propagation instead of `eprintln!` +
+/// `process::exit(1)` sprinkled through the code path.
+fn try_run() -> AppResult<()> {
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| AppError::Config(format!("locate current executable: {e}")))?
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| AppError::Config("current executable has no parent directory".into()))?;
+
+    let config_dir = find_config_dir(&exe_dir)?;
 
     let mut registry = Registry::new(&config_dir);
-    if let Err(e) = registry.load_rig() {
-        eprintln!("[openisi] Failed to load rig params from {}: {e}", config_dir.display());
-        std::process::exit(1);
-    }
-    if let Err(e) = registry.load_experiment() {
-        eprintln!("[openisi] Failed to load experiment params from {}: {e}", config_dir.display());
-        std::process::exit(1);
-    }
+    registry.load_rig().map_err(|e| AppError::Config(format!(
+        "load rig params from {}: {e}", config_dir.display()
+    )))?;
+    // analysis.toml is no longer loaded into the primitive registry —
+    // it now uses a per-stage method-enum shape (`AnalysisParams`
+    // loaded via serde, see `isi_analysis::methods`). The Tauri UI
+    // reads/writes analysis params via commands that target the
+    // active .oisi file (task #56) or `config/analysis.toml` directly.
+    registry.load_experiment().map_err(|e| AppError::Config(format!(
+        "load experiment params from {}: {e}", config_dir.display()
+    )))?;
 
-    start_tauri(registry);
+    start_tauri(registry)
 }
 
 /// Build the list of candidate config directories relative to the given exe directory.
@@ -49,27 +66,28 @@ fn config_candidates(exe_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     ]
 }
 
-/// Find the config directory from the candidates list.
-/// Returns the first candidate that contains `rig.toml`.
-/// Panics if no config directory is found.
-fn find_config_dir(exe_dir: &std::path::Path) -> std::path::PathBuf {
-    config_candidates(exe_dir)
+/// Find the config directory from the candidates list. Returns the
+/// first candidate that contains `rig.toml`. Returns `AppError::Config`
+/// (NOT a panic) when no candidate has it, so the user sees a clean
+/// one-line message via `try_run`.
+fn find_config_dir(exe_dir: &std::path::Path) -> AppResult<std::path::PathBuf> {
+    if let Some(found) = config_candidates(exe_dir)
         .into_iter()
         .find(|p| p.join("rig.toml").exists())
-        .unwrap_or_else(|| {
-            let candidates: Vec<_> = config_candidates(exe_dir)
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-            panic!(
-                "[openisi] Cannot find config directory with rig.toml.\n\
-                 Searched: {}",
-                candidates.join(", ")
-            );
-        })
+    {
+        return Ok(found);
+    }
+    let candidates: Vec<_> = config_candidates(exe_dir)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    Err(AppError::Config(format!(
+        "cannot find config directory with rig.toml. Searched: {}",
+        candidates.join(", ")
+    )))
 }
 
-fn start_tauri(registry: Registry) {
+fn start_tauri(registry: Registry) -> AppResult<()> {
     // Create channels for stimulus thread
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
@@ -103,19 +121,16 @@ fn start_tauri(registry: Registry) {
     // Invariant: no command modifies system tuning at runtime, so these snapshots
     // stay in sync for the lifetime of the thread.
     let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
-         cam_frame_send_interval_ms, cam_poll_interval_ms) = match app_state.registry.lock() {
-        Ok(reg) => (
+         cam_frame_send_interval_ms, cam_poll_interval_ms) = {
+        let reg = error::lock_state(&app_state.registry, "registry init")?;
+        (
             reg.camera_first_frame_timeout_ms(),
             reg.camera_first_frame_poll_ms(),
             reg.camera_frame_send_interval_ms(),
             reg.camera_poll_interval_ms(),
-        ),
-        Err(_) => {
-            eprintln!("[openisi] registry lock poisoned during initialization");
-            std::process::exit(1);
-        }
+        )
     };
-    if let Err(e) = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("camera".into())
         .spawn(move || {
             camera_thread::run(
@@ -126,10 +141,7 @@ fn start_tauri(registry: Registry) {
                 cam_poll_interval_ms,
             );
         })
-    {
-        eprintln!("[openisi] Failed to spawn camera thread: {e}");
-        std::process::exit(1);
-    }
+        .map_err(|e| AppError::Config(format!("spawn camera thread: {e}")))?;
 
     // Stimulus thread is spawned on-demand when a display is selected.
     app_state.threads.stim_cmd_rx = Some(stim_cmd_rx);
@@ -143,10 +155,17 @@ fn start_tauri(registry: Registry) {
         .manage(shared_state.clone())
         .setup(move |app| {
             // Inject the Tauri app handle into the registry for event emission.
+            // Lock failures and thread-spawn failures here would mean we
+            // can't run at all; surface them through the Tauri setup
+            // error (Box<dyn Error>) which becomes a clean startup error.
             {
-                let state = shared_state.lock().unwrap();
-                let mut reg = state.registry.lock().unwrap();
-                reg.set_app_handle(app.handle().clone());
+                let state = shared_state.lock()
+                    .map_err(|_| Box::<dyn std::error::Error>::from("state lock poisoned at setup"))?;
+                let mut reg = state.registry.lock()
+                    .map_err(|_| Box::<dyn std::error::Error>::from("registry lock poisoned at setup"))?;
+                reg.set_observer(Box::new(
+                    crate::params::observer::TauriParamObserver::new(app.handle().clone()),
+                ));
             }
 
             // Start the event forwarding loop — bridges crossbeam channels to Tauri events.
@@ -157,10 +176,9 @@ fn start_tauri(registry: Registry) {
                 .spawn(move || {
                     events::run_event_forwarder(handle, state_for_events);
                 })
-                .unwrap_or_else(|e| {
-                    eprintln!("[openisi] Failed to spawn event forwarder: {e}");
-                    std::process::exit(1);
-                });
+                .map_err(|e| Box::<dyn std::error::Error>::from(
+                    format!("spawn event forwarder thread: {e}")
+                ))?;
 
             Ok(())
         })
@@ -174,10 +192,11 @@ fn start_tauri(registry: Registry) {
             commands::library::import_snlc,
             commands::library::import_snlc_sample_data,
             // Analysis
+            commands::analysis::get_analysis_backend,
             commands::analysis::inspect_oisi,
             commands::analysis::run_analysis,
             commands::analysis::get_analysis_params,
-            commands::analysis::set_analysis_params,
+            commands::analysis::set_active_oisi,
             commands::analysis::read_result,
             commands::analysis::read_anatomical,
             commands::analysis::export_map_png,
@@ -221,13 +240,14 @@ fn start_tauri(registry: Registry) {
             crate::params::commands::set_params,
         ])
         .build(tauri::generate_context!())
-        .unwrap_or_else(|e| {
-            eprintln!("[openisi] Failed to build Tauri application: {e}");
-            std::process::exit(1);
-        })
+        .map_err(|e| AppError::Config(format!("build Tauri application: {e}")))?
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Send shutdown commands to background threads so they clean up hardware.
+                // Lock failure here is non-fatal — we still try to shut down threads
+                // via channel sends. Channel send failures during shutdown are
+                // expected (threads may have already exited) and intentionally
+                // ignored at this point.
                 eprintln!("[openisi] shutting down...");
                 if let Ok(state) = shared_state_for_shutdown.lock() {
                     if let Some(ref tx) = state.threads.camera_tx {
@@ -243,6 +263,7 @@ fn start_tauri(registry: Registry) {
                 eprintln!("[openisi] shutdown complete");
             }
         });
+    Ok(())
 }
 
 // =============================================================================
@@ -281,7 +302,7 @@ mod tests {
         fs::create_dir_all(&exe_dir).unwrap();
         make_config_tree(&exe_dir, "config");
 
-        let found = find_config_dir(&exe_dir);
+        let found = find_config_dir(&exe_dir).expect("should find config");
         assert!(found.join("rig.toml").exists(),
             "Should find config at <exe_dir>/config");
 
@@ -296,7 +317,7 @@ mod tests {
         fs::create_dir_all(&exe_dir).unwrap();
         make_config_tree(&tmp.join("src-tauri"), "config");
 
-        let found = find_config_dir(&exe_dir);
+        let found = find_config_dir(&exe_dir).expect("should find config");
         assert!(found.join("rig.toml").exists(),
             "Should find config via ../config for dev build layout");
 
@@ -311,7 +332,7 @@ mod tests {
         fs::create_dir_all(&exe_dir).unwrap();
         make_config_tree(&tmp, "config");
 
-        let found = find_config_dir(&exe_dir);
+        let found = find_config_dir(&exe_dir).expect("should find config");
         assert!(found.join("rig.toml").exists(),
             "Should find config via ../../config for workspace layout");
 
@@ -319,14 +340,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Cannot find config directory")]
-    fn find_config_dir_panics_when_nothing_exists() {
+    fn find_config_dir_returns_config_error_when_nothing_exists() {
         let tmp = std::env::temp_dir().join("openisi_test_fallback");
         let _ = fs::remove_dir_all(&tmp);
         let exe_dir = tmp.join("empty");
         fs::create_dir_all(&exe_dir).unwrap();
 
-        find_config_dir(&exe_dir); // Should panic
+        let result = find_config_dir(&exe_dir);
+        match result {
+            Err(AppError::Config(msg)) => {
+                assert!(msg.contains("cannot find config directory"),
+                    "Expected config-error message, got: {msg}");
+            }
+            other => panic!("Expected AppError::Config, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -338,7 +367,7 @@ mod tests {
         make_config_tree(&exe_dir, "config");
         make_config_tree(&tmp, "config");
 
-        let found = find_config_dir(&exe_dir);
+        let found = find_config_dir(&exe_dir).expect("should find config");
         let canonical = fs::canonicalize(&found).unwrap();
         let expected = fs::canonicalize(exe_dir.join("config")).unwrap();
         assert_eq!(canonical, expected,

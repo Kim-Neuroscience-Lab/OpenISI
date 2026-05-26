@@ -10,6 +10,8 @@ use std::path::Path;
 use openisi_stimulus::dataset::StimulusDataset;
 use serde::Serialize;
 
+use crate::error::{AppError, AppResult};
+
 /// Hardware configuration snapshot for embedding in .oisi files.
 #[derive(Debug, Clone, Serialize)]
 pub struct HardwareSnapshot {
@@ -27,6 +29,22 @@ pub struct HardwareSnapshot {
 }
 
 use crate::params::RegistrySnapshot;
+
+/// Wrap a true HDF5-API failure during .oisi export. Used for dataset /
+/// group creation, attribute writes, and any libhdf5 call that produces
+/// an `hdf5::Error`. Frontend sees `category: "Analysis", code: "E_HDF5"`.
+fn hdf5_err(msg: String) -> AppError {
+    AppError::Analysis(isi_analysis::AnalysisError::Hdf5(msg))
+}
+
+/// Wrap a filesystem-layer failure during .oisi export (open, flush,
+/// rename, the .partial-file dance, serde JSON serialization). Distinct
+/// from `hdf5_err` so disk-full / permission / fs-rename failures
+/// surface as `category: "Io", code: "E_IO"` in the frontend instead
+/// of being miscategorized as analysis errors.
+fn fs_err(msg: String) -> AppError {
+    AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg))
+}
 
 /// Accumulates ALL camera frames in acquisition order.
 /// No grouping by condition — all frames kept, including baselines.
@@ -163,16 +181,29 @@ pub fn write_oisi(
     session_meta: Option<&SessionMetadata>,
     anatomical: Option<&ndarray::Array2<u8>>,
     acquisition_complete: bool,
-) -> Result<String, String> {
+) -> AppResult<String> {
     use isi_analysis::io;
 
-    // Create the file with metadata.
-    io::create(path, "raw_acquisition")
-        .map_err(|e| format!("Failed to create .oisi: {e}"))?;
+    // Atomic write protocol: write to `<path>.partial`, finalize, then
+    // `fs::rename` to the final `path`. The canonical `.oisi` file at
+    // `path` is never observed in a half-written state by another
+    // process. On any error during write, the `*.partial` file is left
+    // in place (forensic) — NEVER silently cleaned up. A user seeing
+    // `<file>.oisi.partial` next to a missing `<file>.oisi` knows
+    // exactly which acquisition crashed and can inspect what got
+    // written before deciding how to proceed.
+    let partial_path = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some("oisi") => "oisi.partial".to_string(),
+        _ => "partial".to_string(),
+    });
+
+    // Create the file with metadata at the partial path.
+    io::create(&partial_path, "raw_acquisition")
+        .map_err(|e| fs_err(format!("Failed to create .oisi.partial: {e}")))?;
 
     // Open for writing.
-    let file = hdf5::File::open_rw(path)
-        .map_err(|e| format!("Failed to open .oisi for writing: {e}"))?;
+    let file = hdf5::File::open_rw(&partial_path)
+        .map_err(|e| fs_err(format!("Failed to open .oisi.partial for writing: {e}")))?;
 
     // Software version for provenance.
     write_str_attr(&file, "software_version", env!("CARGO_PKG_VERSION"))?;
@@ -180,47 +211,25 @@ pub fn write_oisi(
     // Write stimulus metadata.
     let metadata = stimulus_dataset.export_metadata();
     let meta_json = serde_json::to_string_pretty(&metadata)
-        .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to serialize metadata: {e}")))?;
     write_str_attr(&file, "stimulus_metadata", &meta_json)?;
 
-    // Write experiment snapshot as JSON (reconstructed from registry snapshot for provenance).
+    // Capture provenance — snapshot every Rig + Experiment parameter
+    // into the .oisi as `/rig_params` + `/experiment_params` JSON
+    // attributes. The tree is generated from the param-registry macro
+    // by `RegistrySnapshot::to_json_for_target` — no hand-maintained
+    // mirror of definitions.rs lives here. Adding a new Rig/Experiment
+    // param appears automatically in the captured provenance.
     {
-        let exp_json = serde_json::json!({
-            "geometry": {
-                "horizontal_offset_deg": snapshot.horizontal_offset_deg(),
-                "vertical_offset_deg": snapshot.vertical_offset_deg(),
-            },
-            "stimulus": {
-                "envelope": format!("{:?}", snapshot.stimulus_envelope()).to_lowercase(),
-                "carrier": format!("{:?}", snapshot.stimulus_carrier()).to_lowercase(),
-                "params": {
-                    "contrast": snapshot.contrast(),
-                    "mean_luminance": snapshot.mean_luminance(),
-                    "background_luminance": snapshot.background_luminance(),
-                    "check_size_deg": snapshot.check_size_deg(),
-                    "check_size_cm": snapshot.check_size_cm(),
-                    "strobe_frequency_hz": snapshot.strobe_frequency_hz(),
-                    "stimulus_width_deg": snapshot.stimulus_width_deg(),
-                    "sweep_speed_deg_per_sec": snapshot.sweep_speed_deg_per_sec(),
-                    "rotation_speed_deg_per_sec": snapshot.rotation_speed_deg_per_sec(),
-                    "expansion_speed_deg_per_sec": snapshot.expansion_speed_deg_per_sec(),
-                    "rotation_deg": snapshot.rotation_deg(),
-                }
-            },
-            "presentation": {
-                "conditions": snapshot.conditions(),
-                "repetitions": snapshot.repetitions(),
-            },
-            "timing": {
-                "baseline_start_sec": snapshot.baseline_start_sec(),
-                "baseline_end_sec": snapshot.baseline_end_sec(),
-                "inter_stimulus_sec": snapshot.inter_stimulus_sec(),
-                "inter_direction_sec": snapshot.inter_direction_sec(),
-            }
-        });
-        let exp_str = serde_json::to_string_pretty(&exp_json)
-            .map_err(|e| format!("Failed to serialize experiment snapshot: {e}"))?;
-        write_str_attr(&file, "experiment", &exp_str)?;
+        let rig_str = serde_json::to_string_pretty(
+            &snapshot.to_json_for_target(crate::params::PersistTarget::Rig),
+        ).map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
+        write_str_attr(&file, "rig_params", &rig_str)?;
+
+        let exp_str = serde_json::to_string_pretty(
+            &snapshot.to_json_for_target(crate::params::PersistTarget::Experiment),
+        ).map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
+        write_str_attr(&file, "experiment_params", &exp_str)?;
     }
 
     // Write hardware snapshot.
@@ -243,12 +252,12 @@ pub fn write_oisi(
         file.new_dataset_builder()
             .with_data(anat)
             .create("anatomical")
-            .map_err(|e| format!("Failed to write anatomical: {e}"))?;
+            .map_err(|e| hdf5_err(format!("Failed to write anatomical: {e}")))?;
     }
 
     // Create acquisition group.
     let acq_group = file.create_group("acquisition")
-        .map_err(|e| format!("Failed to create acquisition group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create acquisition group: {e}")))?;
 
     // ── Compute unified timeline ─────────────────────────────────
     // t=0 is the first camera frame's system (QPC) timestamp.
@@ -293,7 +302,7 @@ pub fn write_oisi(
 
     // Write unified stimulus timestamps.
     let stim_group = acq_group.group("stimulus")
-        .map_err(|e| format!("Failed to open stimulus group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to open stimulus group: {e}")))?;
     write_checked_1d(&stim_group, "timestamps_sec", stimulus_sec)?;
 
     // Write realized sweep schedule (unified seconds).
@@ -304,7 +313,7 @@ pub fn write_oisi(
 
     // ── Write clock sync ─────────────────────────────────────────
     let sync_group = acq_group.create_group("clock_sync")
-        .map_err(|e| format!("Failed to create clock_sync group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create clock_sync group: {e}")))?;
     write_group_f64_attr(&sync_group, "t0_system_us", t0_us as f64)?;
     if let Some((start_off, end_off)) = clock_sync {
         write_group_f64_attr(&sync_group, "start_offset_us", start_off as f64)?;
@@ -315,7 +324,7 @@ pub fn write_oisi(
     // ── Write timing characterization ───────────────────────────
     if let Some(tc) = timing {
         let timing_group = acq_group.create_group("timing")
-            .map_err(|e| format!("Failed to create timing group: {e}"))?;
+            .map_err(|e| hdf5_err(format!("Failed to create timing group: {e}")))?;
         write_group_f64_attr(&timing_group, "f_cam_hz", tc.f_cam_hz)?;
         write_group_f64_attr(&timing_group, "f_stim_hz", tc.f_stim_hz)?;
         write_group_f64_attr(&timing_group, "t_cam_sec", tc.t_cam_sec)?;
@@ -334,14 +343,14 @@ pub fn write_oisi(
         write_group_f64_attr(&timing_group, "stim_jitter_sec", tc.stim_jitter_sec)?;
         if !tc.warnings.is_empty() {
             let warnings_json = serde_json::to_string(&tc.warnings)
-                .map_err(|e| format!("Failed to serialize timing warnings: {e}"))?;
+                .map_err(|e| hdf5_err(format!("Failed to serialize timing warnings: {e}")))?;
             write_group_str_attr(&timing_group, "warnings", &warnings_json)?;
         }
     }
 
     // ── Write camera data ────────────────────────────────────────
     let camera_group = acq_group.create_group("camera")
-        .map_err(|e| format!("Failed to create camera group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create camera group: {e}")))?;
 
     let n_frames = camera_data.frames.len();
     let h = camera_data.height as usize;
@@ -362,10 +371,10 @@ pub fn write_oisi(
             .chunk((1, h, w))
             .with_data(
                 &ndarray::Array3::from_shape_vec((n_frames, h, w), frame_data)
-                    .map_err(|e| format!("Shape error: {e}"))?
+                    .map_err(|e| hdf5_err(format!("Shape error: {e}")))?
             )
             .create("frames")
-            .map_err(|e| format!("Failed to write camera/frames: {e}"))?;
+            .map_err(|e| hdf5_err(format!("Failed to write camera/frames: {e}")))?;
 
         // Unified camera timestamps (seconds from t=0).
         write_checked_1d(&camera_group, "timestamps_sec", camera_sec)?;
@@ -378,6 +387,20 @@ pub fn write_oisi(
         let seq_i64: Vec<i64> = camera_data.sequence_numbers.iter().map(|&s| s as i64).collect();
         write_checked_1d(&camera_group, "sequence_numbers", seq_i64)?;
     }
+
+    // Flush + close the HDF5 file before renaming. Dropping `file`
+    // closes the underlying file handle; `flush()` first ensures the
+    // libhdf5 in-memory buffers reach disk. On platforms where rename
+    // requires the source to be closed (Windows), this ordering matters.
+    file.flush().map_err(|e| fs_err(format!("Failed to flush .oisi.partial: {e}")))?;
+    drop(file);
+
+    // Atomic rename: partial → final. POSIX `rename(2)` is atomic;
+    // Windows uses ReplaceFile semantics via std::fs::rename. After
+    // this point, the canonical `.oisi` exists at `path`. Failures
+    // before this point leave `*.partial` in place for forensics.
+    std::fs::rename(&partial_path, path)
+        .map_err(|e| fs_err(format!("Failed to rename .oisi.partial to .oisi: {e}")))?;
 
     let summary = format!(
         "Wrote {} camera frames ({}x{}, u16) to {}",
@@ -392,9 +415,9 @@ fn write_hardware_group(
     file: &hdf5::File,
     hw: &HardwareSnapshot,
     snapshot: &RegistrySnapshot,
-) -> Result<(), String> {
+) -> AppResult<()> {
     let group = file.create_group("hardware")
-        .map_err(|e| format!("Failed to create hardware group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create hardware group: {e}")))?;
 
     write_group_str_attr(&group, "monitor_name", &hw.monitor_name)?;
     write_group_u32_attr(&group, "monitor_width_px", hw.monitor_width_px)?;
@@ -411,9 +434,9 @@ fn write_hardware_group(
     let gamma_val: u8 = if hw.gamma_corrected { 1 } else { 0 };
     let attr = group.new_attr::<u8>()
         .create("gamma_corrected")
-        .map_err(|e| format!("creating gamma_corrected attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating gamma_corrected attr: {e}")))?;
     attr.write_scalar(&gamma_val)
-        .map_err(|e| format!("writing gamma_corrected attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing gamma_corrected attr: {e}")))?;
 
     // Rig geometry — viewing distance for stimulus geometry reproduction.
     write_group_f64_attr(&group, "viewing_distance_cm", snapshot.viewing_distance_cm())?;
@@ -423,9 +446,9 @@ fn write_hardware_group(
     let binning_val = snapshot.camera_binning();
     let attr = group.new_attr::<u16>()
         .create("camera_binning")
-        .map_err(|e| format!("creating camera_binning attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating camera_binning attr: {e}")))?;
     attr.write_scalar(&binning_val)
-        .map_err(|e| format!("writing camera_binning attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing camera_binning attr: {e}")))?;
 
     // Display settings — rotation and target FPS at acquisition time.
     write_group_f64_attr(&group, "monitor_rotation_deg", snapshot.monitor_rotation_deg())?;
@@ -438,9 +461,9 @@ fn write_hardware_group(
 fn write_stimulus_arrays(
     acq_group: &hdf5::Group,
     dataset: &StimulusDataset,
-) -> Result<(), String> {
+) -> AppResult<()> {
     let stim_group = acq_group.create_group("stimulus")
-        .map_err(|e| format!("Failed to create acquisition/stimulus group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create acquisition/stimulus group: {e}")))?;
 
     write_checked_1d(&stim_group, "timestamps_us", dataset.timestamps_us.clone())?;
     write_checked_1d(&stim_group, "state_ids", dataset.state_ids.clone())?;
@@ -460,20 +483,20 @@ fn write_sweep_schedule_sec(
     schedule: &SweepSchedule,
     sweep_start_sec: &[f64],
     sweep_end_sec: &[f64],
-) -> Result<(), String> {
+) -> AppResult<()> {
     let sched_group = acq_group.create_group("schedule")
-        .map_err(|e| format!("Failed to create schedule group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create schedule group: {e}")))?;
 
     // Sweep sequence as JSON array attribute (HDF5 doesn't have native string arrays easily).
     let seq_json = serde_json::to_string(&schedule.sweep_sequence)
-        .map_err(|e| format!("Failed to serialize sweep_sequence: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to serialize sweep_sequence: {e}")))?;
     let attr = sched_group.new_attr::<hdf5::types::VarLenUnicode>()
         .create("sweep_sequence")
-        .map_err(|e| format!("creating sweep_sequence attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating sweep_sequence attr: {e}")))?;
     let val: hdf5::types::VarLenUnicode = seq_json.parse()
-        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
-        .map_err(|e| format!("writing sweep_sequence attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing sweep_sequence attr: {e}")))?;
 
     // Raw microsecond timestamps (provenance).
     write_checked_1d(&sched_group, "sweep_start_us", schedule.sweep_start_us.clone())?;
@@ -492,9 +515,9 @@ fn write_quality_metrics(
     camera_data: &AccumulatedData,
     stimulus_dataset: &StimulusDataset,
     acquisition_complete: bool,
-) -> Result<(), String> {
+) -> AppResult<()> {
     let quality = acq_group.create_group("quality")
-        .map_err(|e| format!("Failed to create quality group: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create quality group: {e}")))?;
 
     // Camera frame deltas (computed from hardware timestamps).
     let cam_ts = &camera_data.hardware_timestamps_us;
@@ -535,9 +558,9 @@ fn write_quality_metrics(
     let complete_val: u8 = if acquisition_complete { 1 } else { 0 };
     let attr = quality.new_attr::<u8>()
         .create("acquisition_complete")
-        .map_err(|e| format!("creating acquisition_complete attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating acquisition_complete attr: {e}")))?;
     attr.write_scalar(&complete_val)
-        .map_err(|e| format!("writing acquisition_complete attr: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing acquisition_complete attr: {e}")))?;
 
     if cam_drops > 0 || stim_drops > 0 {
         eprintln!(
@@ -549,15 +572,15 @@ fn write_quality_metrics(
     Ok(())
 }
 
-fn write_str_attr(file: &hdf5::File, name: &str, value: &str) -> Result<(), String> {
+fn write_str_attr(file: &hdf5::File, name: &str, value: &str) -> AppResult<()> {
     let attr = file
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
-        .map_err(|e| format!("creating attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating attr {name}: {e}")))?;
     let val: hdf5::types::VarLenUnicode = value.parse()
-        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
-        .map_err(|e| format!("writing attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing attr {name}: {e}")))?;
     Ok(())
 }
 
@@ -566,13 +589,13 @@ fn write_checked_1d<T: hdf5::H5Type + Clone>(
     group: &hdf5::Group,
     name: &str,
     data: Vec<T>,
-) -> Result<(), String> {
+) -> AppResult<()> {
     if data.is_empty() {
         // Write empty dataset — no chunking needed for empty
         group.new_dataset_builder()
             .with_data(&ndarray::Array1::<T>::from(data))
             .create(name)
-            .map_err(|e| format!("Failed to write {name}: {e}"))?;
+            .map_err(|e| hdf5_err(format!("Failed to write {name}: {e}")))?;
     } else {
         let len = data.len();
         group.new_dataset_builder()
@@ -580,7 +603,7 @@ fn write_checked_1d<T: hdf5::H5Type + Clone>(
             .chunk((len,))
             .with_data(&ndarray::Array1::from(data))
             .create(name)
-            .map_err(|e| format!("Failed to write {name}: {e}"))?;
+            .map_err(|e| hdf5_err(format!("Failed to write {name}: {e}")))?;
     }
     Ok(())
 }
@@ -623,35 +646,35 @@ fn encode_16bit_to_png(pixels: &[u16], width: u32, height: u32) -> Option<Vec<u8
     Some(png_data)
 }
 
-fn write_group_str_attr(group: &hdf5::Group, name: &str, value: &str) -> Result<(), String> {
+fn write_group_str_attr(group: &hdf5::Group, name: &str, value: &str) -> AppResult<()> {
     let attr = group
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
-        .map_err(|e| format!("creating group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
     let val: hdf5::types::VarLenUnicode = value.parse()
-        .map_err(|e| format!("Failed to create HDF5 unicode value: {e}"))?;
+        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
-        .map_err(|e| format!("writing group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
     Ok(())
 }
 
-fn write_group_u32_attr(group: &hdf5::Group, name: &str, value: u32) -> Result<(), String> {
+fn write_group_u32_attr(group: &hdf5::Group, name: &str, value: u32) -> AppResult<()> {
     let attr = group
         .new_attr::<u32>()
         .create(name)
-        .map_err(|e| format!("creating group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
     attr.write_scalar(&value)
-        .map_err(|e| format!("writing group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
     Ok(())
 }
 
-fn write_group_f64_attr(group: &hdf5::Group, name: &str, value: f64) -> Result<(), String> {
+fn write_group_f64_attr(group: &hdf5::Group, name: &str, value: f64) -> AppResult<()> {
     let attr = group
         .new_attr::<f64>()
         .create(name)
-        .map_err(|e| format!("creating group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
     attr.write_scalar(&value)
-        .map_err(|e| format!("writing group attr {name}: {e}"))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
     Ok(())
 }
 

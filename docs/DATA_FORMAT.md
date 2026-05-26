@@ -310,3 +310,54 @@ All HDF5 datasets use the Fletcher32 checksum filter. On read, checksum failure 
 
 ### Acquisition completeness
 The `/acquisition/quality/acquisition_complete` flag is `false` if the acquisition was aborted, interrupted by hardware failure, or stopped early. Analysis code should check this flag and handle incomplete data explicitly rather than silently processing a truncated dataset.
+
+---
+
+## Relationship to NWB (Neurodata Without Borders)
+
+`.oisi` is an **OpenISI-specific HDF5 schema**. It is **not** NWB-compliant. The canonical, well-documented universal format for systems-neuroscience data — including intrinsic-signal imaging — is **NWB 2.x** (Rübel et al. 2022, *eLife*; Teeters et al. 2015, *Neuron*). The Allen Brain Observatory publishes its retinotopic mapping data in NWB, and the DANDI archive requires NWB for submission.
+
+### Why we use a custom format today
+
+A 2026-05 audit of the Rust ecosystem found **no production-grade Rust NWB writer**. The two implementations of NWB schema knowledge in the wild are `pynwb` (Python) and `MatNWB` (MATLAB); a third (`aqnwb`, C++) is hand-rolled by the NWB team itself over multiple years. Writing a native Rust NWB writer is feasible (the HDF5 layer via `hdf5-metno` is solid) but would require:
+
+1. Hand-encoding the NWB core schema's neurodata-type hierarchy in Rust (~3–5 weeks senior-engineer scope).
+2. Authoring at least one custom NDX extension for OpenISI-specific data that NWB does not natively support:
+   - **Stimulus geometry** (`viewing_distance_cm`, `monitor_rotation_deg`, `offset_azi/alt`, `*_angular_range`, `rotation_k`) — required for phase→degrees conversion; no NWB native home.
+   - **Complex maps** (`/complex_maps/*`) — NWB has no complex-dtype convention; would require splitting real/imag or a custom dtype.
+   - **Hardware/system auxiliary timestamps** — NWB's `TimeSeries` carries one canonical `timestamps`; our drop-forensics evidence needs aux timestamp domains.
+   - **Per-dataset `MapMeta`** rendering hints (palette, display_min/max, wrap_period, nan_means, zero_means) — pure visualization; no NWB equivalent.
+   - **Analysis params JSON** with per-stage method choices — no native NWB equivalent.
+3. Continuous CI validation against `pynwb` + `nwbinspector` (no Rust validator exists).
+
+The note about `ImagingRetinotopy` being officially deprecated in current NWB core (with no named replacement) makes this work even more delicate — the most domain-relevant NWB type is being phased out and the community's intended successor is not yet clear.
+
+### Coverage of our schema by NWB types (research summary)
+
+For reference, ~50% of `.oisi` maps cleanly to existing NWB types:
+
+| `.oisi` | NWB equivalent |
+|---|---|
+| `/acquisition/camera/frames` | `OnePhotonSeries` (NWB 2.5+, time-first `(T, H, W)` shape matches) |
+| `/acquisition/schedule/*` (sweep start/end) | `TimeIntervals` with `start_time`, `stop_time`, `direction` columns |
+| `/anatomical` | `ImagingRetinotopy.vasculature_image` (with `bits_per_pixel`, `field_of_view` attrs) |
+| `/results/azi_phase`, `alt_phase` | `ImagingRetinotopy.axis_{1,2}_phase_map` (cast f64→f32) |
+| `/results/azi_amplitude`, `alt_amplitude` | `ImagingRetinotopy.axis_{1,2}_power_map` |
+| `/results/vfs` | `ImagingRetinotopy.sign_map` |
+| `/results/area_labels`, `area_signs` | `PlaneSegmentation` with one row per area + custom `sign` column |
+| `/results/cortex_mask`, `/anatomical/cortex_roi` | `PlaneSegmentation` rows with `image_mask` |
+| root `animal_id` | `Subject.subject_id` |
+| `/hardware` (camera + monitor identity) | `/general/devices/<device>` + `/general/optophysiology/<ImagingPlane>` |
+
+The remaining ~50% either needs custom NDX extensions or doesn't fit cleanly.
+
+### Future direction
+
+NWB alignment is a known future direction. The realistic paths when it becomes important (e.g., for publishing to DANDI or collaborating with NWB-native labs):
+
+1. **`export_nwb` adapter via pynwb subprocess** (smallest scope, ~1–2 weeks): keep `.oisi` as the operational format; add an export command that calls a Python `pynwb` script. Python becomes a runtime dependency only for export.
+2. **Native Rust NWB writer** (largest scope, ~3–5 weeks pioneering): hand-write the NWB schema in Rust + custom NDX extension. We'd be the first Rust shop to ship one.
+
+Either path requires the NWB extension work for OpenISI-specific data (stimulus geometry, complex maps, aux timestamps). The acquisition + analysis pipelines do not need to change — only the file-writing layer.
+
+Until then, `.oisi` is fully documented (see `docs/oisi.schema.json` for the machine-readable schema) and self-describing (every `/results/*` dataset carries `MapMeta` attrs), which is the next-best thing to NWB compliance for a self-contained scientific instrument.

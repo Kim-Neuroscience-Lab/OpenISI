@@ -108,7 +108,17 @@ fn param_type_str(value: &ParamValue) -> &'static str {
         | ParamValue::Carrier(_)
         | ParamValue::Projection(_)
         | ParamValue::Structure(_)
-        | ParamValue::Order(_) => "enum",
+        | ParamValue::Order(_)
+        | ParamValue::CycleCombine(_)
+        | ParamValue::PhaseSmoothing(_)
+        | ParamValue::VfsComputation(_)
+        | ParamValue::SignMapSmoothing(_)
+        | ParamValue::CortexSource(_)
+        | ParamValue::PatchThreshold(_)
+        | ParamValue::PatchExtraction(_)
+        | ParamValue::PatchRefinement(_)
+        | ParamValue::QualityGate(_)
+        | ParamValue::Eccentricity(_) => "enum",
     }
 }
 
@@ -251,84 +261,88 @@ pub fn set_params(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Parse a JSON value into a ParamValue based on the parameter's known type.
-fn json_to_param_value(id: ParamId, val: &serde_json::Value) -> Result<ParamValue, String> {
+/// Errors are `AppError::Validation` — no `Result<_, String>` exemption.
+fn json_to_param_value(id: ParamId, val: &serde_json::Value) -> AppResult<ParamValue> {
     let def = &PARAM_DEFS[id as usize];
+    let v = |msg: &str| AppError::Validation(msg.into());
     match &def.default {
-        ParamValue::Bool(_) => val
-            .as_bool()
-            .map(ParamValue::Bool)
-            .ok_or_else(|| "expected boolean".into()),
-
-        ParamValue::U16(_) => val
-            .as_u64()
-            .map(|v| ParamValue::U16(v as u16))
-            .ok_or_else(|| "expected integer".into()),
-
-        ParamValue::U32(_) => val
-            .as_u64()
-            .map(|v| ParamValue::U32(v as u32))
-            .ok_or_else(|| "expected integer".into()),
-
-        ParamValue::I32(_) => val
-            .as_i64()
-            .map(|v| ParamValue::I32(v as i32))
-            .ok_or_else(|| "expected integer".into()),
-
-        ParamValue::Usize(_) => val
-            .as_u64()
-            .map(|v| ParamValue::Usize(v as usize))
-            .ok_or_else(|| "expected integer".into()),
-
-        ParamValue::F64(_) => val
-            .as_f64()
-            .map(ParamValue::F64)
-            .ok_or_else(|| "expected number".into()),
-
-        ParamValue::String(_) => val
-            .as_str()
-            .map(|s| ParamValue::String(s.to_string()))
-            .ok_or_else(|| "expected string".into()),
-
-        ParamValue::StringVec(_) => val
-            .as_array()
-            .map(|arr| {
-                ParamValue::StringVec(
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect(),
-                )
-            })
-            .ok_or_else(|| "expected array of strings".into()),
-
-        ParamValue::Envelope(_) => val
-            .as_str()
+        ParamValue::Bool(_) => val.as_bool().map(ParamValue::Bool)
+            .ok_or_else(|| v("expected boolean")),
+        ParamValue::U16(_) => val.as_u64().map(|x| ParamValue::U16(x as u16))
+            .ok_or_else(|| v("expected integer")),
+        ParamValue::U32(_) => val.as_u64().map(|x| ParamValue::U32(x as u32))
+            .ok_or_else(|| v("expected integer")),
+        ParamValue::I32(_) => val.as_i64().map(|x| ParamValue::I32(x as i32))
+            .ok_or_else(|| v("expected integer")),
+        ParamValue::Usize(_) => val.as_u64().map(|x| ParamValue::Usize(x as usize))
+            .ok_or_else(|| v("expected integer")),
+        ParamValue::F64(_) => val.as_f64().map(ParamValue::F64)
+            .ok_or_else(|| v("expected number")),
+        ParamValue::String(_) => val.as_str().map(|s| ParamValue::String(s.to_string()))
+            .ok_or_else(|| v("expected string")),
+        ParamValue::StringVec(_) => val.as_array().map(|arr| {
+            ParamValue::StringVec(arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        }).ok_or_else(|| v("expected array of strings")),
+        ParamValue::Envelope(_) => val.as_str()
             .and_then(|s| serde_json::from_str::<super::Envelope>(&format!("\"{s}\"")).ok())
             .map(ParamValue::Envelope)
-            .ok_or_else(|| "expected envelope string".into()),
-
-        ParamValue::Carrier(_) => val
-            .as_str()
+            .ok_or_else(|| v("expected envelope string")),
+        ParamValue::Carrier(_) => val.as_str()
             .and_then(|s| serde_json::from_str::<super::Carrier>(&format!("\"{s}\"")).ok())
             .map(ParamValue::Carrier)
-            .ok_or_else(|| "expected carrier string".into()),
-
-        ParamValue::Projection(_) => val
-            .as_str()
+            .ok_or_else(|| v("expected carrier string")),
+        ParamValue::Projection(_) => val.as_str()
             .and_then(|s| serde_json::from_str::<super::Projection>(&format!("\"{s}\"")).ok())
             .map(ParamValue::Projection)
-            .ok_or_else(|| "expected projection string".into()),
-
-        ParamValue::Structure(_) => val
-            .as_str()
+            .ok_or_else(|| v("expected projection string")),
+        ParamValue::Structure(_) => val.as_str()
             .and_then(|s| serde_json::from_str::<super::Structure>(&format!("\"{s}\"")).ok())
             .map(ParamValue::Structure)
-            .ok_or_else(|| "expected structure string".into()),
-
-        ParamValue::Order(_) => val
-            .as_str()
+            .ok_or_else(|| v("expected structure string")),
+        ParamValue::Order(_) => val.as_str()
             .and_then(|s| serde_json::from_str::<super::Order>(&format!("\"{s}\"")).ok())
             .map(ParamValue::Order)
-            .ok_or_else(|| "expected order string".into()),
+            .ok_or_else(|| v("expected order string")),
+        ParamValue::CycleCombine(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::CycleCombineKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::CycleCombine)
+            .ok_or_else(|| v("expected cycle_combine method string")),
+        ParamValue::PhaseSmoothing(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::PhaseSmoothingKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::PhaseSmoothing)
+            .ok_or_else(|| v("expected phase_smoothing method string")),
+        ParamValue::VfsComputation(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::VfsComputationKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::VfsComputation)
+            .ok_or_else(|| v("expected vfs_computation method string")),
+        ParamValue::SignMapSmoothing(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::SignMapSmoothingKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::SignMapSmoothing)
+            .ok_or_else(|| v("expected sign_map_smoothing method string")),
+        ParamValue::CortexSource(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::CortexSourceKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::CortexSource)
+            .ok_or_else(|| v("expected cortex_source method string")),
+        ParamValue::PatchThreshold(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::PatchThresholdKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::PatchThreshold)
+            .ok_or_else(|| v("expected patch_threshold method string")),
+        ParamValue::PatchExtraction(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::PatchExtractionKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::PatchExtraction)
+            .ok_or_else(|| v("expected patch_extraction method string")),
+        ParamValue::PatchRefinement(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::PatchRefinementKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::PatchRefinement)
+            .ok_or_else(|| v("expected patch_refinement method string")),
+        ParamValue::QualityGate(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::QualityGateKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::QualityGate)
+            .ok_or_else(|| v("expected quality_gate method string")),
+        ParamValue::Eccentricity(_) => val.as_str()
+            .and_then(|s| serde_json::from_str::<super::EccentricityKind>(&format!("\"{s}\"")).ok())
+            .map(ParamValue::Eccentricity)
+            .ok_or_else(|| v("expected eccentricity method string")),
     }
 }
 
@@ -340,12 +354,21 @@ fn parse_group_id(s: &str) -> Option<GroupId> {
         "timing" => Some(GroupId::Timing),
         "presentation" => Some(GroupId::Presentation),
         "retinotopy" => Some(GroupId::Retinotopy),
-        "segmentation" => Some(GroupId::Segmentation),
         "camera" => Some(GroupId::Camera),
         "display" => Some(GroupId::Display),
         "ring" => Some(GroupId::Ring),
         "system" => Some(GroupId::System),
         "paths" => Some(GroupId::Paths),
+        "cycle_combine" => Some(GroupId::CycleCombine),
+        "phase_smoothing" => Some(GroupId::PhaseSmoothing),
+        "vfs_computation" => Some(GroupId::VfsComputation),
+        "sign_map_smoothing" => Some(GroupId::SignMapSmoothing),
+        "cortex_source" => Some(GroupId::CortexSource),
+        "patch_threshold" => Some(GroupId::PatchThreshold),
+        "patch_extraction" => Some(GroupId::PatchExtraction),
+        "patch_refinement" => Some(GroupId::PatchRefinement),
+        "quality_gate" => Some(GroupId::QualityGate),
+        "eccentricity" => Some(GroupId::Eccentricity),
         _ => None,
     }
 }

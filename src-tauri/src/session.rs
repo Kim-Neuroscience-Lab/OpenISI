@@ -140,21 +140,22 @@ impl Session {
     }
 
     /// Check all prerequisites for starting an acquisition.
-    pub fn acquisition_prerequisites(&self) -> Result<(), String> {
+    pub fn acquisition_prerequisites(&self) -> crate::error::AppResult<()> {
+        use crate::error::AppError;
         if self.selected_display.is_none() {
-            return Err("No display selected".into());
+            return Err(AppError::Validation("No display selected".into()));
         }
         if !self.has_valid_display() {
-            return Err("Display has no valid physical dimensions".into());
+            return Err(AppError::Validation("Display has no valid physical dimensions".into()));
         }
         if self.display_validation.is_none() {
-            return Err("Display refresh rate not validated".into());
+            return Err(AppError::Validation("Display refresh rate not validated".into()));
         }
         if !self.camera_connected {
-            return Err("Camera not connected".into());
+            return Err(AppError::Validation("Camera not connected".into()));
         }
         if self.save_path.is_none() {
-            return Err("No save path set — choose where to save before acquiring".into());
+            return Err(AppError::Validation("No save path set — choose where to save before acquiring".into()));
         }
         Ok(())
     }
@@ -191,11 +192,11 @@ mod tests {
     #[test]
     fn prerequisites_check_all_conditions() {
         let mut session = Session::new();
-        assert!(session.acquisition_prerequisites().unwrap_err().contains("display"));
+        assert!(session.acquisition_prerequisites().unwrap_err().to_string().contains("display"));
 
         session.set_selected_display(test_monitor());
         // Still need validation
-        assert!(session.acquisition_prerequisites().unwrap_err().contains("validated"));
+        assert!(session.acquisition_prerequisites().unwrap_err().to_string().contains("validated"));
 
         session.set_display_validation(DisplayValidation {
             measured_refresh_hz: 59.94,
@@ -207,7 +208,7 @@ mod tests {
             warnings: Vec::new(),
         });
         // Still need camera
-        assert!(session.acquisition_prerequisites().unwrap_err().contains("Camera"));
+        assert!(session.acquisition_prerequisites().unwrap_err().to_string().contains("Camera"));
 
         session.camera_connected = true;
         session.camera = Some(CameraInfo {
@@ -218,7 +219,7 @@ mod tests {
             exposure_us: 33000,
         });
         // Still need save path
-        assert!(session.acquisition_prerequisites().unwrap_err().contains("save path"));
+        assert!(session.acquisition_prerequisites().unwrap_err().to_string().contains("save path"));
 
         session.set_save_path(PathBuf::from("/tmp/test.oisi"));
         // Now all prerequisites met

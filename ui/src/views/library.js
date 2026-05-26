@@ -1,5 +1,7 @@
 // Library view — file explorer for .oisi acquisitions.
 
+import { errorToString } from '../lib/errors.js';
+
 const { invoke } = window.__TAURI__.core;
 
 let sortField = "modified_epoch";
@@ -127,12 +129,14 @@ export async function render(container) {
             // Refresh file list and open the imported file.
             await render(container);
             window.openISI._analysisFile = oisiPath;
+            try { await invoke("set_active_oisi", { path: oisiPath }); }
+            catch (e) { console.warn("set_active_oisi failed:", errorToString(e)); }
             window.openISI.enableView("analysis");
             window.openISI.showView("analysis");
         } catch (e) {
             const btn = document.getElementById("btn-import-snlc");
             if (btn) { btn.textContent = "Import SNLC Data"; btn.disabled = false; }
-            alert(`Import failed: ${e}`);
+            alert(`Import failed: ${errorToString(e)}`);
         }
     });
 
@@ -148,6 +152,8 @@ export async function render(container) {
             await render(container);
             if (paths.length > 0) {
                 window.openISI._analysisFile = paths[0];
+                try { await invoke("set_active_oisi", { path: paths[0] }); }
+                catch (e) { console.warn("set_active_oisi failed:", errorToString(e)); }
                 window.openISI.enableView("analysis");
                 window.openISI.showView("analysis");
             }
@@ -232,15 +238,20 @@ export async function render(container) {
             selectedPaths.clear();
             await render(container);
         } catch (e) {
-            alert(`Delete failed: ${e}`);
+            alert(`Delete failed: ${errorToString(e)}`);
         }
     });
 
     // Open file for analysis.
     container.querySelectorAll(".btn-open-file").forEach(btn => {
         btn.addEventListener("click", async () => {
-            window.openISI._analysisFile = btn.dataset.path;
-            window.openISI.viz.analysisFile = btn.dataset.path;
+            const path = btn.dataset.path;
+            window.openISI._analysisFile = path;
+            window.openISI.viz.analysisFile = path;
+            // Tell the backend which .oisi the UI is operating on so
+            // get/set_analysis_params target the right file.
+            try { await invoke("set_active_oisi", { path }); }
+            catch (e) { console.warn("set_active_oisi failed:", errorToString(e)); }
             window.openISI.enableView("analysis");
             await window.openISI.showView("analysis");
         });

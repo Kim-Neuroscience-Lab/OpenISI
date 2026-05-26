@@ -251,8 +251,8 @@ impl StimulusDataset {
         // Generate session ID from current time
         let now_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("System clock is before Unix epoch")
-            .as_micros();
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
         self.session_id = format!("session_{now_us}");
     }
 

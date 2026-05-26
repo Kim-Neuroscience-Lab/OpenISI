@@ -90,7 +90,18 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
             drop(app_state);
 
             if let Some(rx) = rx {
-                while let Ok(evt) = rx.try_recv() {
+                use crossbeam_channel::TryRecvError;
+                loop {
+                    let evt = match rx.try_recv() {
+                        Ok(e) => e,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            // Camera worker thread is gone. Stop forwarding;
+                            // no more events will ever arrive on this channel.
+                            eprintln!("[events] camera channel disconnected, exiting forwarder");
+                            return;
+                        }
+                    };
                     did_work = true;
                     match evt {
                         CameraEvt::Enumerated(devices) => {
@@ -205,10 +216,25 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                             }
                         }
                         CameraEvt::Error(msg) => {
-                            eprintln!("[events] camera error: {msg}");
+                            eprintln!("[events] camera error (transient): {msg}");
                             let _ = app.emit("error", ErrorPayload {
                                 source: "camera".into(),
                                 message: msg,
+                            });
+                        }
+                        CameraEvt::Fatal(err) => {
+                            // Terminal camera failure — stop the run and
+                            // notify the UI with a structured error payload.
+                            eprintln!("[events] camera FATAL: {err}");
+                            {
+                                if let Ok(mut s) = state.lock() {
+                                    s.session.is_acquiring = false;
+                                }
+                            }
+                            let app_err = crate::error::AppError::Acquisition(err);
+                            let _ = app.emit("error", ErrorPayload {
+                                source: "camera".into(),
+                                message: app_err.to_string(),
                             });
                         }
                     }
@@ -226,7 +252,17 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
             drop(app_state);
 
             if let Some(rx) = rx {
-                while let Ok(evt) = rx.try_recv() {
+                use crossbeam_channel::TryRecvError;
+                loop {
+                    let evt = match rx.try_recv() {
+                        Ok(e) => e,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            // Stimulus worker thread is gone. Stop forwarding.
+                            eprintln!("[events] stimulus channel disconnected, exiting forwarder");
+                            return;
+                        }
+                    };
                     did_work = true;
                     match evt {
                         StimulusEvt::Ready => {
@@ -341,17 +377,26 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<Mutex<AppState>>) {
                             let _ = app.emit("stimulus:stopped", ());
                         }
                         StimulusEvt::Error(msg) => {
-                            eprintln!("[events] stimulus error: {msg}");
-                            {
-                                let mut s = match state.lock() {
-                                    Ok(s) => s,
-                                    Err(_) => { eprintln!("[events] state lock poisoned"); continue; }
-                                };
-                                s.session.is_acquiring = false;
-                            }
+                            // Transient — log + show in UI, acquisition
+                            // continues.
+                            eprintln!("[events] stimulus error (transient): {msg}");
                             let _ = app.emit("error", ErrorPayload {
                                 source: "stimulus".into(),
                                 message: msg,
+                            });
+                        }
+                        StimulusEvt::Fatal(err) => {
+                            // Terminal stimulus failure — stop the run.
+                            eprintln!("[events] stimulus FATAL: {err}");
+                            {
+                                if let Ok(mut s) = state.lock() {
+                                    s.session.is_acquiring = false;
+                                }
+                            }
+                            let app_err = crate::error::AppError::Acquisition(err);
+                            let _ = app.emit("error", ErrorPayload {
+                                source: "stimulus".into(),
+                                message: app_err.to_string(),
                             });
                         }
                     }

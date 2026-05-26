@@ -5,14 +5,26 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::Emitter;
-
 use super::constraints::{
     build_dynamic_constraints, ConstraintDependency, DynamicConstraint, EffectiveConstraint,
 };
 use super::hardware::HardwareContext;
 use super::snapshot::RegistrySnapshot;
 use super::{ParamDef, ParamId, ParamValue, PARAM_DEFS};
+use crate::error::ParamsResult;
+
+/// Hook for surfacing parameter-change events to whoever owns the
+/// outer shell (the Tauri app, a CLI, a test harness). Implementors
+/// receive a JSON array of `{id, value}` entries — one per param that
+/// changed since the last flush.
+///
+/// `openisi-params` is shell-agnostic; it does not import `tauri` and
+/// cannot directly fire IPC events. The Tauri shell registers an
+/// implementor (typically wrapping `tauri::Emitter`) so the UI sees
+/// changes without `openisi-params` knowing Tauri exists.
+pub trait ParamChangeObserver: Send + Sync {
+    fn notify(&self, payload: serde_json::Value);
+}
 
 /// The parameter registry. Owns all ~70 parameter values in a flat Vec
 /// indexed by `ParamId as usize`.
@@ -33,7 +45,11 @@ pub struct Registry {
     pending_changes: Vec<ParamId>,
 
     // ── Phase 2: event emission ──────────────────────────────────────
-    app_handle: Option<tauri::AppHandle>,
+    /// Pluggable observer for change events. Tauri shell installs one
+    /// that wraps `tauri::Emitter`; tests can install a no-op or a
+    /// collector. None ≡ events are dropped silently (single-shot CLI
+    /// use case).
+    observer: Option<Box<dyn ParamChangeObserver>>,
 }
 
 impl Registry {
@@ -50,13 +66,14 @@ impl Registry {
             effective_constraints,
             batch_depth: 0,
             pending_changes: Vec::new(),
-            app_handle: None,
+            observer: None,
         }
     }
 
-    /// Set the Tauri app handle for event emission.
-    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
-        self.app_handle = Some(handle);
+    /// Install the change-event observer. The Tauri shell calls this
+    /// with a `TauriParamObserver` that forwards events to the JS UI.
+    pub fn set_observer(&mut self, observer: Box<dyn ParamChangeObserver>) {
+        self.observer = Some(observer);
     }
 
     // ── Get / Set ────────────────────────────────────────────────────
@@ -68,10 +85,11 @@ impl Registry {
 
     /// Set a parameter value, validating against its effective constraint.
     /// After storing, recomputes dependent constraints and clamps violators.
-    pub fn set(&mut self, id: ParamId, value: ParamValue) -> Result<(), String> {
+    pub fn set(&mut self, id: ParamId, value: ParamValue) -> ParamsResult<()> {
         let def = &PARAM_DEFS[id as usize];
 
         // Validate against effective constraint (dynamic override or static).
+        // validate() already returns ParamsError::Validation; just `?`.
         let constraint = self.effective_constraint(id);
         constraint.validate(&value, &def.constraint)?;
 
@@ -87,12 +105,6 @@ impl Registry {
         }
 
         Ok(())
-    }
-
-    /// Set a parameter value without validation (used during TOML loading where
-    /// we trust the file contents).
-    pub(crate) fn set_unchecked(&mut self, id: ParamId, value: ParamValue) {
-        self.values[id as usize] = value;
     }
 
     // ── Hardware Context ─────────────────────────────────────────────
@@ -217,7 +229,7 @@ impl Registry {
 
     // ── Internal: event emission ─────────────────────────────────────
 
-    /// Emit pending changes as a `params:changed` Tauri event, then clear the queue.
+    /// Emit pending changes through the installed observer, then clear the queue.
     fn emit_changes(&mut self) {
         if self.pending_changes.is_empty() {
             return;
@@ -225,7 +237,7 @@ impl Registry {
 
         let changes = std::mem::take(&mut self.pending_changes);
 
-        if let Some(ref handle) = self.app_handle {
+        if let Some(ref observer) = self.observer {
             // Build the event payload: list of changed param IDs with their new values.
             let payload: Vec<serde_json::Value> = changes
                 .iter()
@@ -238,34 +250,44 @@ impl Registry {
                 })
                 .collect();
 
-            if let Err(e) = handle.emit("params:changed", payload) {
-                eprintln!("[params] failed to emit params:changed event: {e}");
-            }
+            observer.notify(serde_json::Value::Array(payload));
         }
     }
 
     // ── Persistence ──────────────────────────────────────────────────
 
     /// Save all Rig-target parameters to rig.toml.
-    pub fn save_rig(&self) -> Result<(), String> {
+    pub fn save_rig(&self) -> ParamsResult<()> {
         let path = self.config_dir.join("rig.toml");
         super::toml_io::save_rig(self, &path)
     }
 
+    /// Save all Analysis-target parameters to analysis.toml.
+    pub fn save_analysis(&self) -> ParamsResult<()> {
+        let path = self.config_dir.join("analysis.toml");
+        super::toml_io::save_analysis(self, &path)
+    }
+
     /// Save all Experiment-target parameters to experiment.toml.
-    pub fn save_experiment(&self) -> Result<(), String> {
+    pub fn save_experiment(&self) -> ParamsResult<()> {
         let path = self.config_dir.join("experiment.toml");
         super::toml_io::save_experiment(self, &path)
     }
 
     /// Load Rig-target parameters from rig.toml.
-    pub fn load_rig(&mut self) -> Result<(), String> {
+    pub fn load_rig(&mut self) -> ParamsResult<()> {
         let path = self.config_dir.join("rig.toml");
         super::toml_io::load_rig(self, &path)
     }
 
+    /// Load Analysis-target parameters from analysis.toml.
+    pub fn load_analysis(&mut self) -> ParamsResult<()> {
+        let path = self.config_dir.join("analysis.toml");
+        super::toml_io::load_analysis(self, &path)
+    }
+
     /// Load Experiment-target parameters from experiment.toml.
-    pub fn load_experiment(&mut self) -> Result<(), String> {
+    pub fn load_experiment(&mut self) -> ParamsResult<()> {
         let path = self.config_dir.join("experiment.toml");
         super::toml_io::load_experiment(self, &path)
     }
@@ -301,8 +323,15 @@ impl Registry {
     }
 }
 
-/// Convert a ParamValue to a serde_json::Value for event payloads.
-pub(crate) fn param_value_to_json(value: &ParamValue) -> serde_json::Value {
+/// Convert a `ParamValue` to a `serde_json::Value` for event payloads
+/// and the IPC descriptor surface. Public so `src-tauri/src/params/
+/// commands.rs` (the Tauri IPC layer) can format individual values
+/// without reaching into private internals.
+pub fn param_value_to_json(value: &ParamValue) -> serde_json::Value {
+    fn enum_str<T: serde::Serialize>(v: &T) -> serde_json::Value {
+        let s = serde_json::to_string(v).unwrap_or_default();
+        serde_json::Value::String(s.trim_matches('"').to_string())
+    }
     match value {
         ParamValue::Bool(v) => serde_json::json!(*v),
         ParamValue::U16(v) => serde_json::json!(*v),
@@ -312,26 +341,21 @@ pub(crate) fn param_value_to_json(value: &ParamValue) -> serde_json::Value {
         ParamValue::F64(v) => serde_json::json!(*v),
         ParamValue::String(v) => serde_json::json!(v),
         ParamValue::StringVec(v) => serde_json::json!(v),
-        ParamValue::Envelope(v) => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            serde_json::Value::String(s.trim_matches('"').to_string())
-        }
-        ParamValue::Carrier(v) => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            serde_json::Value::String(s.trim_matches('"').to_string())
-        }
-        ParamValue::Projection(v) => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            serde_json::Value::String(s.trim_matches('"').to_string())
-        }
-        ParamValue::Structure(v) => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            serde_json::Value::String(s.trim_matches('"').to_string())
-        }
-        ParamValue::Order(v) => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            serde_json::Value::String(s.trim_matches('"').to_string())
-        }
+        ParamValue::Envelope(v) => enum_str(v),
+        ParamValue::Carrier(v) => enum_str(v),
+        ParamValue::Projection(v) => enum_str(v),
+        ParamValue::Structure(v) => enum_str(v),
+        ParamValue::Order(v) => enum_str(v),
+        ParamValue::CycleCombine(v) => enum_str(v),
+        ParamValue::PhaseSmoothing(v) => enum_str(v),
+        ParamValue::VfsComputation(v) => enum_str(v),
+        ParamValue::SignMapSmoothing(v) => enum_str(v),
+        ParamValue::CortexSource(v) => enum_str(v),
+        ParamValue::PatchThreshold(v) => enum_str(v),
+        ParamValue::PatchExtraction(v) => enum_str(v),
+        ParamValue::PatchRefinement(v) => enum_str(v),
+        ParamValue::QualityGate(v) => enum_str(v),
+        ParamValue::Eccentricity(v) => enum_str(v),
     }
 }
 
@@ -344,7 +368,9 @@ mod tests {
     use std::path::Path;
 
     fn config_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../config")
+        // CARGO_MANIFEST_DIR for openisi-params is `crates/openisi-params`;
+        // the project's config dir is two levels up.
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config")
     }
 
     #[test]
@@ -367,14 +393,11 @@ mod tests {
         assert!(!reg.ring_overlay_enabled());
         assert_eq!(reg.target_stimulus_fps(), 60);
         assert!((reg.monitor_rotation_deg() - 180.0).abs() < 1e-10);
-        assert!((reg.smoothing_sigma() - 2.0).abs() < 1e-10);
+        // Note: analysis-side method params (smoothing σ, sign-map
+        // threshold, etc.) live in AnalysisParams enum variants now —
+        // loaded from analysis.toml / .oisi /analysis_params, not the
+        // primitive registry.
         assert_eq!(reg.rotation_k(), 0);
-        assert!((reg.epsilon() - 0.0000000001).abs() < 1e-20);
-
-        // Segmentation
-        assert!((reg.sign_map_filter_sigma() - 9.0).abs() < 1e-10);
-        assert!((reg.sign_map_threshold() - 0.35).abs() < 1e-10);
-        assert_eq!(reg.open_radius(), 2);
 
         // System tuning
         assert_eq!(reg.camera_frame_send_interval_ms(), 33);
@@ -673,7 +696,7 @@ mod tests {
 #[cfg(test)]
 mod descriptor_count_tests {
     use super::*;
-    use crate::params::GroupId;
+    use crate::GroupId;
 
     #[test]
     fn descriptor_counts_per_group() {
@@ -683,7 +706,6 @@ mod descriptor_count_tests {
             ("Timing", GroupId::Timing),
             ("Presentation", GroupId::Presentation),
             ("Retinotopy", GroupId::Retinotopy),
-            ("Segmentation", GroupId::Segmentation),
             ("Camera", GroupId::Camera),
             ("Display", GroupId::Display),
             ("Ring", GroupId::Ring),
@@ -697,16 +719,20 @@ mod descriptor_count_tests {
             total += count;
         }
         eprintln!("  TOTAL: {total}");
-        assert!(total > 60, "Expected at least 60 total params, got {total}");
-        
-        // Verify specific groups
+        // Sanity floor — not a strict commitment. The exact count
+        // depends on the current set of acquisition + display + system
+        // parameters which evolves. Analysis-side method params no
+        // longer live in the primitive registry (they're inside
+        // `AnalysisParams` method enum variants), so the registry is
+        // smaller than it was.
+        assert!(total >= 40, "Expected at least 40 total params, got {total}");
+
+        // Verify a couple of representative groups.
         let stimulus_count = PARAM_DEFS.iter().filter(|d| d.group == GroupId::Stimulus).count();
-        assert!(stimulus_count >= 13, "Stimulus should have >= 13 params (envelope + carrier + 11 params), got {stimulus_count}");
-        
-        let retinotopy_count = PARAM_DEFS.iter().filter(|d| d.group == GroupId::Retinotopy).count();
-        assert!(retinotopy_count >= 6, "Retinotopy should have >= 6 params, got {retinotopy_count}");
-        
-        let segmentation_count = PARAM_DEFS.iter().filter(|d| d.group == GroupId::Segmentation).count();
-        assert!(segmentation_count >= 10, "Segmentation should have >= 10 params, got {segmentation_count}");
+        assert!(stimulus_count >= 13, "Stimulus should have >= 13 params, got {stimulus_count}");
+        // The Segmentation GroupId variant was removed after Phase 5
+        // (all segmentation tunables moved into AnalysisParams method
+        // enums + Option<T> fields; surfaced via TunableDescriptor,
+        // not via GroupId). Nothing to assert here.
     }
 }

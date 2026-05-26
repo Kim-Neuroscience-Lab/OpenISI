@@ -1,26 +1,56 @@
-//! All analysis math — dF/F, DFT, smoothing, gradients, VFS, phase extraction.
-//!
-//! Pure functions operating on ndarray types. No I/O, no side effects.
+//! Analysis math that runs on the host: retinotopy orchestration,
+//! post-segmentation derived maps, and a few utility transforms. Heavy
+//! numerics (dF/F, DFT, SNR, smoothing, gradients, VFS) live in
+//! `crate::compute::ops` and operate on `tch::Tensor`.
 
-use ndarray::{Array2, Array3, Axis, Zip};
+use ndarray::Array2;
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
-use crate::{AnalysisParams, ComplexMaps, RetinotopyMaps};
+use crate::{AcquisitionProperties, AnalysisParams, ComplexMaps, RetinotopyMaps};
+use crate::compute;
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 /// Compute retinotopy maps from four complex maps and parameters.
-pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> RetinotopyMaps {
-    // Rotate if needed
-    let (azi_fwd, azi_rev, alt_fwd, alt_rev) = if params.rotation_k != 0 {
+///
+/// Single canonical pipeline — every step computed exactly once. The
+/// position phase is represented as a **complex phasor** `z = exp(i·φ)`
+/// throughout: smoothing, gradients, and VFS all operate on `z` (real
+/// and imaginary components are continuous through phase wraps). The
+/// wrapped real `φ` is recovered via `arg(z)` only at the very end,
+/// once, to populate the display fields `azi_phase` and `alt_phase`.
+///
+///   1. Optional 90° rotation on host (only when `rotation_k != 0`).
+///   2. Upload the four complex maps to device as `Kind::ComplexFloat`.
+///   3. Per-orientation position phasor via Marshel-Garrett delay
+///      subtraction (`position_phasor_delay_subtracted`). Returns a
+///      complex tensor `z = exp(i·φ)`; the wrapped real φ is never
+///      exposed.
+///   4. Per-orientation amplitude = mean of fwd/rev magnitudes.
+///   5. Amplitude-weighted complex smoothing of `z` (normalized
+///      convolution on real and imaginary parts).
+///   6. Wrap-free phase gradients via the chain rule on `z`
+///      (`phase_gradients`).
+///   7. VFS = sin(θ_alt − θ_azi) where θ = atan2(∂φ/∂y, ∂φ/∂x).
+///   8. Magnification = `|J_deg|` from the same gradients.
+///   9. Single device→CPU download of all retinotopy results. Phase
+///      recovered for display via `arg(z_smoothed)` at this boundary.
+///  10. Phase → degrees on host (linear scale).
+pub fn compute_retinotopy(
+    maps: &ComplexMaps,
+    acquisition: &AcquisitionProperties,
+    params: &AnalysisParams,
+) -> crate::Result<RetinotopyMaps> {
+    // Optional rotation on host — small, sometimes-applied, four arrays only.
+    let (azi_fwd, azi_rev, alt_fwd, alt_rev) = if acquisition.rotation_k != 0 {
         (
-            rot90(&maps.azi_fwd, params.rotation_k),
-            rot90(&maps.azi_rev, params.rotation_k),
-            rot90(&maps.alt_fwd, params.rotation_k),
-            rot90(&maps.alt_rev, params.rotation_k),
+            rot90(&maps.azi_fwd, acquisition.rotation_k),
+            rot90(&maps.azi_rev, acquisition.rotation_k),
+            rot90(&maps.alt_fwd, acquisition.rotation_k),
+            rot90(&maps.alt_rev, acquisition.rotation_k),
         )
     } else {
         (
@@ -31,54 +61,50 @@ pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> Retino
         )
     };
 
-    // Combine opposite directions: Z = fwd * conj(rev) → encodes 2φ
-    let azi_combined = combine_directions(&azi_fwd, &azi_rev);
-    let alt_combined = combine_directions(&alt_fwd, &alt_rev);
+    // Upload the four complex maps to device as native Kind::ComplexFloat.
+    let a_fwd = compute::array2_complex_to_complex_tensor(&azi_fwd);
+    let a_rev = compute::array2_complex_to_complex_tensor(&azi_rev);
+    let l_fwd = compute::array2_complex_to_complex_tensor(&alt_fwd);
+    let l_rev = compute::array2_complex_to_complex_tensor(&alt_rev);
 
-    // Gaussian smooth in complex plane
-    #[cfg(feature = "gpu")]
-    let azi_smooth = crate::compute::gpu_smooth_complex(&azi_combined, params.smoothing_sigma);
-    #[cfg(feature = "gpu")]
-    let alt_smooth = crate::compute::gpu_smooth_complex(&alt_combined, params.smoothing_sigma);
-    #[cfg(not(feature = "gpu"))]
-    let azi_smooth = gaussian_smooth_complex(&azi_combined, params.smoothing_sigma);
-    #[cfg(not(feature = "gpu"))]
-    let alt_smooth = gaussian_smooth_complex(&alt_combined, params.smoothing_sigma);
+    // Per-orientation amplitude = mean of forward and reverse magnitudes
+    // (SNLC `Gprocesskret_batch.m`: `mag_az = 0.5*(mag_fwd + mag_rev)`).
+    let azi_amp_t = compute::position_amplitude(&a_fwd, &a_rev);
+    let alt_amp_t = compute::position_amplitude(&l_fwd, &l_rev);
 
-    // Phase gradients (amplitude-weighted)
-    #[cfg(feature = "gpu")]
-    let (d_azi_dx, d_azi_dy) = crate::compute::gpu_phase_gradients(&azi_smooth);
-    #[cfg(feature = "gpu")]
-    let (d_alt_dx, d_alt_dy) = crate::compute::gpu_phase_gradients(&alt_smooth);
-    #[cfg(not(feature = "gpu"))]
-    let (d_azi_dx, d_azi_dy) = phase_gradients(&azi_smooth);
-    #[cfg(not(feature = "gpu"))]
-    let (d_alt_dx, d_alt_dy) = phase_gradients(&alt_smooth);
+    // Stage 1 — cycle combine (fwd+rev → position phasor).
+    let (azi_z, alt_z) = params.cycle_combine.apply(&a_fwd, &a_rev, &l_fwd, &l_rev);
 
-    // VFS
-    #[cfg(feature = "gpu")]
-    let vfs = crate::compute::gpu_compute_vfs(&d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy);
-    #[cfg(not(feature = "gpu"))]
-    let vfs = compute_vfs(&d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy);
+    // Stage 2 — position phasor smoothing.
+    let (azi_z_s, alt_z_s) = params.phase_smoothing.apply(
+        &azi_z, &alt_z, &azi_amp_t, &alt_amp_t,
+    );
 
-    // Display phase/amplitude maps can follow either the legacy combined path
-    // or Garrett-style delay-subtraction while VFS remains unchanged above.
-    let (azi_phase, alt_phase, azi_amplitude, alt_amplitude) = if params.use_garrett_display_maps {
-        garrett_phase_amp_from_complex(&azi_fwd, &azi_rev, &alt_fwd, &alt_rev)
-    } else {
-        (
-            azi_smooth.mapv(|z| z.arg()),
-            alt_smooth.mapv(|z| z.arg()),
-            azi_smooth.mapv(|z| z.norm()),
-            alt_smooth.mapv(|z| z.norm()),
-        )
-    };
+    // Stage 3 — VFS computation (also returns the four phase gradients,
+    // which magnification consumes).
+    let (vfs_t, d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy) =
+        params.vfs_computation.apply(&azi_z_s, &alt_z_s);
 
-    // Convert to visual field degrees
-    let azi_phase_degrees = phase_to_degrees(&azi_phase, params.azi_angular_range, params.offset_azi);
-    let alt_phase_degrees = phase_to_degrees(&alt_phase, params.alt_angular_range, params.offset_alt);
+    let scale_azi = acquisition.azi_angular_range / (2.0 * PI);
+    let scale_alt = acquisition.alt_angular_range / (2.0 * PI);
+    let mag_t = compute::compute_magnification_jacobian(
+        &d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy, scale_azi, scale_alt,
+    );
 
-    RetinotopyMaps {
+    // Single device→CPU download. Phase recovered for display via
+    // `arg(z)` at this boundary — the only place atan2 of the smoothed
+    // phasor is taken, and only for the display field.
+    let vfs = compute::tensor_to_array2_f64(&vfs_t)?;
+    let magnification_raw = compute::tensor_to_array2_f64(&mag_t)?;
+    let azi_phase = compute::tensor_to_array2_f64(&azi_z_s.angle())?;
+    let alt_phase = compute::tensor_to_array2_f64(&alt_z_s.angle())?;
+    let azi_amplitude = compute::tensor_to_array2_f64(&azi_amp_t)?;
+    let alt_amplitude = compute::tensor_to_array2_f64(&alt_amp_t)?;
+
+    let azi_phase_degrees = phase_to_degrees(&azi_phase, acquisition.azi_angular_range, acquisition.offset_azi);
+    let alt_phase_degrees = phase_to_degrees(&alt_phase, acquisition.alt_angular_range, acquisition.offset_alt);
+
+    Ok(RetinotopyMaps {
         azi_phase,
         alt_phase,
         azi_phase_degrees,
@@ -86,7 +112,8 @@ pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> Retino
         azi_amplitude,
         alt_amplitude,
         vfs,
-    }
+        magnification_raw,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -94,17 +121,44 @@ pub fn compute_retinotopy(maps: &ComplexMaps, params: &AnalysisParams) -> Retino
 // Derived maps (computed from retinotopy + segmentation)
 // ---------------------------------------------------------------------------
 
-/// VFS masked to segmentation regions. Pixels outside patches → 0.
-pub fn compute_vfs_thresholded(vfs: &Array2<f64>, area_labels: &Array2<i32>) -> Array2<f64> {
-    let (h, w) = vfs.dim();
+/// Zero every pixel outside the segmented ROI (`area_labels == 0`); keep
+/// the source value inside. Shared by every derived map that is meaningful
+/// only within segmented patches: VFS thresholded, magnification, etc.
+pub fn apply_label_roi(src: &Array2<f64>, area_labels: &Array2<i32>) -> Array2<f64> {
+    let (h, w) = src.dim();
     Array2::from_shape_fn((h, w), |(r, c)| {
-        if area_labels[[r, c]] > 0 { vfs[[r, c]] } else { 0.0 }
+        if area_labels[[r, c]] > 0 { src[[r, c]] } else { 0.0 }
     })
 }
 
-/// Eccentricity map: angular distance from V1 center (degrees).
-/// V1 = largest area. Pixels outside patches → 0.
-/// Formula from Juavinett: atan(sqrt(tan(az)² + tan(alt)²/cos(az)²)) × 180/π
+/// Angular eccentricity (degrees) of visual-field point `(alt, azi)` from
+/// a reference point `(alt_c, azi_c)`. All angles in degrees.
+///
+/// Verbatim Allen `retinotopic_mapping/RetinotopicMapping.py::eccentricityMap`:
+///
+/// ```text
+/// ecc = atan( sqrt( tan(alt - alt_c)² + tan(azi - azi_c)² / cos(alt - alt_c)² ) )
+/// ```
+///
+/// Note the cosine denominator uses the *altitude* delta, not the
+/// azimuth — `alt` is the latitude-like coordinate, `azi` is longitude-like,
+/// and a degree of azimuth subtends `cos(alt)` of great-circle distance.
+/// This is the single definition used by `compute_eccentricity` (V1-centric
+/// display map) and `segmentation::pipeline::build_eccentricity_map` (Allen
+/// per-patch eccentricity for the split step).
+pub fn eccentricity_pixel_deg(alt_deg: f64, azi_deg: f64, alt_c_deg: f64, azi_c_deg: f64) -> f64 {
+    let to_rad = PI / 180.0;
+    let d_alt = (alt_deg - alt_c_deg) * to_rad;
+    let d_azi = (azi_deg - azi_c_deg) * to_rad;
+    let cos_d_alt = d_alt.cos();
+    let term = d_alt.tan().powi(2)
+        + d_azi.tan().powi(2) / (cos_d_alt * cos_d_alt).max(1e-12);
+    term.sqrt().atan() * 180.0 / PI
+}
+
+/// V1-centric eccentricity map (degrees). V1 = largest segmented area; the
+/// center is V1's center-of-mass in visual-field coordinates. Pixels
+/// outside any segmented patch are zeroed via `apply_label_roi`.
 pub fn compute_eccentricity(
     azi_deg: &Array2<f64>,
     alt_deg: &Array2<f64>,
@@ -122,7 +176,6 @@ pub fn compute_eccentricity(
         .max_by_key(|&i| counts[i])
         .unwrap_or(1) as i32;
 
-    // Center-of-mass of V1 in visual field coordinates.
     let mut sum_azi = 0.0f64;
     let mut sum_alt = 0.0f64;
     let mut n = 0usize;
@@ -138,38 +191,10 @@ pub fn compute_eccentricity(
     let center_azi = if n > 0 { sum_azi / n as f64 } else { 0.0 };
     let center_alt = if n > 0 { sum_alt / n as f64 } else { 0.0 };
 
-    // Compute eccentricity per pixel.
     Array2::from_shape_fn((h, w), |(r, c)| {
         if area_labels[[r, c]] == 0 { return 0.0; }
-        let az = (azi_deg[[r, c]] - center_azi) * PI / 180.0;
-        let alt = (alt_deg[[r, c]] - center_alt) * PI / 180.0;
-        let cos_az = az.cos();
-        let ecc = (az.tan().powi(2) + alt.tan().powi(2) / (cos_az * cos_az).max(1e-10))
-            .sqrt()
-            .atan();
-        ecc * 180.0 / PI
+        eccentricity_pixel_deg(alt_deg[[r, c]], azi_deg[[r, c]], center_alt, center_azi)
     })
-}
-
-/// Magnification factor: |Jacobian determinant| of the retinotopic mapping.
-/// det = |∂azi/∂x · ∂alt/∂y - ∂alt/∂x · ∂azi/∂y|
-pub fn compute_magnification(
-    azi_deg: &Array2<f64>,
-    alt_deg: &Array2<f64>,
-) -> Array2<f64> {
-    let (h, w) = azi_deg.dim();
-    let mut result = Array2::zeros((h, w));
-
-    for r in 1..h.saturating_sub(1) {
-        for c in 1..w.saturating_sub(1) {
-            let dazi_dx = (azi_deg[[r, c + 1]] - azi_deg[[r, c.saturating_sub(1)]]) / 2.0;
-            let dazi_dy = (azi_deg[[r + 1, c]] - azi_deg[[r.saturating_sub(1), c]]) / 2.0;
-            let dalt_dx = (alt_deg[[r, c + 1]] - alt_deg[[r, c.saturating_sub(1)]]) / 2.0;
-            let dalt_dy = (alt_deg[[r + 1, c]] - alt_deg[[r.saturating_sub(1), c]]) / 2.0;
-            result[[r, c]] = (dazi_dx * dalt_dy - dalt_dx * dazi_dy).abs();
-        }
-    }
-    result
 }
 
 /// Iso-contour mask at given interval (e.g., 4°). Pixels where the phase value
@@ -204,368 +229,6 @@ pub fn compute_contours(
     result
 }
 
-// ---------------------------------------------------------------------------
-// Raw frame processing (Phase One in Aaron's code)
-// ---------------------------------------------------------------------------
-
-/// Compute dF/F in-place: (frame - mean) / (mean + eps) for each pixel over time.
-pub fn delta_f_over_f(frames: &mut Array3<f32>, eps: f32) {
-    let (t, h, w) = frames.dim();
-    let t_f32 = t as f32;
-
-    // Temporal mean per pixel
-    let mut mean = Array2::<f32>::zeros((h, w));
-    for frame in frames.axis_iter(Axis(0)) {
-        mean += &frame;
-    }
-    mean.mapv_inplace(|v| v / t_f32);
-
-    // Normalize in-place
-    for mut frame in frames.axis_iter_mut(Axis(0)) {
-        for (px, &m) in frame.iter_mut().zip(mean.iter()) {
-            *px = (*px - m) / (m + eps);
-        }
-    }
-}
-
-/// Single-frequency DFT projection: dot product of dF/F time series with complex kernel.
-///
-/// kernel[t] = exp(±2πi·f·(t - t₀)) where f = 1/period, sign depends on direction.
-/// Returns complex map (H, W).
-///
-/// Optimized: iterates time as outer loop for sequential memory access,
-/// accumulates into flat real/imag buffers to avoid Complex64 overhead per pixel.
-pub fn dft_projection(
-    frames: &Array3<f32>,
-    timestamps: &[f64],
-    is_forward: bool,
-) -> Array2<Complex64> {
-    let (t, h, w) = frames.dim();
-    assert_eq!(t, timestamps.len());
-
-    let t_first = timestamps[0];
-    let t_last = timestamps[t - 1];
-    let period = t_last - t_first;
-    let freq = 1.0 / period;
-    let sign = if is_forward { -1.0 } else { 1.0 };
-
-    // Precompute kernel as separate real/imag arrays.
-    let kernel_re: Vec<f64> = timestamps.iter()
-        .map(|&ts| (sign * 2.0 * PI * freq * (ts - t_first)).cos())
-        .collect();
-    let kernel_im: Vec<f64> = timestamps.iter()
-        .map(|&ts| (sign * 2.0 * PI * freq * (ts - t_first)).sin())
-        .collect();
-
-    let n_pixels = h * w;
-    let mut acc_re = vec![0.0f64; n_pixels];
-    let mut acc_im = vec![0.0f64; n_pixels];
-
-    // Time as outer loop — each frame's pixels are contiguous in memory.
-    for ti in 0..t {
-        let kr = kernel_re[ti];
-        let ki = kernel_im[ti];
-        let frame_slice = frames.slice(ndarray::s![ti, .., ..]);
-        let frame_data = frame_slice.as_slice().unwrap_or_else(|| {
-            // Fallback for non-contiguous — shouldn't happen with standard layout
-            &[]
-        });
-        if frame_data.len() == n_pixels {
-            for px in 0..n_pixels {
-                let v = frame_data[px] as f64;
-                acc_re[px] += kr * v;
-                acc_im[px] += ki * v;
-            }
-        } else {
-            // Non-contiguous fallback
-            for r in 0..h {
-                for c in 0..w {
-                    let v = frames[[ti, r, c]] as f64;
-                    let px = r * w + c;
-                    acc_re[px] += kr * v;
-                    acc_im[px] += ki * v;
-                }
-            }
-        }
-    }
-
-    // Convert to Array2<Complex64>.
-    Array2::from_shape_fn((h, w), |(r, c)| {
-        let px = r * w + c;
-        Complex64::new(acc_re[px], acc_im[px])
-    })
-}
-
-/// Compute signal-to-noise ratio per pixel.
-///
-/// SNR = |DFT at stimulus frequency|² / mean(|DFT at other frequencies|²).
-/// Evaluates DFT at the stimulus frequency and a set of non-harmonic noise
-/// frequencies. Uses cache-friendly time-outer iteration.
-pub fn compute_snr_map(
-    frames: &Array3<f32>,
-    timestamps: &[f64],
-) -> Array2<f64> {
-    let (t, h, w) = frames.dim();
-    assert_eq!(t, timestamps.len());
-    if t < 4 {
-        return Array2::zeros((h, w));
-    }
-
-    let n_pixels = h * w;
-    let t_first = timestamps[0];
-    let t_last = timestamps[t - 1];
-    let period = t_last - t_first;
-    let freq_stim = 1.0 / period;
-    let dt_mean = period / (t - 1) as f64;
-    let freq_nyquist = 0.5 / dt_mean;
-    let max_bin = (freq_nyquist / freq_stim).floor() as usize;
-    let max_bin = max_bin.min(t / 2).max(2);
-
-    // Select noise frequency bins — skip harmonics (2, 3, 4).
-    // Cap at 20 evenly-spaced bins to keep computation tractable for large datasets.
-    let all_noise_bins: Vec<usize> = (5..=max_bin).collect();
-    let noise_bins: Vec<usize> = if all_noise_bins.len() <= 20 {
-        all_noise_bins
-    } else {
-        let step = all_noise_bins.len() as f64 / 20.0;
-        (0..20).map(|i| all_noise_bins[(i as f64 * step) as usize]).collect()
-    };
-    let n_noise = noise_bins.len().max(1);
-
-    // Compute signal DFT using cache-friendly accumulation.
-    let mut sig_re = vec![0.0f64; n_pixels];
-    let mut sig_im = vec![0.0f64; n_pixels];
-    for ti in 0..t {
-        let angle = -2.0 * PI * freq_stim * (timestamps[ti] - t_first);
-        let kr = angle.cos();
-        let ki = angle.sin();
-        let frame_slice = frames.slice(ndarray::s![ti, .., ..]);
-        if let Some(data) = frame_slice.as_slice() {
-            for px in 0..n_pixels {
-                let v = data[px] as f64;
-                sig_re[px] += kr * v;
-                sig_im[px] += ki * v;
-            }
-        }
-    }
-
-    // Compute noise power: accumulate DFT power across noise bins.
-    // Instead of storing per-bin complex values, accumulate power directly.
-    let mut noise_power = vec![0.0f64; n_pixels];
-
-    for &k in &noise_bins {
-        let freq = freq_stim * k as f64;
-        let mut nr = vec![0.0f64; n_pixels];
-        let mut ni = vec![0.0f64; n_pixels];
-
-        for ti in 0..t {
-            let angle = -2.0 * PI * freq * (timestamps[ti] - t_first);
-            let kr = angle.cos();
-            let ki = angle.sin();
-            let frame_slice = frames.slice(ndarray::s![ti, .., ..]);
-            if let Some(data) = frame_slice.as_slice() {
-                for px in 0..n_pixels {
-                    let v = data[px] as f64;
-                    nr[px] += kr * v;
-                    ni[px] += ki * v;
-                }
-            }
-        }
-
-        // Accumulate power for this bin.
-        for px in 0..n_pixels {
-            noise_power[px] += nr[px] * nr[px] + ni[px] * ni[px];
-        }
-    }
-
-    // Compute SNR per pixel.
-    Array2::from_shape_fn((h, w), |(r, c)| {
-        let px = r * w + c;
-        let sp = sig_re[px] * sig_re[px] + sig_im[px] * sig_im[px];
-        let np = noise_power[px] / n_noise as f64;
-        if np > 1e-20 { sp / np } else { 0.0 }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Retinotopy computation
-// ---------------------------------------------------------------------------
-
-/// Combine forward and reverse maps: Z = fwd * conj(rev).
-/// Encodes 2φ where φ is the true retinotopic phase.
-fn combine_directions(fwd: &Array2<Complex64>, rev: &Array2<Complex64>) -> Array2<Complex64> {
-    let mut result = Array2::zeros(fwd.raw_dim());
-    Zip::from(&mut result)
-        .and(fwd)
-        .and(rev)
-        .for_each(|r, &f, &rv| *r = f * rv.conj());
-    result
-}
-
-/// Gaussian smooth a complex map (smooth real and imaginary parts separately).
-#[cfg(not(feature = "gpu"))]
-fn gaussian_smooth_complex(map: &Array2<Complex64>, sigma: f64) -> Array2<Complex64> {
-    if sigma <= 0.0 {
-        return map.clone();
-    }
-
-    let (h, w) = map.dim();
-    let real = map.mapv(|z| z.re);
-    let imag = map.mapv(|z| z.im);
-
-    let radius = (sigma * 3.0).ceil() as usize;
-    let kernel = gaussian_kernel_1d(sigma, radius);
-
-    let real_smooth = separable_filter(&real, &kernel);
-    let imag_smooth = separable_filter(&imag, &kernel);
-
-    let mut result = Array2::zeros((h, w));
-    Zip::from(&mut result)
-        .and(&real_smooth)
-        .and(&imag_smooth)
-        .for_each(|r, &re, &im| *r = Complex64::new(re, im));
-    result
-}
-
-/// Amplitude-weighted phase gradients via complex differentiation.
-///
-/// dφ/dx = Im{ conj(Z) · ∂Z/∂x }
-/// dφ/dy = Im{ conj(Z) · ∂Z/∂y }
-#[cfg(not(feature = "gpu"))]
-fn phase_gradients(map: &Array2<Complex64>) -> (Array2<f64>, Array2<f64>) {
-    let (h, w) = map.dim();
-
-    // ∂Z/∂x — central differences along columns
-    let mut dz_dx = Array2::<Complex64>::zeros((h, w));
-    for row in 0..h {
-        dz_dx[[row, 0]] = map[[row, 1]] - map[[row, 0]];
-        for col in 1..w - 1 {
-            dz_dx[[row, col]] = (map[[row, col + 1]] - map[[row, col - 1]]) * 0.5;
-        }
-        dz_dx[[row, w - 1]] = map[[row, w - 1]] - map[[row, w - 2]];
-    }
-
-    // ∂Z/∂y — central differences along rows
-    let mut dz_dy = Array2::<Complex64>::zeros((h, w));
-    for col in 0..w {
-        dz_dy[[0, col]] = map[[1, col]] - map[[0, col]];
-        for row in 1..h - 1 {
-            dz_dy[[row, col]] = (map[[row + 1, col]] - map[[row - 1, col]]) * 0.5;
-        }
-        dz_dy[[h - 1, col]] = map[[h - 1, col]] - map[[h - 2, col]];
-    }
-
-    // Extract amplitude-weighted phase gradients
-    let mut dphi_dx = Array2::zeros((h, w));
-    let mut dphi_dy = Array2::zeros((h, w));
-    Zip::from(&mut dphi_dx)
-        .and(&mut dphi_dy)
-        .and(map)
-        .and(&dz_dx)
-        .and(&dz_dy)
-        .for_each(|dx, dy, &z, &dzx, &dzy| {
-            let cj = z.conj();
-            *dx = (cj * dzx).im;
-            *dy = (cj * dzy).im;
-        });
-
-    (dphi_dx, dphi_dy)
-}
-
-/// VFS = sin(θ_alt - θ_azi) where θ = atan2(dy, dx) of the phase gradient.
-#[cfg(not(feature = "gpu"))]
-fn compute_vfs(
-    d_azi_dx: &Array2<f64>,
-    d_azi_dy: &Array2<f64>,
-    d_alt_dx: &Array2<f64>,
-    d_alt_dy: &Array2<f64>,
-) -> Array2<f64> {
-    let mut vfs = Array2::zeros(d_azi_dx.raw_dim());
-    Zip::from(&mut vfs)
-        .and(d_azi_dx)
-        .and(d_azi_dy)
-        .and(d_alt_dx)
-        .and(d_alt_dy)
-        .for_each(|v, &hdx, &hdy, &vdx, &vdy| {
-            let theta_h = hdy.atan2(hdx);
-            let theta_v = vdy.atan2(vdx);
-            *v = (theta_v - theta_h).sin();
-        });
-    vfs
-}
-
-/// Garrett/Marshel delay subtraction for display phase maps.
-///
-/// This path is used only for displayed azimuth/altitude phase maps.
-/// VFS computation continues to use the combined 2φ gradients pipeline.
-fn garrett_phase_amp_from_complex(
-    azi_fwd: &Array2<Complex64>,
-    azi_rev: &Array2<Complex64>,
-    alt_fwd: &Array2<Complex64>,
-    alt_rev: &Array2<Complex64>,
-) -> (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) {
-    let azi_fwd_p = azi_fwd.mapv(|z| (-z).arg());
-    let azi_rev_p = azi_rev.mapv(|z| (-z).arg());
-    let alt_fwd_p = alt_fwd.mapv(|z| (-z).arg());
-    let alt_rev_p = alt_rev.mapv(|z| (-z).arg());
-
-    let mut delay_azi = Array2::zeros(azi_fwd_p.raw_dim());
-    Zip::from(&mut delay_azi)
-        .and(&azi_fwd_p)
-        .and(&azi_rev_p)
-        .for_each(|d, &fwd, &rev| {
-            *d = (Complex64::from_polar(1.0, fwd) + Complex64::from_polar(1.0, rev)).arg();
-        });
-
-    let mut delay_alt = Array2::zeros(alt_fwd_p.raw_dim());
-    Zip::from(&mut delay_alt)
-        .and(&alt_fwd_p)
-        .and(&alt_rev_p)
-        .for_each(|d, &fwd, &rev| {
-            *d = (Complex64::from_polar(1.0, fwd) + Complex64::from_polar(1.0, rev)).arg();
-        });
-
-    // Garrett non-negative delay convention.
-    delay_azi.mapv_inplace(|d| d + 0.5 * PI * (1.0 - d.signum()));
-    delay_alt.mapv_inplace(|d| d + 0.5 * PI * (1.0 - d.signum()));
-
-    let mut kmap_azi = Array2::zeros(azi_fwd_p.raw_dim());
-    Zip::from(&mut kmap_azi)
-        .and(&azi_fwd_p)
-        .and(&azi_rev_p)
-        .and(&delay_azi)
-        .for_each(|k, &fwd, &rev, &d| {
-            let f = Complex64::from_polar(1.0, fwd - d).arg();
-            let r = Complex64::from_polar(1.0, rev - d).arg();
-            *k = 0.5 * (f - r);
-        });
-
-    let mut kmap_alt = Array2::zeros(alt_fwd_p.raw_dim());
-    Zip::from(&mut kmap_alt)
-        .and(&alt_fwd_p)
-        .and(&alt_rev_p)
-        .and(&delay_alt)
-        .for_each(|k, &fwd, &rev, &d| {
-            let f = Complex64::from_polar(1.0, fwd - d).arg();
-            let r = Complex64::from_polar(1.0, rev - d).arg();
-            *k = 0.5 * (f - r);
-        });
-
-    let mut azi_amp = Array2::zeros(azi_fwd.raw_dim());
-    Zip::from(&mut azi_amp)
-        .and(azi_fwd)
-        .and(azi_rev)
-        .for_each(|a, &f, &r| *a = 0.5 * (f.norm() + r.norm()));
-
-    let mut alt_amp = Array2::zeros(alt_fwd.raw_dim());
-    Zip::from(&mut alt_amp)
-        .and(alt_fwd)
-        .and(alt_rev)
-        .for_each(|a, &f, &r| *a = 0.5 * (f.norm() + r.norm()));
-
-    (kmap_azi, kmap_alt, azi_amp, alt_amp)
-}
-
 /// Convert phase (radians) to visual field degrees.
 fn phase_to_degrees(phase: &Array2<f64>, angular_range: f64, offset: f64) -> Array2<f64> {
     let scale = angular_range / (2.0 * PI);
@@ -573,11 +236,14 @@ fn phase_to_degrees(phase: &Array2<f64>, angular_range: f64, offset: f64) -> Arr
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (host-side)
 // ---------------------------------------------------------------------------
 
-/// Normalized 1D Gaussian kernel.
-pub(crate) fn gaussian_kernel_1d(sigma: f64, radius: usize) -> Vec<f64> {
+/// Normalized 1D Gaussian kernel — used by host-side segmentation smoothing
+/// and by the figure exporter to produce a smoothed-VFS view.
+/// (The on-device Gaussian for retinotopy is `compute::gaussian_smooth`, which
+/// builds its kernel on-device via `Tensor::arange` + `exp`.)
+pub fn gaussian_kernel_1d(sigma: f64, radius: usize) -> Vec<f64> {
     let size = 2 * radius + 1;
     let two_sigma_sq = 2.0 * sigma * sigma;
     let mut kernel = Vec::with_capacity(size);
@@ -594,12 +260,13 @@ pub(crate) fn gaussian_kernel_1d(sigma: f64, radius: usize) -> Vec<f64> {
     kernel
 }
 
-/// Separable 2D convolution (horizontal then vertical) with reflected boundaries.
-pub(crate) fn separable_filter(input: &Array2<f64>, kernel: &[f64]) -> Array2<f64> {
+/// Separable 2D convolution (horizontal then vertical) with reflected
+/// boundaries. Used by host-side segmentation smoothing and by the figure
+/// exporter to produce a smoothed-VFS view.
+pub fn separable_filter(input: &Array2<f64>, kernel: &[f64]) -> Array2<f64> {
     let (h, w) = input.dim();
     let radius = kernel.len() / 2;
 
-    // Horizontal pass
     let mut temp = Array2::zeros((h, w));
     for row in 0..h {
         for col in 0..w {
@@ -612,7 +279,6 @@ pub(crate) fn separable_filter(input: &Array2<f64>, kernel: &[f64]) -> Array2<f6
         }
     }
 
-    // Vertical pass
     let mut output = Array2::zeros((h, w));
     for row in 0..h {
         for col in 0..w {
@@ -627,7 +293,6 @@ pub(crate) fn separable_filter(input: &Array2<f64>, kernel: &[f64]) -> Array2<f6
     output
 }
 
-/// Reflect index at boundaries (mirror padding).
 fn reflect(idx: isize, size: usize) -> usize {
     let s = size as isize;
     if idx < 0 {
@@ -669,18 +334,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_combine_directions() {
-        let fwd = Array2::from_elem((2, 2), Complex64::new(1.0, 1.0));
-        let rev = Array2::from_elem((2, 2), Complex64::new(1.0, -1.0));
-        let result = combine_directions(&fwd, &rev);
-        // (1+i) * conj(1-i) = (1+i)(1+i) = 2i
-        for &v in result.iter() {
-            assert!((v.re).abs() < 1e-10);
-            assert!((v.im - 2.0).abs() < 1e-10);
-        }
-    }
-
-    #[test]
     fn test_gaussian_kernel_normalizes() {
         let k = gaussian_kernel_1d(2.0, 6);
         let sum: f64 = k.iter().sum();
@@ -693,15 +346,6 @@ mod tests {
         let result = phase_to_degrees(&phase, 100.0, 10.0);
         for &v in result.iter() {
             assert!((v - 60.0).abs() < 1e-10); // PI * 100/(2PI) + 10 = 60
-        }
-    }
-
-    #[test]
-    fn test_delta_f_over_f_uniform() {
-        let mut frames = Array3::from_elem((10, 4, 4), 100.0f32);
-        delta_f_over_f(&mut frames, 1e-6);
-        for &v in frames.iter() {
-            assert!(v.abs() < 1e-4);
         }
     }
 
@@ -723,71 +367,4 @@ mod tests {
         assert_eq!(r2.dim(), (3, 5));
     }
 
-    #[test]
-    fn test_smoothing_preserves_constant() {
-        let map = Array2::from_elem((10, 10), Complex64::new(3.0, -2.0));
-        let smoothed = gaussian_smooth_complex(&map, 2.0);
-        for &v in smoothed.iter() {
-            assert!((v.re - 3.0).abs() < 1e-6);
-            assert!((v.im - (-2.0)).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn test_vfs_orthogonal_gradients() {
-        // If azi gradient points purely in x and alt gradient purely in y,
-        // the angle difference is π/2, so VFS = sin(π/2) = 1.0
-        let ones = Array2::from_elem((3, 3), 1.0);
-        let zeros = Array2::from_elem((3, 3), 0.0);
-        let vfs = compute_vfs(&ones, &zeros, &zeros, &ones);
-        for &v in vfs.iter() {
-            assert!((v - 1.0).abs() < 1e-10);
-        }
-    }
-
-    #[test]
-    fn test_garrett_phase_amp_shapes() {
-        let a = Array2::from_elem((4, 4), Complex64::new(1.0, 0.0));
-        let b = Array2::from_elem((4, 4), Complex64::new(0.5, 0.25));
-        let (k_azi, k_alt, amp_azi, amp_alt) = garrett_phase_amp_from_complex(&a, &b, &a, &b);
-        assert_eq!(k_azi.dim(), (4, 4));
-        assert_eq!(k_alt.dim(), (4, 4));
-        assert_eq!(amp_azi.dim(), (4, 4));
-        assert_eq!(amp_alt.dim(), (4, 4));
-    }
-
-    #[test]
-    fn test_vfs_unchanged_by_display_mode() {
-        let maps = crate::ComplexMaps {
-            azi_fwd: Array2::from_elem((6, 6), Complex64::new(1.0, 0.2)),
-            azi_rev: Array2::from_elem((6, 6), Complex64::new(0.8, -0.1)),
-            alt_fwd: Array2::from_elem((6, 6), Complex64::new(0.9, 0.3)),
-            alt_rev: Array2::from_elem((6, 6), Complex64::new(1.1, -0.2)),
-        };
-
-        let p_base = crate::AnalysisParams {
-            smoothing_sigma: 1.0,
-            rotation_k: 0,
-            azi_angular_range: 100.0,
-            alt_angular_range: 100.0,
-            offset_azi: 0.0,
-            offset_alt: 0.0,
-            epsilon: 1e-6,
-            use_garrett_display_maps: false,
-            snr_threshold_enabled: false,
-            snr_threshold_value: 2.0,
-            snr_prefer_spectral: true,
-            snr_use_transparent_mask: true,
-            segmentation: None,
-        };
-        let mut p_garrett = p_base.clone();
-        p_garrett.use_garrett_display_maps = true;
-
-        let r_base = compute_retinotopy(&maps, &p_base);
-        let r_garrett = compute_retinotopy(&maps, &p_garrett);
-
-        for (a, b) in r_base.vfs.iter().zip(r_garrett.vfs.iter()) {
-            assert!((a - b).abs() < 1e-10);
-        }
-    }
 }

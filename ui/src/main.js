@@ -1,6 +1,8 @@
 // OpenISI — Main entry point
 // Icon bar navigation, view management, layered preview panel, status bar.
 
+import { errorToString } from './lib/errors.js';
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -102,7 +104,7 @@ try {
     if (saved.ringVisible !== undefined) viz.ringVisible = saved.ringVisible;
     if (saved.bordersVisible !== undefined) viz.bordersVisible = saved.bordersVisible;
     if (saved.analysisFile) viz.analysisFile = saved.analysisFile;
-} catch (_e) { alert("Error: " + _e); }
+} catch (_e) { alert("Error: " + errorToString(_e)); }
 
 /// Persist viz preferences to localStorage.
 function saveVizState() {
@@ -116,7 +118,7 @@ function saveVizState() {
             bordersVisible: viz.bordersVisible,
             analysisFile: viz.analysisFile,
         }));
-    } catch (_e) { alert("Error: " + _e); }
+    } catch (_e) { alert("Error: " + errorToString(_e)); }
 }
 
 let stimulusAspectRatio = 16 / 9;
@@ -723,7 +725,7 @@ async function setAnalysisFile(filePath) {
         try {
             const signs = await invoke("read_result", { path: filePath, name: "area_signs" });
             viz.areaSignsCache = signs.data;
-        } catch (_e) { alert("Error: " + _e); }
+        } catch (_e) { alert("Error: " + errorToString(_e)); }
     }
 
     // Load borders for the borders layer.
@@ -732,7 +734,7 @@ async function setAnalysisFile(filePath) {
         try {
             const borders = await invoke("read_result", { path: filePath, name: "area_borders" });
             viz.segData = { width: borders.width, height: borders.height, borders: borders.data };
-        } catch (_e) { alert("Error: " + _e); }
+        } catch (_e) { alert("Error: " + errorToString(_e)); }
     }
 
     await loadAnatomical(filePath);

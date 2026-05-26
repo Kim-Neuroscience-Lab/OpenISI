@@ -1,22 +1,15 @@
-//! GPU-accelerated (or CPU-optimized) compute backend using libtorch.
+//! Tensor-based analysis compute backend.
 //!
-//! When the `gpu` feature is enabled and CUDA is available, all heavy
-//! operations run on GPU. Otherwise, libtorch's CPU backend provides
-//! MKL/OpenBLAS-accelerated multi-threaded computation.
+//! Runs on whichever hardware libtorch makes available — CUDA on NVIDIA,
+//! Metal on Apple Silicon, otherwise CPU. There is one implementation of
+//! every analysis operation; hardware dispatch is libtorch's job.
 //!
-//! When the `gpu` feature is disabled, falls back to the original
-//! ndarray-based sequential implementation.
+//! See `docs/ANALYSIS_COMPUTE.md`.
 
-#[cfg(feature = "gpu")]
-mod torch_ops;
+mod ops;
+mod conversions;
+mod accumulator;
 
-#[cfg(feature = "gpu")]
-pub use torch_ops::*;
-
-// When gpu feature is disabled, provide stub functions that call the
-// original ndarray implementations.
-#[cfg(not(feature = "gpu"))]
-mod fallback;
-
-#[cfg(not(feature = "gpu"))]
-pub use fallback::*;
+pub use ops::*;
+pub use conversions::*;
+pub use accumulator::{CycleAccumulator, Direction};

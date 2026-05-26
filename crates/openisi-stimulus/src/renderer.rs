@@ -292,18 +292,22 @@ impl StimulusRenderer {
 /// - BAR:   "LR"=0, "RL"=1, "TB"=2, "BT"=3
 /// - WEDGE: "CW"=0, "CCW"=1
 /// - RING:  "expand"=0, "contract"=1
-pub fn direction_to_int(direction: &str) -> i32 {
+///
+/// Returns `None` for unrecognized direction strings. Callers that
+/// receive `None` should treat it as a programmer error at the
+/// sequencer (the renderer can fall back to a neutral value).
+pub fn direction_to_int(direction: &str) -> Option<i32> {
     match direction {
-        "LR" => 0,
-        "RL" => 1,
-        "TB" => 2,
-        "BT" => 3,
-        "CW" => 0,
-        "CCW" => 1,
-        "Expand" | "expand" => 0,
-        "Contract" | "contract" => 1,
-        "On" => 0,
-        "" => 0, // No direction during baseline/idle — renderer shows gray, value unused.
-        _ => panic!("Invalid direction: {direction}"),
+        "LR" => Some(0),
+        "RL" => Some(1),
+        "TB" => Some(2),
+        "BT" => Some(3),
+        "CW" => Some(0),
+        "CCW" => Some(1),
+        "Expand" | "expand" => Some(0),
+        "Contract" | "contract" => Some(1),
+        "On" => Some(0),
+        "" => Some(0), // No direction during baseline/idle — renderer shows gray, value unused.
+        _ => None,
     }
 }

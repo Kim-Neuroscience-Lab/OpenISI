@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openisi.dev/schema/oisi.schema.json",
+  "title": "OpenISI .oisi file structure (HDF5)",
+  "description": "Machine-parseable description of every group, dataset, and attribute an .oisi file can contain. Each leaf carries `path` (HDF5 location), `dtype` (HDF5 type), and `shape` semantics. Source of truth: `src-tauri/src/export.rs::write_oisi` (capture) and `crates/isi-analysis/src/io.rs::write_results` (analysis). A note on optionality: a key marked `present_when` is conditional on the stage that produced it; analyzing a raw acquisition produces everything, analyzing an import (complex maps only) skips `/acquisition/*` and `snr`/`reliability_*`.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version. Bump when adding new top-level keys."
+    },
+    "root_attributes": {
+      "type": "object",
+      "description": "HDF5 root attributes — capture provenance + analysis params.",
+      "properties": {
+        "software_version": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "OpenISI CARGO_PKG_VERSION at capture time." }
+          }
+        },
+        "stimulus_metadata": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode (JSON)" },
+            "description": { "const": "JSON-serialized StimulusDataset metadata (conditions, sweep_sequence, ...). Source: openisi_stimulus::dataset::StimulusDataset::export_metadata." }
+          }
+        },
+        "rig_params": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode (JSON)" },
+            "description": { "const": "JSON snapshot of every Rig-target parameter from the registry, captured at acquisition. Read by AcquisitionProperties::from_oisi_attrs at analyze time (camera.um_per_pixel)." },
+            "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
+          }
+        },
+        "experiment_params": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode (JSON)" },
+            "description": { "const": "JSON snapshot of every Experiment-target parameter from the registry. Carries stimulus_geometry.{azi_angular_range, alt_angular_range, offset_azi, offset_alt, rotation_k}." },
+            "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
+          }
+        },
+        "analysis_params": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode (JSON)" },
+            "description": { "const": "JSON-serialized AnalysisParams — per-stage method enum choices. Updated on every `analyze` run via io::write_analysis_params_attr." },
+            "present_when": { "const": "after first analysis run" }
+          }
+        },
+        "animal_id": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "Free-form animal identifier (SessionMetadata.animal_id)." }
+          }
+        },
+        "notes": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "Free-form session notes (SessionMetadata.notes)." }
+          }
+        }
+      }
+    },
+    "groups": {
+      "type": "object",
+      "properties": {
+        "/anatomical": {
+          "type": "object",
+          "description": "Anatomical (vasculature) image, captured at session start.",
+          "properties": {
+            "dtype": { "const": "u8" },
+            "shape": { "const": "(H, W)" },
+            "present_when": { "const": "user captured an anatomical image" },
+            "subdatasets": {
+              "type": "object",
+              "properties": {
+                "/anatomical/cortex_roi": {
+                  "type": "object",
+                  "properties": {
+                    "dtype": { "const": "u8 (bool encoded)" },
+                    "shape": { "const": "(H, W)" },
+                    "present_when": { "const": "user drew a cortex polygon in the UI" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/hardware": {
+          "type": "object",
+          "description": "Per-acquisition hardware snapshot (monitor + camera identity + viewing geometry).",
+          "attributes": {
+            "monitor_name": "VarLenUnicode",
+            "monitor_width_px": "u32",
+            "monitor_height_px": "u32",
+            "monitor_width_cm": "f64",
+            "monitor_height_cm": "f64",
+            "monitor_refresh_hz": "f64",
+            "measured_refresh_hz": "f64",
+            "gamma_corrected": "u8 (0/1)",
+            "camera_model": "VarLenUnicode",
+            "camera_width_px": "u32",
+            "camera_height_px": "u32",
+            "viewing_distance_cm": "f64",
+            "camera_exposure_us": "u32",
+            "camera_binning": "u16",
+            "monitor_rotation_deg": "f64",
+            "target_stimulus_fps": "u32"
+          }
+        },
+        "/acquisition": {
+          "type": "object",
+          "description": "Raw acquisition payload — camera frames, per-frame stimulus state, schedule, quality metrics.",
+          "present_when": "captured by write_oisi (raw acquisition path only)",
+          "subgroups": {
+            "/acquisition/camera": {
+              "type": "object",
+              "properties": {
+                "frames": { "dtype": "u16", "shape": "(T, H, W)", "description": "Raw sensor frames; gzip+fletcher32 chunked (1, H, W)." },
+                "timestamps_sec": { "dtype": "f64", "shape": "(T,)", "description": "Unified seconds from t0 (first frame system timestamp)." },
+                "hardware_timestamps_us": { "dtype": "i64", "shape": "(T,)", "description": "Camera internal-clock timestamps." },
+                "system_timestamps_us": { "dtype": "i64", "shape": "(T,)", "description": "QPC timestamps at frame read." },
+                "sequence_numbers": { "dtype": "i64", "shape": "(T,)" }
+              }
+            },
+            "/acquisition/stimulus": {
+              "type": "object",
+              "properties": {
+                "timestamps_us": { "dtype": "i64", "shape": "(N,)" },
+                "timestamps_sec": { "dtype": "f64", "shape": "(N,)" },
+                "state_ids": { "dtype": "u8", "shape": "(N,)" },
+                "condition_indices": { "dtype": "u8", "shape": "(N,)" },
+                "sweep_indices": { "dtype": "u32", "shape": "(N,)" },
+                "progress": { "dtype": "f32", "shape": "(N,)" },
+                "frame_deltas_us": { "dtype": "i64", "shape": "(N,)" },
+                "dropped_frame_indices": { "dtype": "u32", "shape": "(D,)", "description": "Indices of stimulus frames flagged as drops at capture." }
+              }
+            },
+            "/acquisition/schedule": {
+              "type": "object",
+              "attributes": {
+                "sweep_sequence": "VarLenUnicode (JSON array of direction names)"
+              },
+              "properties": {
+                "sweep_start_us": { "dtype": "i64", "shape": "(K,)" },
+                "sweep_end_us": { "dtype": "i64", "shape": "(K,)" },
+                "sweep_start_sec": { "dtype": "f64", "shape": "(K,)" },
+                "sweep_end_sec": { "dtype": "f64", "shape": "(K,)" }
+              }
+            },
+            "/acquisition/clock_sync": {
+              "type": "object",
+              "description": "Camera↔QPC clock offset at start/end of acquisition (drift detection).",
+              "attributes": {
+                "t0_system_us": "f64",
+                "start_offset_us": "f64",
+                "end_offset_us": "f64",
+                "drift_us": "f64"
+              }
+            },
+            "/acquisition/timing": {
+              "type": "object",
+              "description": "Timing characterization (frame-rate ratios, jitter, phase coverage).",
+              "present_when": "captured when a TimingCharacterization was attached to the acquisition.",
+              "attributes": {
+                "f_cam_hz": "f64",
+                "f_stim_hz": "f64",
+                "t_cam_sec": "f64",
+                "t_stim_sec": "f64",
+                "rate_ratio": "f64",
+                "beat_period_sec": "f64",
+                "phase_increment": "f64",
+                "regime": "VarLenUnicode",
+                "expected_phase_samples": "f64",
+                "phase_coverage": "f64",
+                "onset_uncertainty_sec": "f64",
+                "onset_uncertainty_fraction": "f64",
+                "cam_sample_count": "u32",
+                "stim_sample_count": "u32",
+                "cam_jitter_sec": "f64",
+                "stim_jitter_sec": "f64",
+                "warnings": "VarLenUnicode (JSON array)"
+              }
+            },
+            "/acquisition/quality": {
+              "type": "object",
+              "description": "Per-acquisition timing/drop quality metrics computed at export.",
+              "attributes": {
+                "camera_drops_total": "u32",
+                "stimulus_drops_total": "u32",
+                "acquisition_complete": "u8 (0/1)"
+              },
+              "properties": {
+                "camera_frame_deltas_us": { "dtype": "i64", "shape": "(T-1,)" },
+                "camera_sequence_gaps": { "dtype": "u32", "shape": "(G,)" },
+                "stimulus_frame_deltas_us": { "dtype": "i64", "shape": "(N-1,)" },
+                "stimulus_dropped_indices": { "dtype": "u32", "shape": "(D,)" },
+                "mean_frame_intensity": { "dtype": "f32", "shape": "(T,)" }
+              }
+            }
+          }
+        },
+        "/complex_maps": {
+          "type": "object",
+          "description": "Per-orientation forward/reverse complex maps (output of cycle averaging + DFT). Each is a 2D complex64 array.",
+          "present_when": "after first analysis run OR if file was imported from complex-map data.",
+          "properties": {
+            "azi_fwd": { "dtype": "complex128", "shape": "(H, W)" },
+            "azi_rev": { "dtype": "complex128", "shape": "(H, W)" },
+            "alt_fwd": { "dtype": "complex128", "shape": "(H, W)" },
+            "alt_rev": { "dtype": "complex128", "shape": "(H, W)" }
+          }
+        },
+        "/results": {
+          "type": "object",
+          "description": "Analysis outputs. Each f64 dataset carries MapMeta attrs (palette, units, display_min, display_max, wrap_period, nan_means, zero_means) so renderers do zero inference. Bool masks (cortex_mask, area_borders, contours_*) are stored as u8. area_labels is i32. area_signs is i8 (1D, N patches).",
+          "present_when": "after first analysis run",
+          "datasets": {
+            "azi_phase": { "dtype": "f64", "shape": "(H, W)", "units": "rad", "palette": "hsv_circular", "display_range": "[-π, π]", "wrap_period": "2π" },
+            "alt_phase": { "dtype": "f64", "shape": "(H, W)", "units": "rad", "palette": "hsv_circular", "display_range": "[-π, π]", "wrap_period": "2π" },
+            "azi_phase_degrees": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "hsv_circular", "display_range": "[offset_azi-half, offset_azi+half]", "wrap_period": "azi_angular_range" },
+            "alt_phase_degrees": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "hsv_circular", "display_range": "[offset_alt-half, offset_alt+half]", "wrap_period": "alt_angular_range" },
+            "azi_amplitude": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "hot", "display_range": "finite [min, max]" },
+            "alt_amplitude": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "hot", "display_range": "finite [min, max]" },
+            "vfs": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]", "description": "Raw visual field sign." },
+            "vfs_smoothed": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]" },
+            "vfs_smoothed_thresholded": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]", "zero_means": "below_threshold" },
+            "cortex_mask": { "dtype": "u8 (bool)", "shape": "(H, W)" },
+            "area_labels": { "dtype": "i32", "shape": "(H, W)" },
+            "area_signs": { "dtype": "i8", "shape": "(N,)", "description": "Per-patch sign in [-1, +1] order-matched to area_labels values 1..N." },
+            "area_borders": { "dtype": "u8 (bool)", "shape": "(H, W)" },
+            "eccentricity": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch" },
+            "magnification": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch" },
+            "contours_azi": { "dtype": "u8 (bool)", "shape": "(H, W)" },
+            "contours_alt": { "dtype": "u8 (bool)", "shape": "(H, W)" },
+            "snr_azi": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
+            "snr_alt": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
+            "reliability_azi_fwd": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
+            "reliability_azi_rev": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
+            "reliability_alt_fwd": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
+            "reliability_alt_rev": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" }
+          },
+          "per_dataset_attributes": {
+            "description": "Every f64 /results/<name> dataset carries these MapMeta attributes. Renderers consume them exclusively — adding a new map name needs only an arm in `meta_for_f64` (analysis crate).",
+            "attributes": {
+              "palette": "VarLenUnicode (hsv_circular | jet | hot | binary | categorical)",
+              "units": "VarLenUnicode (rad | deg | unitless | bool | label)",
+              "display_min": "f64",
+              "display_max": "f64",
+              "wrap_period": "f64 (0 = non-circular)",
+              "nan_means": "VarLenUnicode (semantic of NaN, empty if no NaN)",
+              "zero_means": "VarLenUnicode (sentinel meaning for literal 0, empty if 0 is just a value)"
+            }
+          }
+        }
+      }
+    }
+  }
+}
