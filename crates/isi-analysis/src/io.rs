@@ -274,8 +274,8 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
     // tagged-enum shape (`"<stage>": {"method": "..."}` with the
     // stage's tunables also at that level). The current schema is
     // `"<stage>": {"method": "..."}` PLUS sibling tunable subtrees,
-    // so the presence of `"method"` alone doesn't distinguish; we
-    // rely on the moved-field names.
+    // so the presence of `"method"` alone doesn't distinguish — we rely
+    // on the moved-field names OR a flat (non-subtree) tunable sibling.
     const MOVED_FIELDS: &[&str] = &[
         "azi_angular_range",
         "alt_angular_range",
@@ -292,19 +292,31 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
     if MOVED_FIELDS.iter().any(|f| obj.contains_key(*f)) {
         return Ok(true);
     }
-    // Detect legacy tagged-enum shape: a stage value that's a JSON
-    // object containing key "method" but no nested variant subtree.
-    // The current schema nests tunables under <stage>.<variant>.<field>,
-    // so a stage value that has `method` AND no sibling object keys
-    // (other than `method`) was almost certainly written by the
-    // legacy serde-derived AnalysisParams.
+    // Detect the legacy tagged-enum shape by its *distinguishing* marker:
+    // a FLAT tunable sibling of `method` — a non-object (scalar) value
+    // carried directly at the stage level. The legacy serde-derived
+    // AnalysisParams wrote tunables flat
+    // (`{"method": "x", "sigma_px": 2.5}`); the current schema nests every
+    // variant's tunables under that variant's object subtree
+    // (`{"method": "x", "x": {"sigma_px": 2.5}, "y": {…}}` — a stage can
+    // carry MULTIPLE variant subtrees, only one of which is active). So a
+    // stage is legacy iff it has `method` and any non-`method` sibling
+    // whose value is NOT an object (a scalar tunable).
     //
-    // Conservative check: if any stage value has only a "method" key,
-    // it's legacy.
+    // Method-only stages (`{"method": "x"}`) are NOT a marker: tunable-less
+    // methods (cycle_combine, vfs_computation, quality_gate, eccentricity)
+    // serialize to exactly that shape in the *current* schema, so flagging
+    // them as legacy would falsely reject valid files (and break
+    // re-analysis of already-analyzed files).
     for (_stage, stage_val) in obj.iter() {
         if let Some(stage_obj) = stage_val.as_object() {
-            if stage_obj.contains_key("method") && stage_obj.len() == 1 {
-                return Ok(true);
+            if stage_obj.contains_key("method") {
+                let has_flat_tunable = stage_obj
+                    .iter()
+                    .any(|(k, v)| k != "method" && !v.is_object());
+                if has_flat_tunable {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -1710,16 +1722,89 @@ mod tests {
     }
 
     #[test]
-    fn is_pre_2026_analysis_params_old_schema_tagged_enum_returns_true() {
-        // Legacy serde-derived AnalysisParams: stage value has ONLY a
-        // `method` key (tunables either absent or carried at the same
-        // level instead of nested under a variant subtree).
-        let tmp = TempFile::new("pre2026_old_tagged");
+    fn is_pre_2026_analysis_params_old_schema_flat_tunable_returns_true() {
+        // Legacy serde-derived AnalysisParams: a tunable carried FLAT at the
+        // stage level (sibling of `method`) rather than nested under a
+        // variant subtree. The flat sibling is the distinguishing marker.
+        let tmp = TempFile::new("pre2026_old_flat");
         create(tmp.path(), "test").unwrap();
         let stale = serde_json::json!({
-            "cycle_combine": { "method": "marshel_garrett2011_delay_subtraction" }
+            "phase_smoothing": {
+                "method": "open_isi_amp_weighted_phasor",
+                "sigma_px": 2.5
+            }
         });
         write_analysis_params_attr(tmp.path(), &stale).unwrap();
         assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), true);
+    }
+
+    #[test]
+    fn current_schema_tunable_less_method_only_stage_is_not_pre_2026() {
+        // Regression for a detector false-positive: tunable-less methods
+        // (cycle_combine, vfs_computation, quality_gate, eccentricity)
+        // serialize as method-only in the CURRENT schema. The detector must
+        // NOT flag these as legacy, or re-analysis of valid files would be
+        // wrongly refused with "run migrate first".
+        let tmp = TempFile::new("pre2026_method_only");
+        create(tmp.path(), "test").unwrap();
+        let tree = serde_json::json!({
+            "cycle_combine": { "method": "marshel_garrett2011_delay_subtraction" },
+            "vfs_computation": { "method": "open_isi_chain_rule_phasor_gradient" }
+        });
+        write_analysis_params_attr(tmp.path(), &tree).unwrap();
+        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+    }
+
+    /// End-to-end: a pre-2026 `.oisi` → detect → migrate → write back →
+    /// strict reload → bridge. This is the only test exercising the full
+    /// chain, and it guards the interaction with the now-fail-loud
+    /// `from_json_tree` reader: a migrated tree MUST reconstruct into an
+    /// `AnalysisParams` without missing/unknown-key errors.
+    #[test]
+    fn pre_2026_file_migrates_then_reconstructs_for_analysis() {
+        use openisi_params::{PersistTarget, RegistrySnapshot};
+
+        let tmp = TempFile::new("migrate_e2e");
+        create(tmp.path(), "raw_acquisition").unwrap();
+
+        // Old-schema /analysis_params: a moved root field (dropped on
+        // migrate) + a tagged-enum stage carrying a stage-level tunable.
+        let old = serde_json::json!({
+            "azi_angular_range": 120.0,
+            "phase_smoothing": {
+                "method": "open_isi_amp_weighted_phasor",
+                "sigma_px": 2.5
+            }
+        });
+        write_analysis_params_attr(tmp.path(), &old).unwrap();
+        assert!(
+            is_pre_2026_analysis_params(tmp.path()).unwrap(),
+            "old-schema file should be detected as pre-2026"
+        );
+
+        // Migrate: translate + write back.
+        let new_tree = crate::migrate::translate_pre_2026_analysis_params(&old).unwrap();
+        write_analysis_params_attr(tmp.path(), &new_tree).unwrap();
+        assert!(
+            !is_pre_2026_analysis_params(tmp.path()).unwrap(),
+            "migrated file should be current-schema"
+        );
+
+        // Reconstruct through the FAIL-LOUD reader → bridge. If migration
+        // produced an incomplete or unknown-keyed tree, from_json_tree
+        // would error here.
+        let tree = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
+        let snap = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
+            .expect("migrated tree must pass the strict reader");
+        // Constructing AnalysisParams via the bridge == the file is analyzable.
+        let _params = crate::bridge::analysis_params_from_snapshot(&snap);
+
+        // The migrated override survived the whole round-trip; the moved
+        // field was dropped.
+        assert_eq!(
+            tree["phase_smoothing"]["open_isi_amp_weighted_phasor"]["sigma_px"],
+            serde_json::json!(2.5)
+        );
+        assert!(tree.get("azi_angular_range").is_none());
     }
 }

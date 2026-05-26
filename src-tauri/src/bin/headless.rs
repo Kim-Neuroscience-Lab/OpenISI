@@ -1671,7 +1671,7 @@ fn draw_text(
 ///    dropped — they now live in `/experiment_params` and
 ///    `/rig_params`, captured at acquisition time.
 ///
-/// **The translation table is hardcoded here** and is the ONLY place
+/// **The translation lives in `isi_analysis::migrate`** — the ONLY place
 /// the old schema's field names appear in the codebase post-refactor.
 /// Defaults for missing tunables come from `PARAM_DEFS` (loaded into a
 /// default `Registry`), not from per-method consts.
@@ -1697,7 +1697,7 @@ fn cmd_migrate(args: &[String]) -> AppResult<()> {
         return Ok(());
     }
 
-    let new_tree = translate_pre_2026_analysis_params(&old_tree)?;
+    let new_tree = isi_analysis::migrate::translate_pre_2026_analysis_params(&old_tree)?;
     isi_analysis::io::write_analysis_params_attr(&path, &new_tree)?;
 
     println!("Migrated /analysis_params on {}", path.display());
@@ -1705,78 +1705,6 @@ fn cmd_migrate(args: &[String]) -> AppResult<()> {
     println!("  new shape: Registry tree (tunables nested under variant subtrees)");
     println!("  defaults for unset tunables sourced from PARAM_DEFS");
     Ok(())
-}
-
-/// Translate a pre-2026 `/analysis_params` JSON tree into the current
-/// registry-tree shape. Pure function; takes the old tree, returns the
-/// new tree. Default values for any tunable not present in the old
-/// tree come from `PARAM_DEFS` via a fresh `Registry` snapshot.
-fn translate_pre_2026_analysis_params(
-    old: &serde_json::Value,
-) -> AppResult<serde_json::Value> {
-    // Base = registry defaults. We overlay the old tree's stage methods
-    // and tunables on top of this.
-    let migrate_dir = std::path::Path::new("/tmp/migrate");
-    let default_registry = openisi_params::Registry::new(migrate_dir, migrate_dir);
-    let mut new_tree = default_registry
-        .snapshot()
-        .to_json_for_target(openisi_params::PersistTarget::Analysis);
-
-    let Some(old_obj) = old.as_object() else {
-        return Err(AppError::Validation(
-            "/analysis_params is not a JSON object — cannot migrate".into(),
-        ));
-    };
-
-    // The set of stage names. Root-level keys that aren't stage names
-    // (e.g. moved fields like `azi_angular_range`) are silently dropped.
-    const STAGES: &[&str] = &[
-        "cycle_combine",
-        "phase_smoothing",
-        "vfs_computation",
-        "sign_map_smoothing",
-        "cortex_source",
-        "patch_threshold",
-        "patch_extraction",
-        "patch_refinement",
-        "quality_gate",
-        "eccentricity",
-    ];
-
-    let new_obj = new_tree.as_object_mut().expect("registry tree is always an object");
-
-    for stage in STAGES {
-        let Some(old_stage) = old_obj.get(*stage).and_then(|v| v.as_object()) else {
-            continue; // stage absent → keep the default
-        };
-        let Some(method) = old_stage.get("method").and_then(|v| v.as_str()) else {
-            continue; // malformed; keep the default
-        };
-
-        // Build or replace new[stage] entirely so missing-from-old
-        // fields fall through to PARAM_DEFS defaults that are already
-        // in new_tree.
-        let stage_entry = new_obj
-            .entry((*stage).to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        let Some(stage_obj) = stage_entry.as_object_mut() else { continue; };
-
-        // Override method.
-        stage_obj.insert("method".into(), serde_json::Value::String(method.to_string()));
-
-        // Move tunables into the variant subtree.
-        let variant_entry = stage_obj
-            .entry(method.to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        let Some(variant_obj) = variant_entry.as_object_mut() else { continue; };
-
-        for (k, v) in old_stage.iter() {
-            if k == "method" { continue; }
-            variant_obj.insert(k.clone(), v.clone());
-        }
-    }
-
-    Ok(new_tree)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2588,108 +2516,3 @@ fn write_meta_json(
     }
 }
 
-#[cfg(test)]
-mod migrate_tests {
-    use super::translate_pre_2026_analysis_params;
-    use serde_json::json;
-
-    #[test]
-    fn translates_tagged_enum_with_tunable_to_variant_subtree() {
-        // Pre-2026 shape: per-stage tagged enum, tunable at stage level.
-        let old = json!({
-            "phase_smoothing": {
-                "method": "open_isi_amp_weighted_phasor",
-                "sigma_px": 2.5
-            }
-        });
-        let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // New shape: tunable nested under variant subtree.
-        assert_eq!(
-            new["phase_smoothing"]["method"],
-            json!("open_isi_amp_weighted_phasor")
-        );
-        assert_eq!(
-            new["phase_smoothing"]["open_isi_amp_weighted_phasor"]["sigma_px"],
-            json!(2.5)
-        );
-    }
-
-    #[test]
-    fn missing_tunable_falls_back_to_param_defs_default() {
-        // Old shape with method present but tunable absent (was Option::None).
-        let old = json!({
-            "phase_smoothing": { "method": "open_isi_amp_weighted_phasor" }
-        });
-        let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // PARAM_DEFS default for sigma_px is 1.0 (Allen phaseMapFilterSigma).
-        assert_eq!(
-            new["phase_smoothing"]["open_isi_amp_weighted_phasor"]["sigma_px"],
-            json!(1.0)
-        );
-    }
-
-    #[test]
-    fn root_level_moved_fields_are_dropped() {
-        // Very-old shape: stimulus-geometry fields at root that have
-        // since moved to /experiment_params.
-        let old = json!({
-            "azi_angular_range": 120.0,
-            "rotation_k": 2,
-            "cycle_combine": { "method": "marshel_garrett2011_delay_subtraction" }
-        });
-        let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // No azi_angular_range at root of new tree.
-        assert!(new.get("azi_angular_range").is_none());
-        assert!(new.get("rotation_k").is_none());
-        // cycle_combine still migrated.
-        assert_eq!(
-            new["cycle_combine"]["method"],
-            json!("marshel_garrett2011_delay_subtraction")
-        );
-    }
-
-    #[test]
-    fn stage_absent_from_old_keeps_param_defs_defaults() {
-        // Old tree contains only one stage; other stages must come
-        // from PARAM_DEFS defaults in the new tree.
-        let old = json!({
-            "sign_map_smoothing": { "method": "gaussian", "sigma_um": 90.0 }
-        });
-        let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // sign_map_smoothing migrated.
-        assert_eq!(
-            new["sign_map_smoothing"]["gaussian"]["sigma_um"],
-            json!(90.0)
-        );
-        // patch_threshold should be PARAM_DEFS default (Garrett k=1.5).
-        assert_eq!(
-            new["patch_threshold"]["method"],
-            json!("garrett2014_sigma_scaled")
-        );
-        assert_eq!(
-            new["patch_threshold"]["garrett2014_sigma_scaled"]["k"],
-            json!(1.5)
-        );
-    }
-
-    #[test]
-    fn multi_field_variant_migrates_all_tunables() {
-        // patch_refinement.allen_zhuang2017_split_merge — 8 tunables.
-        let old = json!({
-            "patch_refinement": {
-                "method": "allen_zhuang2017_split_merge",
-                "split_overlap_thr": 1.5,
-                "merge_overlap_thr": 0.05
-            }
-        });
-        let new = translate_pre_2026_analysis_params(&old).unwrap();
-        let subtree = &new["patch_refinement"]["allen_zhuang2017_split_merge"];
-        // Overridden values come from old.
-        assert_eq!(subtree["split_overlap_thr"], json!(1.5));
-        assert_eq!(subtree["merge_overlap_thr"], json!(0.05));
-        // Unset fields take PARAM_DEFS defaults.
-        assert_eq!(subtree["split_local_min_cut_step"], json!(5.0));
-        assert_eq!(subtree["visual_space_close_iter"], json!(15));
-        assert_eq!(subtree["small_patch_thr"], json!(100));
-    }
-}

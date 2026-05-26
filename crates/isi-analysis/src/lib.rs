@@ -13,6 +13,7 @@ pub mod methods;
 pub mod segmentation;
 pub mod io;
 pub mod mat5;
+pub mod migrate;
 pub mod params;
 
 use ndarray::Array2;
