@@ -162,6 +162,81 @@ impl Session {
 }
 
 // =============================================================================
+// Cross-launch persistence
+// =============================================================================
+
+/// The subset of session state that persists across launches — durable
+/// user intent, not volatile hardware/measurement state. Saved to
+/// `<user_dir>/session.json` on exit and restored on launch.
+///
+/// **Excluded by design** (must be re-established each launch): camera
+/// connection, display validation, timing characterization (all re-measured
+/// per session), and the `is_acquiring` flag. Restoring those would assert
+/// state that may no longer hold.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistedSession {
+    #[serde(default)]
+    pub animal_id: String,
+    #[serde(default)]
+    pub notes: String,
+    /// The display that was selected, by identity. Re-selected on launch
+    /// only if a currently-detected monitor still matches.
+    #[serde(default)]
+    pub selected_display: Option<MonitorInfo>,
+    /// The `.oisi` file that was active. Re-opened on launch only if it
+    /// still exists on disk.
+    #[serde(default)]
+    pub active_oisi_path: Option<PathBuf>,
+}
+
+/// Filename for the persisted session, under the user-config dir.
+pub const SESSION_FILE: &str = "session.json";
+
+impl PersistedSession {
+    /// Capture the durable subset from a live `Session` + active file path.
+    pub fn capture(session: &Session, active_oisi_path: Option<&std::path::Path>) -> Self {
+        Self {
+            animal_id: session.animal_id.clone(),
+            notes: session.notes.clone(),
+            selected_display: session.selected_display.clone(),
+            active_oisi_path: active_oisi_path.map(|p| p.to_path_buf()),
+        }
+    }
+
+    /// Load from `<dir>/session.json`. Returns `None` (logging the reason)
+    /// when the file is absent or unreadable — resume is a best-effort
+    /// convenience, so a missing/corrupt session starts fresh rather than
+    /// blocking startup. This is UI state, NOT scientific provenance.
+    pub fn load(dir: &std::path::Path) -> Option<Self> {
+        let path = dir.join(SESSION_FILE);
+        let text = std::fs::read_to_string(&path).ok()?;
+        match serde_json::from_str::<Self>(&text) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("[openisi] ignoring unreadable {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    /// Write to `<dir>/session.json`, creating `dir` if needed.
+    pub fn save(&self, dir: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let text = serde_json::to_string_pretty(self)
+            .map_err(std::io::Error::other)?;
+        std::fs::write(dir.join(SESSION_FILE), text)
+    }
+
+    /// Whether a saved display is still among the currently-detected
+    /// monitors (matched by index + name). Pure helper for restore.
+    pub fn display_still_present(saved: &MonitorInfo, monitors: &[MonitorInfo]) -> bool {
+        monitors
+            .iter()
+            .any(|m| m.index == saved.index && m.name == saved.name)
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -244,5 +319,46 @@ mod tests {
         // Changing display should clear validation
         session.set_selected_display(test_monitor());
         assert!(!session.display_refresh_validated());
+    }
+
+    #[test]
+    fn persisted_session_round_trips() {
+        let dir = std::env::temp_dir().join("openisi_persist_test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut session = Session::new();
+        session.animal_id = "mouse_42".into();
+        session.notes = "left hemisphere".into();
+        session.set_selected_display(test_monitor());
+
+        let active = PathBuf::from("/data/run1.oisi");
+        let p = PersistedSession::capture(&session, Some(active.as_path()));
+        p.save(&dir).expect("save session");
+
+        let loaded = PersistedSession::load(&dir).expect("load session");
+        assert_eq!(loaded.animal_id, "mouse_42");
+        assert_eq!(loaded.notes, "left hemisphere");
+        assert_eq!(loaded.active_oisi_path, Some(active));
+        assert_eq!(loaded.selected_display.unwrap().name, "Test Monitor");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persisted_session_load_missing_is_none() {
+        let dir = std::env::temp_dir().join("openisi_persist_absent_xyz");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(PersistedSession::load(&dir).is_none());
+    }
+
+    #[test]
+    fn display_still_present_matches_by_index_and_name() {
+        let m = test_monitor();
+        let monitors = vec![m.clone()];
+        assert!(PersistedSession::display_still_present(&m, &monitors));
+        assert!(!PersistedSession::display_still_present(&m, &[]));
+        let mut renamed = m.clone();
+        renamed.name = "Other".into();
+        assert!(!PersistedSession::display_still_present(&renamed, &monitors));
     }
 }

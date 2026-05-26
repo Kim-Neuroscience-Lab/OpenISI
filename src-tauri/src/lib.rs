@@ -173,6 +173,43 @@ fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
             }
             app_state.monitors = monitors;
 
+            // ── Restore the last session (best-effort, from user_dir) ──
+            // Durable user intent only: animal_id/notes always; the selected
+            // display only if a matching monitor is still present; the active
+            // .oisi only if it still exists. Validation / camera / timing are
+            // deliberately NOT restored — they must be re-established. A
+            // missing/corrupt session file simply starts fresh (UI state, not
+            // provenance), so this is best-effort with transparent logging.
+            if let Some(saved) = crate::session::PersistedSession::load(&layout.user_dir) {
+                app_state.session.animal_id = saved.animal_id;
+                app_state.session.notes = saved.notes;
+                if let Some(disp) = saved.selected_display {
+                    if crate::session::PersistedSession::display_still_present(
+                        &disp,
+                        &app_state.monitors,
+                    ) {
+                        app_state.session.selected_display = Some(disp);
+                        // display_validation intentionally left None — re-validate.
+                    } else {
+                        eprintln!(
+                            "[openisi] saved display '{}' no longer present — not restored",
+                            disp.name
+                        );
+                    }
+                }
+                if let Some(p) = saved.active_oisi_path {
+                    if p.exists() {
+                        app_state.active_oisi_path = Some(p);
+                    } else {
+                        eprintln!(
+                            "[openisi] last active file {} no longer exists — not restored",
+                            p.display()
+                        );
+                    }
+                }
+                eprintln!("[openisi] restored previous session");
+            }
+
             // Spawn camera thread (direct PCO SDK via FFI). System-tuning
             // snapshots are read once; no runtime command mutates them.
             let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
@@ -289,6 +326,20 @@ fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
                 eprintln!("[openisi] shutting down...");
                 if let Some(state) = app_handle.try_state::<crate::commands::SharedState>() {
                     if let Ok(s) = state.lock() {
+                        // Persist the durable session for next-launch resume.
+                        // user_dir comes from the registry; lock briefly and release.
+                        let user_dir = s.registry.lock().ok().map(|r| r.user_dir().to_path_buf());
+                        if let Some(dir) = user_dir {
+                            let persisted = crate::session::PersistedSession::capture(
+                                &s.session,
+                                s.active_oisi_path.as_deref(),
+                            );
+                            if let Err(e) = persisted.save(&dir) {
+                                eprintln!("[openisi] failed to save session: {e}");
+                            } else {
+                                eprintln!("[openisi] session saved to {}", dir.display());
+                            }
+                        }
                         if let Some(ref tx) = s.threads.camera_tx {
                             let _ = tx.send(crate::messages::CameraCmd::Shutdown);
                         }
