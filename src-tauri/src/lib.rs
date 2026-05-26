@@ -39,26 +39,12 @@ fn try_run() -> AppResult<()> {
         .map(|p| p.to_path_buf())
         .ok_or_else(|| AppError::Config("current executable has no parent directory".into()))?;
 
-    let config_dir = find_config_dir(&exe_dir)?;
-
-    // Behavior-preserving placeholder: shipped == user == config_dir, as
-    // before the two-layer split. Proper dev/prod resolution (Tauri
-    // resource_dir for shipped, app_config_dir for the user layer) is a
-    // follow-up step.
-    let mut registry = Registry::new(&config_dir, &config_dir);
-    registry.load_rig().map_err(|e| AppError::Config(format!(
-        "load rig params from {}: {e}", config_dir.display()
-    )))?;
-    // analysis.toml is no longer loaded into the primitive registry —
-    // it now uses a per-stage method-enum shape (`AnalysisParams`
-    // loaded via serde, see `isi_analysis::methods`). The Tauri UI
-    // reads/writes analysis params via commands that target the
-    // active .oisi file (task #56) or `config/analysis.toml` directly.
-    registry.load_experiment().map_err(|e| AppError::Config(format!(
-        "load experiment params from {}: {e}", config_dir.display()
-    )))?;
-
-    start_tauri(registry)
+    // Registry construction + config-dir resolution now happen inside the
+    // Tauri `setup()` callback, where `app.path()` (the platform-standard
+    // resolver for the bundle resource dir and the per-user app-config dir)
+    // is available. `exe_dir` is threaded through for the dev-mode repo
+    // `config` lookup, which is exe-relative rather than Tauri-pathed.
+    start_tauri(exe_dir)
 }
 
 /// Build the list of candidate config directories relative to the given exe directory.
@@ -92,98 +78,146 @@ fn find_config_dir(exe_dir: &std::path::Path) -> AppResult<std::path::PathBuf> {
     )))
 }
 
-fn start_tauri(registry: Registry) -> AppResult<()> {
-    // Create channels for stimulus thread
-    let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
-    let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
-
-    // Create channels for camera thread
-    let (cam_cmd_tx, cam_cmd_rx) = crossbeam_channel::unbounded();
-    let (cam_evt_tx, cam_evt_rx) = crossbeam_channel::unbounded();
-
-    // Build app state
-    let mut app_state = AppState::new(registry);
-
-    app_state.threads.stimulus_tx = Some(stim_cmd_tx);
-    app_state.threads.stimulus_rx = Some(stim_evt_rx);
-    app_state.threads.camera_tx = Some(cam_cmd_tx);
-    app_state.threads.camera_rx = Some(cam_evt_rx);
-
-    // Detect monitors at startup
-    let monitors = monitor::detect_monitors();
-    eprintln!("[openisi] Detected {} monitors", monitors.len());
-    for m in &monitors {
-        eprintln!(
-            "  [{}] {} {}x{} @{}Hz ({:.1}x{:.1}cm) at ({},{})",
-            m.index, m.name, m.width_px, m.height_px, m.refresh_hz,
-            m.width_cm, m.height_cm, m.position.0, m.position.1
-        );
-    }
-    app_state.monitors = monitors;
-
-    // Spawn camera thread (direct PCO SDK via FFI).
-    // The camera thread receives system tuning values at startup.
-    // Invariant: no command modifies system tuning at runtime, so these snapshots
-    // stay in sync for the lifetime of the thread.
-    let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
-         cam_frame_send_interval_ms, cam_poll_interval_ms) = {
-        let reg = error::lock_state(&app_state.registry, "registry init")?;
-        (
-            reg.camera_first_frame_timeout_ms(),
-            reg.camera_first_frame_poll_ms(),
-            reg.camera_frame_send_interval_ms(),
-            reg.camera_poll_interval_ms(),
-        )
-    };
-    std::thread::Builder::new()
-        .name("camera".into())
-        .spawn(move || {
-            camera_thread::run(
-                cam_cmd_rx, cam_evt_tx,
-                cam_first_frame_timeout_ms,
-                cam_first_frame_poll_ms,
-                cam_frame_send_interval_ms,
-                cam_poll_interval_ms,
-            );
-        })
-        .map_err(|e| AppError::Config(format!("spawn camera thread: {e}")))?;
-
-    // Stimulus thread is spawned on-demand when a display is selected.
-    app_state.threads.stim_cmd_rx = Some(stim_cmd_rx);
-    app_state.threads.stim_evt_tx = Some(stim_evt_tx);
-
-    let shared_state = Arc::new(Mutex::new(app_state));
-    let shared_state_for_shutdown = shared_state.clone();
+fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
+    use tauri::Manager;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(shared_state.clone())
         .setup(move |app| {
-            // Inject the Tauri app handle into the registry for event emission.
-            // Lock failures and thread-spawn failures here would mean we
-            // can't run at all; surface them through the Tauri setup
-            // error (Box<dyn Error>) which becomes a clean startup error.
-            {
-                let state = shared_state.lock()
-                    .map_err(|_| Box::<dyn std::error::Error>::from("state lock poisoned at setup"))?;
-                let mut reg = state.registry.lock()
-                    .map_err(|_| Box::<dyn std::error::Error>::from("registry lock poisoned at setup"))?;
-                reg.set_observer(Box::new(
-                    crate::params::observer::TauriParamObserver::new(app.handle().clone()),
-                ));
+            // ── Resolve config directories properly via Tauri's path API ──
+            // The registry is constructed HERE (not before the app) because
+            // `app.path()` — the platform-standard resolver for the bundle
+            // resource dir and the per-user app-config dir — only exists once
+            // the app does. Policy lives in `config_paths` (pure, tested);
+            // here we supply the base dirs and surface the resolved choice.
+            let is_dev = tauri::is_dev();
+            let profile = config_paths::Profile::resolve(is_dev)
+                .map_err(|e| Box::<dyn std::error::Error>::from(format!("config profile: {e}")))?;
+            let repo_config = find_config_dir(&exe_dir).ok();
+            let resource_config = app.path().resource_dir().ok().map(|p| p.join("config"));
+            let app_config = app.path().app_config_dir().ok();
+            let layout = config_paths::resolve_layout(
+                is_dev,
+                profile,
+                repo_config.as_deref(),
+                resource_config.as_deref(),
+                app_config.as_deref(),
+            )
+            .map_err(|e| Box::<dyn std::error::Error>::from(format!("resolve config dirs: {e}")))?;
+            eprintln!(
+                "[openisi] config profile={} shipped={} user={}",
+                profile.as_str(),
+                layout.shipped_dir.display(),
+                layout.user_dir.display()
+            );
+
+            // ── Build + load the registry ──
+            let mut registry = Registry::new(&layout.shipped_dir, &layout.user_dir);
+            registry.load_rig().map_err(|e| Box::<dyn std::error::Error>::from(
+                format!("load rig params from {}: {e}", layout.shipped_dir.display())))?;
+            registry.load_experiment().map_err(|e| Box::<dyn std::error::Error>::from(
+                format!("load experiment params from {}: {e}", layout.shipped_dir.display())))?;
+
+            // ── First-run default data directory ──
+            // A deliberate, visible default (<Documents>/OpenISI) persisted
+            // explicitly into the user layer and surfaced in the UI — not an
+            // ongoing silent fallback.
+            if registry.data_directory().is_empty() {
+                if let Some(default_dir) =
+                    config_paths::default_data_dir(app.path().document_dir().ok().as_deref())
+                {
+                    std::fs::create_dir_all(&default_dir).map_err(|e| {
+                        Box::<dyn std::error::Error>::from(format!(
+                            "create default data dir {}: {e}", default_dir.display()))
+                    })?;
+                    registry
+                        .set(
+                            crate::params::ParamId::DataDirectory,
+                            crate::params::ParamValue::String(default_dir.to_string_lossy().into_owned()),
+                        )
+                        .map_err(|e| Box::<dyn std::error::Error>::from(
+                            format!("set default data dir: {e}")))?;
+                    registry.save_rig().map_err(|e| Box::<dyn std::error::Error>::from(
+                        format!("persist default data dir to {}: {e}", layout.user_dir.display())))?;
+                    eprintln!("[openisi] data directory defaulted to {}", default_dir.display());
+                }
             }
 
-            // Start the event forwarding loop — bridges crossbeam channels to Tauri events.
+            // ── Param-change observer for IPC ──
+            registry.set_observer(Box::new(
+                crate::params::observer::TauriParamObserver::new(app.handle().clone()),
+            ));
+
+            // ── Channels ──
+            let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
+            let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
+            let (cam_cmd_tx, cam_cmd_rx) = crossbeam_channel::unbounded();
+            let (cam_evt_tx, cam_evt_rx) = crossbeam_channel::unbounded();
+
+            // ── App state ──
+            let mut app_state = AppState::new(registry);
+            app_state.threads.stimulus_tx = Some(stim_cmd_tx);
+            app_state.threads.stimulus_rx = Some(stim_evt_rx);
+            app_state.threads.camera_tx = Some(cam_cmd_tx);
+            app_state.threads.camera_rx = Some(cam_evt_rx);
+
+            // Detect monitors at startup.
+            let monitors = monitor::detect_monitors();
+            eprintln!("[openisi] Detected {} monitors", monitors.len());
+            for m in &monitors {
+                eprintln!(
+                    "  [{}] {} {}x{} @{}Hz ({:.1}x{:.1}cm) at ({},{})",
+                    m.index, m.name, m.width_px, m.height_px, m.refresh_hz,
+                    m.width_cm, m.height_cm, m.position.0, m.position.1
+                );
+            }
+            app_state.monitors = monitors;
+
+            // Spawn camera thread (direct PCO SDK via FFI). System-tuning
+            // snapshots are read once; no runtime command mutates them.
+            let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
+                 cam_frame_send_interval_ms, cam_poll_interval_ms) = {
+                let reg = app_state.registry.lock().map_err(|_| {
+                    Box::<dyn std::error::Error>::from("registry lock poisoned at camera init")
+                })?;
+                (
+                    reg.camera_first_frame_timeout_ms(),
+                    reg.camera_first_frame_poll_ms(),
+                    reg.camera_frame_send_interval_ms(),
+                    reg.camera_poll_interval_ms(),
+                )
+            };
+            std::thread::Builder::new()
+                .name("camera".into())
+                .spawn(move || {
+                    camera_thread::run(
+                        cam_cmd_rx, cam_evt_tx,
+                        cam_first_frame_timeout_ms,
+                        cam_first_frame_poll_ms,
+                        cam_frame_send_interval_ms,
+                        cam_poll_interval_ms,
+                    );
+                })
+                .map_err(|e| Box::<dyn std::error::Error>::from(
+                    format!("spawn camera thread: {e}")))?;
+
+            // Stimulus thread is spawned on-demand when a display is selected.
+            app_state.threads.stim_cmd_rx = Some(stim_cmd_rx);
+            app_state.threads.stim_evt_tx = Some(stim_evt_tx);
+
+            // ── Manage state ──
+            let shared_state = Arc::new(Mutex::new(app_state));
+            app.manage(shared_state.clone());
+
+            // ── Event forwarder: bridges crossbeam channels to Tauri events ──
             let handle = app.handle().clone();
-            let state_for_events = shared_state.clone();
             std::thread::Builder::new()
                 .name("event_forwarder".into())
                 .spawn(move || {
-                    events::run_event_forwarder(handle, state_for_events);
+                    events::run_event_forwarder(handle, shared_state);
                 })
                 .map_err(|e| Box::<dyn std::error::Error>::from(
-                    format!("spawn event forwarder thread: {e}")
-                ))?;
+                    format!("spawn event forwarder thread: {e}")))?;
 
             Ok(())
         })
@@ -246,20 +280,21 @@ fn start_tauri(registry: Registry) -> AppResult<()> {
         ])
         .build(tauri::generate_context!())
         .map_err(|e| AppError::Config(format!("build Tauri application: {e}")))?
-        .run(move |_app, event| {
+        .run(move |app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                // Send shutdown commands to background threads so they clean up hardware.
-                // Lock failure here is non-fatal — we still try to shut down threads
-                // via channel sends. Channel send failures during shutdown are
-                // expected (threads may have already exited) and intentionally
-                // ignored at this point.
+                // Send shutdown commands to background threads so they clean up
+                // hardware. State is managed inside setup(), so fetch it from the
+                // app handle. Lock/send failures during shutdown are expected
+                // (threads may have already exited) and intentionally ignored.
                 eprintln!("[openisi] shutting down...");
-                if let Ok(state) = shared_state_for_shutdown.lock() {
-                    if let Some(ref tx) = state.threads.camera_tx {
-                        let _ = tx.send(crate::messages::CameraCmd::Shutdown);
-                    }
-                    if let Some(ref tx) = state.threads.stimulus_tx {
-                        let _ = tx.send(crate::messages::StimulusCmd::Shutdown);
+                if let Some(state) = app_handle.try_state::<crate::commands::SharedState>() {
+                    if let Ok(s) = state.lock() {
+                        if let Some(ref tx) = s.threads.camera_tx {
+                            let _ = tx.send(crate::messages::CameraCmd::Shutdown);
+                        }
+                        if let Some(ref tx) = s.threads.stimulus_tx {
+                            let _ = tx.send(crate::messages::StimulusCmd::Shutdown);
+                        }
                     }
                 }
                 // Give threads time to close hardware handles.
