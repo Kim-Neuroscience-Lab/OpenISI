@@ -421,37 +421,10 @@ impl Registry {
 /// Convert a `ParamValue` to a `serde_json::Value` for event payloads
 /// and the IPC descriptor surface. Public so `src-tauri/src/params/
 /// commands.rs` (the Tauri IPC layer) can format individual values
-/// without reaching into private internals.
+/// without reaching into private internals. Delegates to the single
+/// canonical converter in [`crate::param_json`].
 pub fn param_value_to_json(value: &ParamValue) -> serde_json::Value {
-    fn enum_str<T: serde::Serialize>(v: &T) -> serde_json::Value {
-        let s = serde_json::to_string(v).unwrap_or_default();
-        serde_json::Value::String(s.trim_matches('"').to_string())
-    }
-    match value {
-        ParamValue::Bool(v) => serde_json::json!(*v),
-        ParamValue::U16(v) => serde_json::json!(*v),
-        ParamValue::U32(v) => serde_json::json!(*v),
-        ParamValue::I32(v) => serde_json::json!(*v),
-        ParamValue::Usize(v) => serde_json::json!(*v),
-        ParamValue::F64(v) => serde_json::json!(*v),
-        ParamValue::String(v) => serde_json::json!(v),
-        ParamValue::StringVec(v) => serde_json::json!(v),
-        ParamValue::Envelope(v) => enum_str(v),
-        ParamValue::Carrier(v) => enum_str(v),
-        ParamValue::Projection(v) => enum_str(v),
-        ParamValue::Structure(v) => enum_str(v),
-        ParamValue::Order(v) => enum_str(v),
-        ParamValue::CycleCombine(v) => enum_str(v),
-        ParamValue::PhaseSmoothing(v) => enum_str(v),
-        ParamValue::VfsComputation(v) => enum_str(v),
-        ParamValue::SignMapSmoothing(v) => enum_str(v),
-        ParamValue::CortexSource(v) => enum_str(v),
-        ParamValue::PatchThreshold(v) => enum_str(v),
-        ParamValue::PatchExtraction(v) => enum_str(v),
-        ParamValue::PatchRefinement(v) => enum_str(v),
-        ParamValue::QualityGate(v) => enum_str(v),
-        ParamValue::Eccentricity(v) => enum_str(v),
-    }
+    crate::param_json::to_json(value)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

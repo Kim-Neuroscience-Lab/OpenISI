@@ -6,12 +6,7 @@
 
 use std::path::Path;
 
-use super::{
-    Carrier, CortexSourceKind, CycleCombineKind, EccentricityKind, Envelope, ExperimentMeta,
-    Order, ParamId, ParamValue, PatchExtractionKind, PatchRefinementKind, PatchThresholdKind,
-    PersistTarget, PhaseSmoothingKind, Projection, QualityGateKind, SignMapSmoothingKind,
-    Structure, VfsComputationKind, PARAM_DEFS,
-};
+use super::{ExperimentMeta, ParamId, ParamValue, PersistTarget, PARAM_DEFS};
 use super::registry::Registry;
 use crate::error::{ParamsError, ParamsResult};
 
@@ -376,155 +371,23 @@ fn insert_at_path(
     Ok(())
 }
 
-/// Convert a TOML value to a ParamValue based on the parameter's known type.
-///
-/// Errors are `ParamsError::Config` (the value's shape doesn't match
-/// what the parameter expects) — no `Result<_, String>` exemption.
+/// Convert a TOML value to a `ParamValue`. Bridges TOML → JSON (both are
+/// serde data formats) and delegates to the single canonical converter in
+/// [`crate::param_json`] — one definition-driven parse path shared with the
+/// `.oisi` provenance and IPC surfaces, including its range checks.
 fn toml_to_param_value(id: ParamId, val: &toml::Value) -> ParamsResult<ParamValue> {
     let def = &PARAM_DEFS[id as usize];
-    let cfg = |msg: String| ParamsError::Config(msg);
-    match &def.default {
-        ParamValue::Bool(_) => val.as_bool().map(ParamValue::Bool)
-            .ok_or_else(|| cfg(format!("expected bool for {}", def.toml_path))),
-        // Integer types: range-checked, never silently truncating. TOML
-        // integers are i64; a value outside the target type's range is a
-        // hard error rather than a wrapped number.
-        ParamValue::U16(_) => {
-            let n = val.as_integer()
-                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
-            u16::try_from(n).map(ParamValue::U16)
-                .map_err(|_| cfg(format!("value {n} for {} out of range for u16 (0..={})", def.toml_path, u16::MAX)))
-        }
-        ParamValue::U32(_) => {
-            let n = val.as_integer()
-                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
-            u32::try_from(n).map(ParamValue::U32)
-                .map_err(|_| cfg(format!("value {n} for {} out of range for u32 (0..={})", def.toml_path, u32::MAX)))
-        }
-        ParamValue::I32(_) => {
-            let n = val.as_integer()
-                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
-            i32::try_from(n).map(ParamValue::I32)
-                .map_err(|_| cfg(format!("value {n} for {} out of range for i32 ({}..={})", def.toml_path, i32::MIN, i32::MAX)))
-        }
-        ParamValue::Usize(_) => {
-            let n = val.as_integer()
-                .ok_or_else(|| cfg(format!("expected integer for {}", def.toml_path)))?;
-            usize::try_from(n).map(ParamValue::Usize)
-                .map_err(|_| cfg(format!("value {n} for {} out of range for usize", def.toml_path)))
-        }
-        ParamValue::F64(_) => {
-            if let Some(f) = val.as_float() {
-                Ok(ParamValue::F64(f))
-            } else if let Some(i) = val.as_integer() {
-                Ok(ParamValue::F64(i as f64))
-            } else {
-                Err(cfg(format!("expected number for {}", def.toml_path)))
-            }
-        }
-        ParamValue::String(_) => val.as_str().map(|s| ParamValue::String(s.to_string()))
-            .ok_or_else(|| cfg(format!("expected string for {}", def.toml_path))),
-        ParamValue::StringVec(_) => val.as_array().map(|arr| {
-            ParamValue::StringVec(arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        }).ok_or_else(|| cfg(format!("expected array for {}", def.toml_path))),
-        ParamValue::Envelope(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<Envelope>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Envelope)
-            .ok_or_else(|| cfg(format!("expected envelope string for {}", def.toml_path))),
-        ParamValue::Carrier(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<Carrier>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Carrier)
-            .ok_or_else(|| cfg(format!("expected carrier string for {}", def.toml_path))),
-        ParamValue::Projection(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<Projection>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Projection)
-            .ok_or_else(|| cfg(format!("expected projection string for {}", def.toml_path))),
-        ParamValue::Structure(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<Structure>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Structure)
-            .ok_or_else(|| cfg(format!("expected structure string for {}", def.toml_path))),
-        ParamValue::Order(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<Order>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Order)
-            .ok_or_else(|| cfg(format!("expected order string for {}", def.toml_path))),
-        ParamValue::CycleCombine(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<CycleCombineKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::CycleCombine)
-            .ok_or_else(|| cfg(format!("expected cycle_combine method string for {}", def.toml_path))),
-        ParamValue::PhaseSmoothing(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<PhaseSmoothingKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PhaseSmoothing)
-            .ok_or_else(|| cfg(format!("expected phase_smoothing method string for {}", def.toml_path))),
-        ParamValue::VfsComputation(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<VfsComputationKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::VfsComputation)
-            .ok_or_else(|| cfg(format!("expected vfs_computation method string for {}", def.toml_path))),
-        ParamValue::SignMapSmoothing(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<SignMapSmoothingKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::SignMapSmoothing)
-            .ok_or_else(|| cfg(format!("expected sign_map_smoothing method string for {}", def.toml_path))),
-        ParamValue::CortexSource(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<CortexSourceKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::CortexSource)
-            .ok_or_else(|| cfg(format!("expected cortex_source method string for {}", def.toml_path))),
-        ParamValue::PatchThreshold(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<PatchThresholdKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchThreshold)
-            .ok_or_else(|| cfg(format!("expected patch_threshold method string for {}", def.toml_path))),
-        ParamValue::PatchExtraction(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<PatchExtractionKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchExtraction)
-            .ok_or_else(|| cfg(format!("expected patch_extraction method string for {}", def.toml_path))),
-        ParamValue::PatchRefinement(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<PatchRefinementKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchRefinement)
-            .ok_or_else(|| cfg(format!("expected patch_refinement method string for {}", def.toml_path))),
-        ParamValue::QualityGate(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<QualityGateKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::QualityGate)
-            .ok_or_else(|| cfg(format!("expected quality_gate method string for {}", def.toml_path))),
-        ParamValue::Eccentricity(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<EccentricityKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Eccentricity)
-            .ok_or_else(|| cfg(format!("expected eccentricity method string for {}", def.toml_path))),
-    }
+    let json = serde_json::to_value(val).map_err(|e| {
+        ParamsError::Config(format!("converting TOML value at {} to JSON: {e}", def.toml_path))
+    })?;
+    crate::param_json::from_json(&def.default, &json, def.toml_path)
 }
 
-/// Convert a ParamValue to a TOML value.
+/// Convert a `ParamValue` to a TOML value, via the canonical JSON converter
+/// then JSON → TOML through serde. Infallible for real param values: the
+/// JSON form is a scalar/array/string with no nulls or NaNs.
 fn param_value_to_toml(value: &ParamValue) -> toml::Value {
-    fn enum_str<T: serde::Serialize>(v: &T) -> toml::Value {
-        // Unit-variant enums serialize to a quoted string like "\"bar\""
-        // via serde_json. The serialize call is infallible for these types;
-        // on the theoretical failure path we fall through to an empty
-        // string rather than panic.
-        let s = serde_json::to_string(v).unwrap_or_default();
-        toml::Value::String(s.trim_matches('"').to_string())
-    }
-    match value {
-        ParamValue::Bool(v) => toml::Value::Boolean(*v),
-        ParamValue::U16(v) => toml::Value::Integer(*v as i64),
-        ParamValue::U32(v) => toml::Value::Integer(*v as i64),
-        ParamValue::I32(v) => toml::Value::Integer(*v as i64),
-        ParamValue::Usize(v) => toml::Value::Integer(*v as i64),
-        ParamValue::F64(v) => toml::Value::Float(*v),
-        ParamValue::String(v) => toml::Value::String(v.clone()),
-        ParamValue::StringVec(v) => {
-            toml::Value::Array(v.iter().map(|s| toml::Value::String(s.clone())).collect())
-        }
-        ParamValue::Envelope(v) => enum_str(v),
-        ParamValue::Carrier(v) => enum_str(v),
-        ParamValue::Projection(v) => enum_str(v),
-        ParamValue::Structure(v) => enum_str(v),
-        ParamValue::Order(v) => enum_str(v),
-        ParamValue::CycleCombine(v) => enum_str(v),
-        ParamValue::PhaseSmoothing(v) => enum_str(v),
-        ParamValue::VfsComputation(v) => enum_str(v),
-        ParamValue::SignMapSmoothing(v) => enum_str(v),
-        ParamValue::CortexSource(v) => enum_str(v),
-        ParamValue::PatchThreshold(v) => enum_str(v),
-        ParamValue::PatchExtraction(v) => enum_str(v),
-        ParamValue::PatchRefinement(v) => enum_str(v),
-        ParamValue::QualityGate(v) => enum_str(v),
-        ParamValue::Eccentricity(v) => enum_str(v),
-    }
+    let json = crate::param_json::to_json(value);
+    toml::Value::try_from(json)
+        .expect("ParamValue JSON form is always representable as TOML (no null/NaN params)")
 }

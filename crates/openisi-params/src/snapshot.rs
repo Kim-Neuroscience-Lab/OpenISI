@@ -50,52 +50,9 @@ impl RegistrySnapshot {
         for def in PARAM_DEFS.iter() {
             if def.persist != target { continue; }
             let value = &self.values[def.id as usize];
-            insert_dotted(&mut root, def.toml_path, param_value_to_json(value));
+            insert_dotted(&mut root, def.toml_path, crate::param_json::to_json(value));
         }
         serde_json::Value::Object(root)
-    }
-}
-
-/// Convert a `ParamValue` to a `serde_json::Value`. Enums (Envelope,
-/// Carrier, etc.) serialize as their lowercase debug repr to match the
-/// existing TOML convention.
-fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
-    use serde_json::Value;
-    // Analysis-stage method-choice Kind enums use their serde impls
-    // (snake_case) — multi-word variant names like `SnlcGarrett2014ImBound`
-    // need the `_` separators serde produces, which the older
-    // `{Debug}-lowercase` trick used by Envelope/Carrier/etc. would not.
-    fn ser<T: serde::Serialize>(k: &T) -> Value {
-        serde_json::to_value(k).expect("kind serde to_value cannot fail")
-    }
-    match v {
-        ParamValue::Bool(b) => Value::Bool(*b),
-        ParamValue::U16(n) => Value::Number((*n as u64).into()),
-        ParamValue::U32(n) => Value::Number((*n as u64).into()),
-        ParamValue::I32(n) => Value::Number((*n as i64).into()),
-        ParamValue::Usize(n) => Value::Number((*n as u64).into()),
-        ParamValue::F64(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        ParamValue::String(s) => Value::String(s.clone()),
-        ParamValue::StringVec(v) => Value::Array(
-            v.iter().map(|s| Value::String(s.clone())).collect(),
-        ),
-        ParamValue::Envelope(e) => Value::String(format!("{e:?}").to_lowercase()),
-        ParamValue::Carrier(c) => Value::String(format!("{c:?}").to_lowercase()),
-        ParamValue::Projection(p) => Value::String(format!("{p:?}").to_lowercase()),
-        ParamValue::Structure(s) => Value::String(format!("{s:?}").to_lowercase()),
-        ParamValue::Order(o) => Value::String(format!("{o:?}").to_lowercase()),
-        ParamValue::CycleCombine(k) => ser(k),
-        ParamValue::PhaseSmoothing(k) => ser(k),
-        ParamValue::VfsComputation(k) => ser(k),
-        ParamValue::SignMapSmoothing(k) => ser(k),
-        ParamValue::CortexSource(k) => ser(k),
-        ParamValue::PatchThreshold(k) => ser(k),
-        ParamValue::PatchExtraction(k) => ser(k),
-        ParamValue::PatchRefinement(k) => ser(k),
-        ParamValue::QualityGate(k) => ser(k),
-        ParamValue::Eccentricity(k) => ser(k),
     }
 }
 
@@ -142,7 +99,7 @@ impl RegistrySnapshot {
             match navigate_dotted(root, def.toml_path) {
                 Some(json_value) => {
                     values[def.id as usize] =
-                        json_value_to_param(&def.default, json_value, def.toml_path)?;
+                        crate::param_json::from_json(&def.default, json_value, def.toml_path)?;
                 }
                 None => missing.push(def.toml_path),
             }
@@ -201,118 +158,6 @@ fn navigate_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a se
         current = current.as_object()?.get(part)?;
     }
     Some(current)
-}
-
-/// Parse a `serde_json::Value` into a `ParamValue` matching the variant
-/// of `template` (the param's default — identifies the expected type).
-fn json_value_to_param(
-    template: &ParamValue,
-    json: &serde_json::Value,
-    path: &str,
-) -> crate::error::ParamsResult<ParamValue> {
-    use crate::error::ParamsError;
-    let cfg = |msg: String| ParamsError::Config(msg);
-    let str_enum = |s: &str| format!("\"{}\"", s);
-    match template {
-        ParamValue::Bool(_) => json.as_bool().map(ParamValue::Bool)
-            .ok_or_else(|| cfg(format!("expected bool at {path}"))),
-        // Integer types: range-checked, never silently truncating. A value
-        // outside the target type's range is a hard error, not a wrapped
-        // number — silent coercion would corrupt provenance.
-        ParamValue::U16(_) => {
-            let n = json.as_u64()
-                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
-            u16::try_from(n).map(ParamValue::U16)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for u16 (0..={})", u16::MAX)))
-        }
-        ParamValue::U32(_) => {
-            let n = json.as_u64()
-                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
-            u32::try_from(n).map(ParamValue::U32)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for u32 (0..={})", u32::MAX)))
-        }
-        ParamValue::I32(_) => {
-            let n = json.as_i64()
-                .ok_or_else(|| cfg(format!("expected integer at {path}")))?;
-            i32::try_from(n).map(ParamValue::I32)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for i32 ({}..={})", i32::MIN, i32::MAX)))
-        }
-        ParamValue::Usize(_) => {
-            let n = json.as_u64()
-                .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
-            usize::try_from(n).map(ParamValue::Usize)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for usize")))
-        }
-        ParamValue::F64(_) => json.as_f64()
-            .or_else(|| json.as_i64().map(|i| i as f64))
-            .map(ParamValue::F64)
-            .ok_or_else(|| cfg(format!("expected number at {path}"))),
-        ParamValue::String(_) => json.as_str().map(|s| ParamValue::String(s.to_string()))
-            .ok_or_else(|| cfg(format!("expected string at {path}"))),
-        ParamValue::StringVec(_) => json.as_array().map(|arr| {
-            ParamValue::StringVec(arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        }).ok_or_else(|| cfg(format!("expected array of strings at {path}"))),
-        ParamValue::Envelope(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::Envelope>(&str_enum(s)).ok())
-            .map(ParamValue::Envelope)
-            .ok_or_else(|| cfg(format!("expected envelope string at {path}"))),
-        ParamValue::Carrier(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::Carrier>(&str_enum(s)).ok())
-            .map(ParamValue::Carrier)
-            .ok_or_else(|| cfg(format!("expected carrier string at {path}"))),
-        ParamValue::Projection(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::Projection>(&str_enum(s)).ok())
-            .map(ParamValue::Projection)
-            .ok_or_else(|| cfg(format!("expected projection string at {path}"))),
-        ParamValue::Structure(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::Structure>(&str_enum(s)).ok())
-            .map(ParamValue::Structure)
-            .ok_or_else(|| cfg(format!("expected structure string at {path}"))),
-        ParamValue::Order(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::Order>(&str_enum(s)).ok())
-            .map(ParamValue::Order)
-            .ok_or_else(|| cfg(format!("expected order string at {path}"))),
-        ParamValue::CycleCombine(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::CycleCombineKind>(&str_enum(s)).ok())
-            .map(ParamValue::CycleCombine)
-            .ok_or_else(|| cfg(format!("expected cycle_combine method string at {path}"))),
-        ParamValue::PhaseSmoothing(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::PhaseSmoothingKind>(&str_enum(s)).ok())
-            .map(ParamValue::PhaseSmoothing)
-            .ok_or_else(|| cfg(format!("expected phase_smoothing method string at {path}"))),
-        ParamValue::VfsComputation(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::VfsComputationKind>(&str_enum(s)).ok())
-            .map(ParamValue::VfsComputation)
-            .ok_or_else(|| cfg(format!("expected vfs_computation method string at {path}"))),
-        ParamValue::SignMapSmoothing(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::SignMapSmoothingKind>(&str_enum(s)).ok())
-            .map(ParamValue::SignMapSmoothing)
-            .ok_or_else(|| cfg(format!("expected sign_map_smoothing method string at {path}"))),
-        ParamValue::CortexSource(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::CortexSourceKind>(&str_enum(s)).ok())
-            .map(ParamValue::CortexSource)
-            .ok_or_else(|| cfg(format!("expected cortex_source method string at {path}"))),
-        ParamValue::PatchThreshold(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchThresholdKind>(&str_enum(s)).ok())
-            .map(ParamValue::PatchThreshold)
-            .ok_or_else(|| cfg(format!("expected patch_threshold method string at {path}"))),
-        ParamValue::PatchExtraction(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchExtractionKind>(&str_enum(s)).ok())
-            .map(ParamValue::PatchExtraction)
-            .ok_or_else(|| cfg(format!("expected patch_extraction method string at {path}"))),
-        ParamValue::PatchRefinement(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchRefinementKind>(&str_enum(s)).ok())
-            .map(ParamValue::PatchRefinement)
-            .ok_or_else(|| cfg(format!("expected patch_refinement method string at {path}"))),
-        ParamValue::QualityGate(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::QualityGateKind>(&str_enum(s)).ok())
-            .map(ParamValue::QualityGate)
-            .ok_or_else(|| cfg(format!("expected quality_gate method string at {path}"))),
-        ParamValue::Eccentricity(_) => json.as_str()
-            .and_then(|s| serde_json::from_str::<super::EccentricityKind>(&str_enum(s)).ok())
-            .map(ParamValue::Eccentricity)
-            .ok_or_else(|| cfg(format!("expected eccentricity method string at {path}"))),
-    }
 }
 
 /// Insert `value` at the dotted `path` (e.g., `"segmentation.open_radius"`)

@@ -59,6 +59,7 @@ mod macros;
 mod definitions;
 pub mod registry;
 pub mod toml_io;
+pub mod param_json;
 
 pub mod constraints;
 pub mod computed;
