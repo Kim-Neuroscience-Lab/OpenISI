@@ -1,5 +1,6 @@
 pub mod camera_thread;
 pub mod commands;
+pub mod config_paths;
 pub mod error;
 pub mod events;
 pub mod export;
