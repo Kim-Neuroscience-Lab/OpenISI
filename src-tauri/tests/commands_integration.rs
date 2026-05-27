@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use openisi_lib::commands::SharedState;
-use openisi_lib::commands::analysis::set_active_oisi_impl;
+use openisi_lib::commands::analysis::{migrate_oisi, set_active_oisi_impl};
 use openisi_lib::state::AppState;
 use openisi_lib::params::Registry;
 
@@ -89,4 +89,37 @@ fn schema_migration_detection_via_io_helper() {
         isi_analysis::io::is_pre_2026_analysis_params(&path).unwrap(),
         "expected pre-2026 detection to fire"
     );
+}
+
+#[test]
+fn migrate_oisi_command_brings_old_file_forward() {
+    // Write a pre-2026 /analysis_params: a flat tunable sibling of `method`
+    // (the genuine legacy marker). Raw attr write to avoid a serde_json dep
+    // in the test crate, mirroring the detection test above.
+    let (path, _dir) = make_oisi_tempfile();
+    {
+        let file = hdf5::File::open_rw(&path).unwrap();
+        let attr = file
+            .new_attr::<hdf5::types::VarLenUnicode>()
+            .create("analysis_params")
+            .unwrap();
+        let val: hdf5::types::VarLenUnicode =
+            r#"{"phase_smoothing":{"method":"open_isi_amp_weighted_phasor","sigma_px":2.5}}"#
+                .parse()
+                .unwrap();
+        attr.write_scalar(&val).unwrap();
+    }
+    assert!(isi_analysis::io::is_pre_2026_analysis_params(&path).unwrap());
+
+    // Migrate via the Tauri command.
+    let msg = migrate_oisi(path.to_string_lossy().into_owned()).unwrap();
+    assert!(msg.contains("Migrated"), "got: {msg}");
+    assert!(
+        !isi_analysis::io::is_pre_2026_analysis_params(&path).unwrap(),
+        "file should be current-schema after migrate"
+    );
+
+    // Idempotent: a second call on the now-current file is a no-op.
+    let msg2 = migrate_oisi(path.to_string_lossy().into_owned()).unwrap();
+    assert!(msg2.contains("no migration needed"), "got: {msg2}");
 }

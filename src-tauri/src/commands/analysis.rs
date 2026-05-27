@@ -99,6 +99,39 @@ pub fn set_active_oisi(state: State<'_, SharedState>, path: String) -> AppResult
     set_active_oisi_impl(&state, path)
 }
 
+/// Migrate a pre-2026 `.oisi`'s `/analysis_params` to the current
+/// registry-tree schema, in place. Safe to call on any file: a no-op
+/// message is returned when there's nothing to migrate. This is the
+/// in-app counterpart to the `oisi migrate` CLI, so a GUI-only user can
+/// bring an old file forward (e.g. when `run_analysis` refuses it).
+#[tauri::command]
+pub fn migrate_oisi(path: String) -> AppResult<String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(AppError::NotAvailable(format!(
+            "migrate_oisi: file does not exist: {}",
+            p.display()
+        )));
+    }
+
+    let Some(old_tree) = isi_analysis::io::read_analysis_params_attr(&p)? else {
+        return Ok(format!(
+            "{}: no /analysis_params attribute — nothing to migrate.",
+            p.display()
+        ));
+    };
+    if !isi_analysis::io::is_pre_2026_analysis_params(&p)? {
+        return Ok(format!(
+            "{}: /analysis_params already in the current schema — no migration needed.",
+            p.display()
+        ));
+    }
+
+    let new_tree = isi_analysis::migrate::translate_pre_2026_analysis_params(&old_tree)?;
+    isi_analysis::io::write_analysis_params_attr(&p, &new_tree)?;
+    Ok(format!("Migrated /analysis_params on {}", p.display()))
+}
+
 /// Inner implementation of `set_active_oisi` that takes `&SharedState`
 /// directly. Public for integration testing — callers can construct
 /// an `Arc<Mutex<AppState>>` and invoke without a Tauri runtime.

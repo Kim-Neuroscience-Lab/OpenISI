@@ -273,6 +273,7 @@ fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
             commands::analysis::run_analysis,
             commands::analysis::get_analysis_params,
             commands::analysis::set_active_oisi,
+            commands::analysis::migrate_oisi,
             commands::analysis::read_result,
             commands::analysis::read_anatomical,
             commands::analysis::export_map_png,
