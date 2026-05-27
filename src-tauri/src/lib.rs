@@ -33,52 +33,15 @@ pub fn run() {
 /// surface cleanly through `?`-propagation instead of `eprintln!` +
 /// `process::exit(1)` sprinkled through the code path.
 fn try_run() -> AppResult<()> {
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| AppError::Config(format!("locate current executable: {e}")))?
-        .parent()
-        .map(|p| p.to_path_buf())
-        .ok_or_else(|| AppError::Config("current executable has no parent directory".into()))?;
-
-    // Registry construction + config-dir resolution now happen inside the
-    // Tauri `setup()` callback, where `app.path()` (the platform-standard
-    // resolver for the bundle resource dir and the per-user app-config dir)
-    // is available. `exe_dir` is threaded through for the dev-mode repo
-    // `config` lookup, which is exe-relative rather than Tauri-pathed.
-    start_tauri(exe_dir)
+    // Registry construction + config-dir resolution happen inside the Tauri
+    // `setup()` callback, where `app.path()` (the platform-standard resolver
+    // for the bundle resource dir and the per-user app-config dir) is
+    // available. The dev-mode repo `config` is anchored to CARGO_MANIFEST_DIR
+    // there, so no exe-relative search is needed up front.
+    start_tauri()
 }
 
-/// Build the list of candidate config directories relative to the given exe directory.
-/// Extracted for testability.
-fn config_candidates(exe_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    vec![
-        exe_dir.join("config"),
-        exe_dir.join("../config"),
-        exe_dir.join("../../config"),
-    ]
-}
-
-/// Find the config directory from the candidates list. Returns the
-/// first candidate that contains `rig.toml`. Returns `AppError::Config`
-/// (NOT a panic) when no candidate has it, so the user sees a clean
-/// one-line message via `try_run`.
-fn find_config_dir(exe_dir: &std::path::Path) -> AppResult<std::path::PathBuf> {
-    if let Some(found) = config_candidates(exe_dir)
-        .into_iter()
-        .find(|p| p.join("rig.toml").exists())
-    {
-        return Ok(found);
-    }
-    let candidates: Vec<_> = config_candidates(exe_dir)
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    Err(AppError::Config(format!(
-        "cannot find config directory with rig.toml. Searched: {}",
-        candidates.join(", ")
-    )))
-}
-
-fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
+fn start_tauri() -> AppResult<()> {
     use tauri::Manager;
 
     tauri::Builder::default()
@@ -93,7 +56,14 @@ fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
             let is_dev = tauri::is_dev();
             let profile = config_paths::Profile::resolve(is_dev)
                 .map_err(|e| Box::<dyn std::error::Error>::from(format!("config profile: {e}")))?;
-            let repo_config = find_config_dir(&exe_dir).ok();
+            // Dev shipped baseline + dev-overlay parent: the repo `config/`,
+            // anchored to the compile-time source path (CARGO_MANIFEST_DIR =
+            // <repo>/src-tauri) so it is robust against stray `target/` copies
+            // that an exe-relative search would otherwise pick up first. Only
+            // consulted in the dev branch; prod uses resource_dir below.
+            let repo_config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|root| root.join("config"));
             let resource_config = app.path().resource_dir().ok().map(|p| p.join("config"));
             let app_config = app.path().app_config_dir().ok();
             let layout = config_paths::resolve_layout(
@@ -358,113 +328,7 @@ fn start_tauri(exe_dir: std::path::PathBuf) -> AppResult<()> {
     Ok(())
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-
-    /// Helper: create a temp dir with config/rig.toml inside.
-    fn make_config_tree(base: &std::path::Path, rel_config: &str) {
-        let config_dir = base.join(rel_config);
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(config_dir.join("rig.toml"), "# placeholder").unwrap();
-    }
-
-    #[test]
-    fn candidates_has_correct_relative_paths() {
-        let exe_dir = PathBuf::from("/app/bin");
-        let candidates = config_candidates(&exe_dir);
-
-        assert_eq!(candidates.len(), 3);
-        assert_eq!(candidates[0], PathBuf::from("/app/bin/config"));
-        assert_eq!(candidates[1], PathBuf::from("/app/bin/../config"));
-        assert_eq!(candidates[2], PathBuf::from("/app/bin/../../config"));
-    }
-
-    #[test]
-    fn find_config_dir_installed_layout() {
-        let tmp = std::env::temp_dir().join("openisi_test_installed");
-        let _ = fs::remove_dir_all(&tmp);
-        let exe_dir = tmp.join("bin");
-        fs::create_dir_all(&exe_dir).unwrap();
-        make_config_tree(&exe_dir, "config");
-
-        let found = find_config_dir(&exe_dir).expect("should find config");
-        assert!(found.join("rig.toml").exists(),
-            "Should find config at <exe_dir>/config");
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn find_config_dir_dev_build_layout() {
-        let tmp = std::env::temp_dir().join("openisi_test_dev");
-        let _ = fs::remove_dir_all(&tmp);
-        let exe_dir = tmp.join("src-tauri").join("target").join("debug");
-        fs::create_dir_all(&exe_dir).unwrap();
-        make_config_tree(&tmp.join("src-tauri"), "config");
-
-        let found = find_config_dir(&exe_dir).expect("should find config");
-        assert!(found.join("rig.toml").exists(),
-            "Should find config via ../config for dev build layout");
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn find_config_dir_workspace_layout() {
-        let tmp = std::env::temp_dir().join("openisi_test_workspace");
-        let _ = fs::remove_dir_all(&tmp);
-        let exe_dir = tmp.join("target").join("debug");
-        fs::create_dir_all(&exe_dir).unwrap();
-        make_config_tree(&tmp, "config");
-
-        let found = find_config_dir(&exe_dir).expect("should find config");
-        assert!(found.join("rig.toml").exists(),
-            "Should find config via ../../config for workspace layout");
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn find_config_dir_returns_config_error_when_nothing_exists() {
-        let tmp = std::env::temp_dir().join("openisi_test_fallback");
-        let _ = fs::remove_dir_all(&tmp);
-        let exe_dir = tmp.join("empty");
-        fs::create_dir_all(&exe_dir).unwrap();
-
-        let result = find_config_dir(&exe_dir);
-        match result {
-            Err(AppError::Config(msg)) => {
-                assert!(msg.contains("cannot find config directory"),
-                    "Expected config-error message, got: {msg}");
-            }
-            other => panic!("Expected AppError::Config, got {other:?}"),
-        }
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn find_config_dir_prefers_first_candidate() {
-        let tmp = std::env::temp_dir().join("openisi_test_priority");
-        let _ = fs::remove_dir_all(&tmp);
-        let exe_dir = tmp.join("inner");
-        fs::create_dir_all(&exe_dir).unwrap();
-        make_config_tree(&exe_dir, "config");
-        make_config_tree(&tmp, "config");
-
-        let found = find_config_dir(&exe_dir).expect("should find config");
-        let canonical = fs::canonicalize(&found).unwrap();
-        let expected = fs::canonicalize(exe_dir.join("config")).unwrap();
-        assert_eq!(canonical, expected,
-            "Should prefer exe_dir/config over ../config");
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-}
+// Path-resolution policy is unit-tested in `config_paths`; the exe-relative
+// `find_config_dir` search (and its tests) was removed in favor of
+// CARGO_MANIFEST_DIR (dev) + resource_dir (prod), which don't get shadowed
+// by stray `target/` copies.
