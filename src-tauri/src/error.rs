@@ -18,7 +18,7 @@
 //! `AppError` is the Tauri-IPC façade that wraps both and serializes to
 //! the structured wire format.
 
-use std::sync::{Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
 
 // ----------------------------------------------------------------------------
 // AcquisitionError — real-time worker thread errors
@@ -61,7 +61,9 @@ pub enum AcquisitionError {
 
 impl<T> From<crossbeam_channel::SendError<T>> for AcquisitionError {
     fn from(_: crossbeam_channel::SendError<T>) -> Self {
-        Self::ChannelClosed { context: "acquisition channel" }
+        Self::ChannelClosed {
+            context: "acquisition channel",
+        }
     }
 }
 
@@ -74,9 +76,6 @@ impl<T> From<crossbeam_channel::SendError<T>> for AcquisitionError {
 /// `?` throughout.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("State lock poisoned: {context}")]
-    LockPoisoned { context: String },
-
     #[error("{0}")]
     Analysis(#[from] isi_analysis::AnalysisError),
 
@@ -110,9 +109,6 @@ impl From<openisi_params::ParamsError> for AppError {
             Config(s) => AppError::Config(s),
             NotAvailable(s) => AppError::NotAvailable(s),
             Io(e) => AppError::Io(e),
-            LockPoisoned { context } => AppError::LockPoisoned {
-                context: context.to_string(),
-            },
         }
     }
 }
@@ -161,7 +157,6 @@ impl AppError {
     /// strings the frontend / scripts can rely on.
     fn category_and_code(&self) -> (&'static str, &'static str) {
         match self {
-            Self::LockPoisoned { .. } => ("Internal", "E_LOCK_POISONED"),
             Self::Analysis(e) => ("Analysis", analysis_error_code(e)),
             Self::Acquisition(e) => ("Acquisition", acquisition_error_code(e)),
             Self::Hardware(_) => ("Hardware", "E_HARDWARE"),
@@ -222,14 +217,13 @@ impl serde::Serialize for AppError {
 /// Convenience alias for command return types.
 pub type AppResult<T> = std::result::Result<T, AppError>;
 
-/// Lock a `Mutex<T>` with a descriptive context for the error message.
-///
-/// Replaces the repeated `.map_err(|_| "Internal state error".to_string())?`
-/// pattern throughout command handlers.
-pub fn lock_state<'a, T>(mutex: &'a Mutex<T>, context: &str) -> Result<MutexGuard<'a, T>, AppError> {
-    mutex.lock().map_err(|_| AppError::LockPoisoned {
-        context: context.to_string(),
-    })
+/// Lock a `parking_lot::Mutex<T>`. Infallible — `parking_lot` mutexes do not
+/// poison, so this returns the guard directly. The `context` argument is
+/// retained for call-site readability (documents *why* the lock is taken) and
+/// future tracing instrumentation.
+#[inline]
+pub fn lock_state<'a, T>(mutex: &'a Mutex<T>, _context: &str) -> MutexGuard<'a, T> {
+    mutex.lock()
 }
 
 #[cfg(test)]

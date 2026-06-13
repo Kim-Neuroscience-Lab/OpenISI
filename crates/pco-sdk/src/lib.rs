@@ -90,18 +90,30 @@ pub struct Sdk {
 struct SdkFunctions {
     // sc2_cam.dll
     open_camera: unsafe extern "system" fn(*mut *mut std::ffi::c_void, u16) -> u32,
-    open_camera_ex: Option<unsafe extern "system" fn(*mut *mut std::ffi::c_void, *mut ffi::PcoOpenStruct) -> u32>,
+    open_camera_ex: Option<
+        unsafe extern "system" fn(*mut *mut std::ffi::c_void, *mut ffi::PcoOpenStruct) -> u32,
+    >,
     close_camera: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
     arm_camera: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
     set_recording_state: unsafe extern "system" fn(*mut std::ffi::c_void, u16) -> u32,
-    get_sizes: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, *mut u16, *mut u16, *mut u16) -> u32,
-    get_camera_description: unsafe extern "system" fn(*mut std::ffi::c_void, *mut ffi::PcoDescription) -> u32,
+    get_sizes: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        *mut u16,
+        *mut u16,
+        *mut u16,
+        *mut u16,
+    ) -> u32,
+    get_camera_description:
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut ffi::PcoDescription) -> u32,
     set_pixel_rate: unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> u32,
-    set_delay_exposure_time: unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, u16, u16) -> u32,
+    set_delay_exposure_time:
+        unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, u16, u16) -> u32,
     get_coc_runtime: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32, *mut u32) -> u32,
     set_timestamp_mode: unsafe extern "system" fn(*mut std::ffi::c_void, u16) -> u32,
-    get_camera_health_status: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32, *mut u32, *mut u32) -> u32,
-    get_camera_type: unsafe extern "system" fn(*mut std::ffi::c_void, *mut ffi::PcoCameraType) -> u32,
+    get_camera_health_status:
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32, *mut u32, *mut u32) -> u32,
+    get_camera_type:
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut ffi::PcoCameraType) -> u32,
     set_binning: unsafe extern "system" fn(*mut std::ffi::c_void, u16, u16) -> u32,
     set_roi: unsafe extern "system" fn(*mut std::ffi::c_void, u16, u16, u16, u16) -> u32,
 
@@ -109,11 +121,11 @@ struct SdkFunctions {
     recorder_create: unsafe extern "system" fn(
         *mut *mut std::ffi::c_void, // phRecorder
         *mut *mut std::ffi::c_void, // phCamera (array)
-        *mut u32,                    // pdwImageDistribution
-        u16,                         // wArrayLength
-        u16,                         // wRecorderMode
-        *const u8,                   // szPath (null)
-        *mut u32,                    // pdwMaxImageCount
+        *mut u32,                   // pdwImageDistribution
+        u16,                        // wArrayLength
+        u16,                        // wRecorderMode
+        *const u8,                  // szPath (null)
+        *mut u32,                   // pdwMaxImageCount
     ) -> u32,
     recorder_delete: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
     recorder_init: unsafe extern "system" fn(
@@ -125,30 +137,35 @@ struct SdkFunctions {
         *const u8,             // szPath (null)
         *mut u16,              // pwRamSegment
     ) -> u32,
-    recorder_start_record: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u32,
-    recorder_stop_record: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u32,
+    recorder_start_record:
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u32,
+    recorder_stop_record:
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u32,
     recorder_get_status: unsafe extern "system" fn(
-        *mut std::ffi::c_void,  // hRecorder
-        *mut std::ffi::c_void,  // hCamera
-        *mut u8,                // pbIsRunning (bool)
-        *mut u8,                // pbAutoExpState
-        *mut u32,               // pdwLastError
-        *mut u32,               // pdwProcImgCount
-        *mut u32,               // pdwReqImgCount
-        *mut u8,                // pbBuffersFull
-        *mut u8,                // pbFIFOOverflow
-        *mut u32,               // pdwStartTime
-        *mut u32,               // pdwStopTime
+        *mut std::ffi::c_void, // hRecorder
+        *mut std::ffi::c_void, // hCamera
+        *mut u8,               // pbIsRunning (bool)
+        *mut u8,               // pbAutoExpState
+        *mut u32,              // pdwLastError
+        *mut u32,              // pdwProcImgCount
+        *mut u32,              // pdwReqImgCount
+        *mut u8,               // pbBuffersFull
+        *mut u8,               // pbFIFOOverflow
+        *mut u32,              // pdwStartTime
+        *mut u32,              // pdwStopTime
     ) -> u32,
     recorder_copy_image: unsafe extern "system" fn(
-        *mut std::ffi::c_void,       // hRecorder
-        *mut std::ffi::c_void,       // hCamera
-        u32,                          // dwImageIndex
-        u16, u16, u16, u16,          // ROI: x0, y0, x1, y1
-        *mut u16,                     // pImageBuffer
-        *mut u32,                     // pdwImageNumber
-        *mut ffi::PcoMetadata,        // pMetadata
-        *mut ffi::PcoTimestamp,       // pTimestamp
+        *mut std::ffi::c_void, // hRecorder
+        *mut std::ffi::c_void, // hCamera
+        u32,                   // dwImageIndex
+        u16,
+        u16,
+        u16,
+        u16,                    // ROI: x0, y0, x1, y1
+        *mut u16,               // pImageBuffer
+        *mut u32,               // pdwImageNumber
+        *mut ffi::PcoMetadata,  // pMetadata
+        *mut ffi::PcoTimestamp, // pTimestamp
     ) -> u32,
 }
 
@@ -157,12 +174,16 @@ fn default_dll_dir() -> Option<PathBuf> {
     // Look for the DLLs in common locations.
     let candidates = [
         // Bundled with the Python pco package in the OpenISI venv.
-        PathBuf::from(r"C:\Program Files\Kim-Neuroscience-Lab\OpenISI\.venv\Lib\site-packages\pco\win_x64"),
+        PathBuf::from(
+            r"C:\Program Files\Kim-Neuroscience-Lab\OpenISI\.venv\Lib\site-packages\pco\win_x64",
+        ),
         // Standalone PCO SDK install.
         PathBuf::from(r"C:\Program Files\PCO Digital Camera Toolbox\pco.sdk\bin64"),
         PathBuf::from(r"C:\Program Files (x86)\PCO Digital Camera Toolbox\pco.sdk\bin64"),
     ];
-    candidates.into_iter().find(|p| p.join("sc2_cam.dll").exists())
+    candidates
+        .into_iter()
+        .find(|p| p.join("sc2_cam.dll").exists())
 }
 
 impl Sdk {
@@ -249,7 +270,9 @@ impl Sdk {
         }
 
         if handle.is_null() {
-            return Err(PcoError::Other("PCO_OpenCamera returned null handle".into()));
+            return Err(PcoError::Other(
+                "PCO_OpenCamera returned null handle".into(),
+            ));
         }
 
         self.finish_open(handle)
@@ -262,7 +285,13 @@ impl Sdk {
         let mut width_max: u16 = 0;
         let mut height_max: u16 = 0;
         let rc = unsafe {
-            (self.fns.get_sizes)(handle, &mut width_act, &mut height_act, &mut width_max, &mut height_max)
+            (self.fns.get_sizes)(
+                handle,
+                &mut width_act,
+                &mut height_act,
+                &mut width_max,
+                &mut height_max,
+            )
         };
         check_rc(rc)?;
 
@@ -319,8 +348,8 @@ impl<'sdk> Camera<'sdk> {
     /// Copy pixel rates from the packed description struct.
     fn pixel_rates_array(&self) -> [u32; 4] {
         // Must copy from packed struct before creating references.
-        let rates = self.desc.dw_pixel_rate_desc;
-        rates
+
+        self.desc.dw_pixel_rate_desc
     }
 
     /// Get camera info.
@@ -331,8 +360,9 @@ impl<'sdk> Camera<'sdk> {
         let max_exp = self.desc.dw_max_expos_desc;
 
         // Get camera type info (serial number, model name, interface).
-        let (serial_number, name, interface_type) = self.get_camera_type_info()
-            .map_err(|e| eprintln!("[pco] Warning: get_camera_type_info failed: {e}"))
+        let (serial_number, name, interface_type) = self
+            .get_camera_type_info()
+            .map_err(|e| tracing::warn!("get_camera_type_info failed: {e}"))
             .expect("Failed to get camera type info from PCO SDK");
 
         CameraInfo {
@@ -354,9 +384,7 @@ impl<'sdk> Camera<'sdk> {
     /// Query camera type, serial number, and interface from PCO_GetCameraType.
     fn get_camera_type_info(&self) -> Result<(u32, String, String)> {
         let mut cam_type = ffi::PcoCameraType::new();
-        let rc = unsafe {
-            (self.sdk.fns.get_camera_type)(self.handle, &mut cam_type)
-        };
+        let rc = unsafe { (self.sdk.fns.get_camera_type)(self.handle, &mut cam_type) };
         check_rc(rc)?;
 
         // Copy fields from packed struct before referencing.
@@ -388,8 +416,13 @@ impl<'sdk> Camera<'sdk> {
             0x1700 => "pco.dicam family",
             0x1900 => "pco.dimax family",
             0x1A00 => "pco.pixelfly family",
-            other => return Err(PcoError::Other(format!("Unknown PCO camera type code: 0x{other:04X}"))),
-        }.to_string();
+            other => {
+                return Err(PcoError::Other(format!(
+                    "Unknown PCO camera type code: 0x{other:04X}"
+                )));
+            }
+        }
+        .to_string();
 
         // Interface type code → name (from PCO SDK sdk.py lines 2629-2638).
         let interface_type = match iface {
@@ -401,8 +434,13 @@ impl<'sdk> Camera<'sdk> {
             0x0006 => "USB 3.0",
             0x0007 => "CLHS",
             0x0009 => "USB 3.1 Gen 1",
-            other => return Err(PcoError::Other(format!("Unknown PCO interface type code: 0x{other:04X}"))),
-        }.to_string();
+            other => {
+                return Err(PcoError::Other(format!(
+                    "Unknown PCO interface type code: 0x{other:04X}"
+                )));
+            }
+        }
+        .to_string();
 
         Ok((serial, name, interface_type))
     }
@@ -410,7 +448,9 @@ impl<'sdk> Camera<'sdk> {
     /// Set pixel rate to the fastest available.
     pub fn set_max_pixel_rate(&mut self) -> Result<u32> {
         let rates = self.pixel_rates_array();
-        let max_rate = rates.iter().copied()
+        let max_rate = rates
+            .iter()
+            .copied()
             .filter(|&r| r > 0)
             .max()
             .ok_or_else(|| PcoError::Other("No valid pixel rates".into()))?;
@@ -423,9 +463,8 @@ impl<'sdk> Camera<'sdk> {
     /// Set exposure time in microseconds.
     pub fn set_exposure_us(&mut self, exposure_us: u32) -> Result<()> {
         // timebase 1 = microseconds, delay = 0
-        let rc = unsafe {
-            (self.sdk.fns.set_delay_exposure_time)(self.handle, 0, exposure_us, 1, 1)
-        };
+        let rc =
+            unsafe { (self.sdk.fns.set_delay_exposure_time)(self.handle, 0, exposure_us, 1, 1) };
         check_rc(rc)
     }
 
@@ -457,12 +496,13 @@ impl<'sdk> Camera<'sdk> {
         let (max_h, _, max_v, _) = self.available_binning();
         if binning_x > max_h || binning_y > max_v {
             return Err(PcoError::Other(format!(
-                "Binning {}x{} exceeds camera max {}x{}", binning_x, binning_y, max_h, max_v
+                "Binning {}x{} exceeds camera max {}x{}",
+                binning_x, binning_y, max_h, max_v
             )));
         }
         let rc = unsafe { (self.sdk.fns.set_binning)(self.handle, binning_x, binning_y) };
         check_rc(rc)?;
-        eprintln!("[pco] binning set to {}x{}", binning_x, binning_y);
+        tracing::debug!(binning_x, binning_y, "binning set");
 
         // Set ROI to full binned resolution.
         // PCO ROI is 1-based: (x1, y1, x2, y2).
@@ -470,7 +510,7 @@ impl<'sdk> Camera<'sdk> {
         let roi_h = self.height_max / binning_y as u32;
         let rc = unsafe { (self.sdk.fns.set_roi)(self.handle, 1, 1, roi_w as u16, roi_h as u16) };
         check_rc(rc)?;
-        eprintln!("[pco] ROI set to 1,1..{},{} (full binned)", roi_w, roi_h);
+        tracing::debug!(roi_w, roi_h, "ROI set to full binned (1,1..w,h)");
 
         Ok(())
     }
@@ -526,7 +566,12 @@ impl<'sdk> Camera<'sdk> {
         let mut error: u32 = 0;
         let mut status: u32 = 0;
         let rc = unsafe {
-            (self.sdk.fns.get_camera_health_status)(self.handle, &mut warning, &mut error, &mut status)
+            (self.sdk.fns.get_camera_health_status)(
+                self.handle,
+                &mut warning,
+                &mut error,
+                &mut status,
+            )
         };
         check_rc(rc)?;
         Ok((warning, error, status))
@@ -542,16 +587,16 @@ impl<'sdk> Camera<'sdk> {
             (self.sdk.fns.recorder_create)(
                 &mut rec_handle,
                 cam_handle_arr.as_mut_ptr(),
-                ptr::null_mut(), // NULL = auto-distribute images
-                1,                      // wArrayLength (1 camera)
-                RECORDER_MODE_MEMORY,   // PC memory recording
+                ptr::null_mut(),      // NULL = auto-distribute images
+                1,                    // wArrayLength (1 camera)
+                RECORDER_MODE_MEMORY, // PC memory recording
                 ptr::null(),
                 &mut max_img_count,
             )
         };
         check_rc(rc)?;
 
-        eprintln!("[pco] recorder created, max images: {max_img_count}");
+        tracing::debug!(max_img_count, "recorder created");
 
         // Init the recorder as a ring buffer in memory mode.
         let mut img_count = [num_frames];
@@ -560,9 +605,9 @@ impl<'sdk> Camera<'sdk> {
             (self.sdk.fns.recorder_init)(
                 rec_handle,
                 img_count.as_mut_ptr(),
-                1,                          // wArrayLength
-                RECORDER_TYPE_RING_BUFFER,  // ring buffer (overwrites oldest)
-                0,                          // wNoOverwrite (0 = allow overwrite)
+                1,                         // wArrayLength
+                RECORDER_TYPE_RING_BUFFER, // ring buffer (overwrites oldest)
+                0,                         // wNoOverwrite (0 = allow overwrite)
                 ptr::null(),
                 &mut ram_seg,
             )
@@ -661,9 +706,8 @@ const PCO_LATEST_IMAGE: u32 = 0xFFFFFFFF;
 impl<'cam, 'sdk> Recorder<'cam, 'sdk> {
     /// Start recording. The recorder internally sets the camera recording state.
     pub fn start(&mut self) -> Result<()> {
-        let rc = unsafe {
-            (self.camera.sdk.fns.recorder_start_record)(self.handle, self.camera.handle)
-        };
+        let rc =
+            unsafe { (self.camera.sdk.fns.recorder_start_record)(self.handle, self.camera.handle) };
         check_rc(rc)?;
         self.last_proc_count = 0;
         Ok(())
@@ -671,13 +715,10 @@ impl<'cam, 'sdk> Recorder<'cam, 'sdk> {
 
     /// Stop recording.
     pub fn stop(&mut self) -> Result<()> {
-        let rc = unsafe {
-            (self.camera.sdk.fns.recorder_stop_record)(self.handle, self.camera.handle)
-        };
+        let rc =
+            unsafe { (self.camera.sdk.fns.recorder_stop_record)(self.handle, self.camera.handle) };
         check_rc(rc)?;
-        let rc = unsafe {
-            (self.camera.sdk.fns.set_recording_state)(self.camera.handle, 0)
-        };
+        let rc = unsafe { (self.camera.sdk.fns.set_recording_state)(self.camera.handle, 0) };
         check_rc(rc)?;
         Ok(())
     }
@@ -696,11 +737,17 @@ impl<'cam, 'sdk> Recorder<'cam, 'sdk> {
 
         let rc = unsafe {
             (self.camera.sdk.fns.recorder_get_status)(
-                self.handle, self.camera.handle,
-                &mut is_running, &mut auto_exp,
-                &mut last_error, &mut proc_count, &mut req_count,
-                &mut buf_full, &mut fifo_overflow,
-                &mut start_time, &mut stop_time,
+                self.handle,
+                self.camera.handle,
+                &mut is_running,
+                &mut auto_exp,
+                &mut last_error,
+                &mut proc_count,
+                &mut req_count,
+                &mut buf_full,
+                &mut fifo_overflow,
+                &mut start_time,
+                &mut stop_time,
             )
         };
         check_rc(rc)?;
@@ -745,7 +792,10 @@ impl<'cam, 'sdk> Recorder<'cam, 'sdk> {
                 self.handle,
                 self.camera.handle,
                 PCO_LATEST_IMAGE,
-                1, 1, w as u16, h as u16, // ROI: full frame (1-based)
+                1,
+                1,
+                w as u16,
+                h as u16, // ROI: full frame (1-based)
                 pixels.as_mut_ptr(),
                 &mut image_number,
                 &mut metadata,
@@ -806,14 +856,19 @@ fn check_rc(rc: u32) -> Result<()> {
 ///
 /// SAFETY: Caller must ensure the Library handles remain alive as long as
 /// the returned SdkFunctions is in use (guaranteed by Sdk struct lifetime).
+// The transmute target fn-pointer type is inferred from each destination field
+// in SdkFunctions; a turbofish on the generic `load!`/`load_opt!` macros cannot
+// name 30+ distinct signatures, and the inference is correct and exhaustive.
+#[allow(clippy::missing_transmute_annotations)]
 unsafe fn load_functions(sdk: &Library, rec: &Library) -> Result<SdkFunctions> {
     macro_rules! load {
         ($lib:expr, $name:literal) => {{
-            let sym = unsafe { $lib.get::<*const ()>($name.as_bytes()) }
-                .map_err(|e| PcoError::FnLoad {
+            let sym = unsafe { $lib.get::<*const ()>($name.as_bytes()) }.map_err(|e| {
+                PcoError::FnLoad {
                     name: $name.into(),
                     message: e.to_string(),
-                })?;
+                }
+            })?;
             unsafe { std::mem::transmute(*sym) }
         }};
     }
@@ -824,7 +879,7 @@ unsafe fn load_functions(sdk: &Library, rec: &Library) -> Result<SdkFunctions> {
             match unsafe { $lib.get::<*const ()>($name.as_bytes()) } {
                 Ok(sym) => Some(unsafe { std::mem::transmute(*sym) }),
                 Err(_) => {
-                    eprintln!("[pco] {} not available in this SDK version", $name);
+                    tracing::warn!("{} not available in this SDK version", $name);
                     None
                 }
             }
@@ -872,38 +927,50 @@ mod tests {
 
     #[test]
     fn recorder_mode_file_is_1() {
-        assert_eq!(RECORDER_MODE_FILE, 1,
-            "PCO_RecorderCreate wRecorderMode for file recording must be 1");
+        assert_eq!(
+            RECORDER_MODE_FILE, 1,
+            "PCO_RecorderCreate wRecorderMode for file recording must be 1"
+        );
     }
 
     #[test]
     fn recorder_mode_memory_is_2() {
-        assert_eq!(RECORDER_MODE_MEMORY, 2,
-            "PCO_RecorderCreate wRecorderMode for memory recording must be 2 (NOT 0)");
+        assert_eq!(
+            RECORDER_MODE_MEMORY, 2,
+            "PCO_RecorderCreate wRecorderMode for memory recording must be 2 (NOT 0)"
+        );
     }
 
     #[test]
     fn recorder_mode_camram_is_3() {
-        assert_eq!(RECORDER_MODE_CAMRAM, 3,
-            "PCO_RecorderCreate wRecorderMode for CamRAM recording must be 3");
+        assert_eq!(
+            RECORDER_MODE_CAMRAM, 3,
+            "PCO_RecorderCreate wRecorderMode for CamRAM recording must be 3"
+        );
     }
 
     #[test]
     fn recorder_type_sequence_is_1() {
-        assert_eq!(RECORDER_TYPE_SEQUENCE, 1,
-            "PCO_RecorderInit wType for sequence buffer must be 1");
+        assert_eq!(
+            RECORDER_TYPE_SEQUENCE, 1,
+            "PCO_RecorderInit wType for sequence buffer must be 1"
+        );
     }
 
     #[test]
     fn recorder_type_ring_buffer_is_2() {
-        assert_eq!(RECORDER_TYPE_RING_BUFFER, 2,
-            "PCO_RecorderInit wType for ring buffer must be 2 (NOT 0 or 1)");
+        assert_eq!(
+            RECORDER_TYPE_RING_BUFFER, 2,
+            "PCO_RecorderInit wType for ring buffer must be 2 (NOT 0 or 1)"
+        );
     }
 
     #[test]
     fn recorder_type_fifo_is_3() {
-        assert_eq!(RECORDER_TYPE_FIFO, 3,
-            "PCO_RecorderInit wType for FIFO must be 3");
+        assert_eq!(
+            RECORDER_TYPE_FIFO, 3,
+            "PCO_RecorderInit wType for FIFO must be 3"
+        );
     }
 
     // --- FrameTimestamp ---

@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use pco_sdk::{Frame, Sdk};
 
 use crate::error::AcquisitionError;
-use crate::messages::{CameraCmd, CameraConnectedInfo, CameraDeviceInfo, CameraEvt, CameraFrameData};
+use crate::messages::{
+    CameraCmd, CameraConnectedInfo, CameraDeviceInfo, CameraEvt, CameraFrameData,
+};
 
 /// System tuning values passed to the camera thread at startup.
 /// These are snapshot values from the registry — immutable for the thread's lifetime.
@@ -37,11 +39,11 @@ pub fn run(
     // Try to load the SDK once at thread start.
     let sdk = match Sdk::load() {
         Ok(sdk) => {
-            eprintln!("[camera] PCO SDK loaded successfully");
+            tracing::info!("PCO SDK loaded successfully");
             sdk
         }
         Err(e) => {
-            eprintln!("[camera] PCO SDK not available: {e}");
+            tracing::warn!(error = %e, "PCO SDK not available");
             // SDK not available — wait for commands, reject Connect.
             no_sdk_loop(&cmd_rx, &evt_tx);
             return;
@@ -54,11 +56,23 @@ pub fn run(
             Ok(CameraCmd::Enumerate) => {
                 do_enumerate(&sdk, &evt_tx);
             }
-            Ok(CameraCmd::Connect { index, exposure_us, binning }) => {
-                do_connect(&sdk, index, exposure_us, binning, &sys_cfg, &cmd_rx, &evt_tx);
+            Ok(CameraCmd::Connect {
+                index,
+                exposure_us,
+                binning,
+            }) => {
+                do_connect(
+                    &sdk,
+                    index,
+                    exposure_us,
+                    binning,
+                    &sys_cfg,
+                    &cmd_rx,
+                    &evt_tx,
+                );
             }
             Ok(CameraCmd::Shutdown) => {
-                eprintln!("[camera] shutdown");
+                tracing::info!("camera shutdown");
                 return;
             }
             Ok(_) => {} // Ignore other commands when disconnected.
@@ -67,7 +81,7 @@ pub fn run(
                 // app is exiting / has crashed. Emit one last Fatal so
                 // the UI (if anything's still listening) sees a clean
                 // signal before the thread terminates.
-                eprintln!("[camera] cmd channel closed by sender — exiting");
+                tracing::warn!("cmd channel closed by sender — exiting");
                 let _ = evt_tx.send(CameraEvt::Fatal(AcquisitionError::ChannelClosed {
                     context: "camera cmd channel (main thread gone)",
                 }));
@@ -104,7 +118,7 @@ fn no_sdk_loop(cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
 
 /// Enumerate available cameras and send results.
 fn do_enumerate(sdk: &Sdk, evt_tx: &Sender<CameraEvt>) {
-    eprintln!("[camera] enumerating cameras...");
+    tracing::debug!("enumerating cameras");
     let cameras = sdk.enumerate_cameras(4);
     let devices: Vec<CameraDeviceInfo> = cameras
         .iter()
@@ -116,22 +130,34 @@ fn do_enumerate(sdk: &Sdk, evt_tx: &Sender<CameraEvt>) {
             max_fps: c.max_fps,
         })
         .collect();
-    eprintln!("[camera] found {} camera(s)", devices.len());
+    tracing::info!(count = devices.len(), "found cameras");
     for d in &devices {
-        eprintln!("  [{}] {} {}x{} {:.1}fps", d.index, d.name, d.width, d.height, d.max_fps);
+        tracing::debug!(index = d.index, name = %d.name, width = d.width, height = d.height, max_fps = d.max_fps, "camera device");
     }
     let _ = evt_tx.send(CameraEvt::Enumerated(devices));
 }
 
 /// Handle a camera connection session. Returns when disconnected.
-fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u16, sys_cfg: &CameraTuning, cmd_rx: &Receiver<CameraCmd>, evt_tx: &Sender<CameraEvt>) {
+fn do_connect(
+    sdk: &Sdk,
+    camera_index: u16,
+    initial_exposure_us: u32,
+    binning: u16,
+    sys_cfg: &CameraTuning,
+    cmd_rx: &Receiver<CameraCmd>,
+    evt_tx: &Sender<CameraEvt>,
+) {
     // Get QPC frequency for system timestamp conversion.
     #[cfg(windows)]
     let qpc_freq = {
         let mut freq = 0i64;
-        unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut freq); }
+        unsafe {
+            let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut freq);
+        }
         if freq == 0 {
-            let _ = evt_tx.send(CameraEvt::Error("QueryPerformanceFrequency returned 0".into()));
+            let _ = evt_tx.send(CameraEvt::Error(
+                "QueryPerformanceFrequency returned 0".into(),
+            ));
             return;
         }
         freq
@@ -144,22 +170,22 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         Ok(cam) => cam,
         Err(e) => {
             let msg = format!("Failed to open camera: {e}");
-            eprintln!("[camera] {msg}");
+            tracing::error!("{msg}");
             let _ = evt_tx.send(CameraEvt::Error(msg));
             return;
         }
     };
 
     let info = camera.info();
-    eprintln!(
-        "[camera] opened: {}x{}, pixel rates: {:?}",
-        camera.width, camera.height, info.pixel_rates
+    tracing::info!(
+        width = camera.width, height = camera.height, pixel_rates = ?info.pixel_rates,
+        "camera opened",
     );
 
     // Configure camera with persisted exposure.
     if let Err(e) = configure_camera(&mut camera, initial_exposure_us, binning) {
         let msg = format!("Failed to configure camera: {e}");
-        eprintln!("[camera] {msg}");
+        tracing::error!("{msg}");
         let _ = evt_tx.send(CameraEvt::Error(msg));
         return;
     }
@@ -167,7 +193,7 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
     // Arm camera.
     if let Err(e) = camera.arm() {
         let msg = format!("Failed to arm camera: {e}");
-        eprintln!("[camera] {msg}");
+        tracing::error!("{msg}");
         let _ = evt_tx.send(CameraEvt::Error(msg));
         return;
     }
@@ -176,14 +202,16 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         Ok(fps) => fps,
         Err(e) => {
             let msg = format!("Failed to read max FPS: {e}");
-            eprintln!("[camera] {msg}");
+            tracing::error!("{msg}");
             let _ = evt_tx.send(CameraEvt::Error(msg));
             return;
         }
     };
-    eprintln!(
-        "[camera] armed: {}x{}, max {:.1} fps",
-        camera.width, camera.height, max_fps
+    tracing::info!(
+        width = camera.width,
+        height = camera.height,
+        max_fps,
+        "camera armed",
     );
 
     // Create recorder (10-frame ring buffer).
@@ -191,7 +219,7 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         Ok(rec) => rec,
         Err(e) => {
             let msg = format!("Failed to create recorder: {e}");
-            eprintln!("[camera] {msg}");
+            tracing::error!("{msg}");
             let _ = evt_tx.send(CameraEvt::Error(msg));
             return;
         }
@@ -200,28 +228,34 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
     // Start recording.
     if let Err(e) = recorder.start() {
         let msg = format!("Failed to start recording: {e}");
-        eprintln!("[camera] {msg}");
+        tracing::error!("{msg}");
         let _ = evt_tx.send(CameraEvt::Error(msg));
         return;
     }
 
-    eprintln!("[camera] recording started, waiting for first frame...");
+    tracing::info!("recording started, waiting for first frame");
 
     // Wait for first frame.
-    let deadline = Instant::now() + Duration::from_millis(sys_cfg.camera_first_frame_timeout_ms as u64);
+    let deadline =
+        Instant::now() + Duration::from_millis(sys_cfg.camera_first_frame_timeout_ms as u64);
     let first_frame = loop {
         if Instant::now() > deadline {
-            let msg = format!("Timed out waiting for first frame ({}ms)", sys_cfg.camera_first_frame_timeout_ms);
-            eprintln!("[camera] {msg}");
+            let msg = format!(
+                "Timed out waiting for first frame ({}ms)",
+                sys_cfg.camera_first_frame_timeout_ms
+            );
+            tracing::error!("{msg}");
             let _ = evt_tx.send(CameraEvt::Error(msg));
             return;
         }
         match recorder.get_latest_frame() {
             Ok(Some(frame)) => break frame,
-            Ok(None) => std::thread::sleep(Duration::from_millis(sys_cfg.camera_first_frame_poll_ms as u64)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(
+                sys_cfg.camera_first_frame_poll_ms as u64,
+            )),
             Err(e) => {
                 let msg = format!("Error reading first frame: {e}");
-                eprintln!("[camera] {msg}");
+                tracing::error!("{msg}");
                 let _ = evt_tx.send(CameraEvt::Error(msg));
                 return;
             }
@@ -243,7 +277,7 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
     let mut last_frame_sent = Instant::now();
     send_frame(evt_tx, &first_frame, &mut last_frame_sent, qpc_freq);
 
-    eprintln!("[camera] connected, entering frame loop");
+    tracing::info!("camera connected, entering frame loop");
 
     // Drop the initial recorder so we can use a uniform create-in-loop pattern.
     // The first frame was already sent above.
@@ -259,11 +293,11 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         // Apply pending exposure change before creating recorder.
         if let Some(us) = pending_exposure.take() {
             if let Err(e) = camera.set_exposure_us(us) {
-                eprintln!("[camera] set_exposure_us failed: {e}");
+                tracing::error!(error = %e, "set_exposure_us failed");
                 let _ = evt_tx.send(CameraEvt::Error(format!("Set exposure failed: {e}")));
             }
             if let Err(e) = camera.arm() {
-                eprintln!("[camera] re-arm failed: {e}");
+                tracing::error!(error = %e, "re-arm failed");
                 let _ = evt_tx.send(CameraEvt::Error(format!("Re-arm failed: {e}")));
             }
         }
@@ -271,14 +305,14 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         let mut recorder = match camera.create_recorder(10) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[camera] create recorder failed: {e}");
+                tracing::error!(error = %e, "create recorder failed");
                 let _ = evt_tx.send(CameraEvt::Error(format!("Recorder failed: {e}")));
                 break;
             }
         };
 
         if let Err(e) = recorder.start() {
-            eprintln!("[camera] start recording failed: {e}");
+            tracing::error!(error = %e, "start recording failed");
             let _ = evt_tx.send(CameraEvt::Error(format!("Start failed: {e}")));
             break;
         }
@@ -292,7 +326,7 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
                     break;
                 }
                 Ok(CameraCmd::SetExposure(us)) => {
-                    eprintln!("[camera] SetExposure({us}µs)");
+                    tracing::debug!(exposure_us = us, "set exposure");
                     let _ = recorder.stop();
                     pending_exposure = Some(us);
                     break; // break inner loop, recorder dropped, outer loop creates new one
@@ -325,7 +359,7 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
                     std::thread::sleep(poll_interval);
                 }
                 Err(e) => {
-                    eprintln!("[camera] frame read error: {e}");
+                    tracing::error!(error = %e, "frame read error");
                     let _ = evt_tx.send(CameraEvt::Error(format!("Frame read error: {e}")));
                     should_exit = true;
                     break;
@@ -339,19 +373,23 @@ fn do_connect(sdk: &Sdk, camera_index: u16, initial_exposure_us: u32, binning: u
         }
     }
 
-    eprintln!("[camera] disconnected");
+    tracing::info!("camera disconnected");
     let _ = evt_tx.send(CameraEvt::Disconnected);
 }
 
-fn configure_camera(camera: &mut pco_sdk::Camera<'_>, exposure_us: u32, binning: u16) -> pco_sdk::Result<()> {
+fn configure_camera(
+    camera: &mut pco_sdk::Camera<'_>,
+    exposure_us: u32,
+    binning: u16,
+) -> pco_sdk::Result<()> {
     let rate = camera.set_max_pixel_rate()?;
-    eprintln!("[camera] pixel rate set to {} MHz", rate / 1_000_000);
+    tracing::info!(mhz = rate / 1_000_000, "pixel rate set");
     if binning > 1 {
         camera.set_binning(binning, binning)?;
     }
     camera.set_timestamp_binary()?;
     camera.set_exposure_us(exposure_us)?;
-    eprintln!("[camera] exposure set to {}µs", exposure_us);
+    tracing::info!(exposure_us, "exposure set");
     Ok(())
 }
 
@@ -361,7 +399,9 @@ fn send_frame(evt_tx: &Sender<CameraEvt>, frame: &Frame, last_sent: &mut Instant
     #[cfg(windows)]
     let system_us = {
         let mut qpc = 0i64;
-        unsafe { let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc); }
+        unsafe {
+            let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc);
+        }
         ((qpc as i128 * 1_000_000) / _qpc_freq as i128) as i64
     };
     #[cfg(not(windows))]

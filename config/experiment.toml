@@ -20,8 +20,10 @@ vertical_offset_deg = 0.0
 projection = "spherical"
 
 [stimulus_geometry]
-azi_angular_range = 100.0
-alt_angular_range = 100.0
+# Zhuang 2017 (eLife) canonical envelope: -10° to 130° azimuth (140°),
+# -50° to 60° altitude (110°). Marshel 2011 uses 147° × 153°.
+azi_angular_range = 140.0
+alt_angular_range = 110.0
 offset_azi = 0.0
 offset_alt = 0.0
 # Number of 90° CCW rotations of camera-frame position maps before
@@ -35,12 +37,15 @@ carrier = "checkerboard"
 [stimulus.params]
 contrast = 1.0
 mean_luminance = 0.5
+# Black outside the bar (rig choice; diverges from the Marshel / Zhuang
+# mean-gray convention for a clean stimulus/FOV boundary).
 background_luminance = 0.0
 check_size_deg = 25.0
 check_size_cm = 1.0
 strobe_frequency_hz = 6.0
 stimulus_width_deg = 20.0
-sweep_speed_deg_per_sec = 90.0
+# Marshel 8.5-9.5°/s, Zhuang 9°/s.
+sweep_speed_deg_per_sec = 9.0
 rotation_speed_deg_per_sec = 15.0
 expansion_speed_deg_per_sec = 5.0
 rotation_deg = 0.0

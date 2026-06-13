@@ -1,0 +1,146 @@
+# Per-stage equivalence tolerances for cross-implementation regression.
+#
+# Each entry sets the maximum acceptable drift between (a) the new
+# refactored pipeline's output and (b) the baseline `.baseline.oisi`
+# captured by `cargo run --example capture_baseline`. Tolerances are
+# applied dataset-by-dataset under `/results/` and `/complex_maps/`.
+#
+# Two metrics per dataset:
+#   - `max_abs` — `max |new − baseline|` over all elements.
+#   - `mean_abs` — `mean |new − baseline|` over all elements.
+#
+# For datasets that should never drift (boolean masks, integer labels),
+# `bit_exact = true` forces full-array equality.
+#
+# MEASURED VALUES (2026-06-03, Phase A retinotopy switch). The retinotopy
+# stages (azi/alt phase, amplitude, VFS, vfs_smoothed, magnification,
+# eccentricity) now run on the Burn ndarray-CPU backend; the values below
+# are the observed cross-backend drift on the R43 fixture (Burn ndarray-CPU
+# vs Burn CUDA), with ~10–20×
+# headroom so the same tolerances also accommodate the GPU backends (CUDA
+# / WGPU), where f32 reduction orders differ more than between two CPU
+# libraries. The per-dataset measured max_abs is noted inline. Any future
+# change that exceeds the committed bound is investigated, not absorbed.
+#
+# Datasets read from cached `/complex_maps` (not recomputed) remain at zero
+# drift. The segmentation datasets are
+# bit_exact: the ~5-ULP upstream float drift does not change any discrete
+# patch/label/contour decision.
+
+# ── Stage 0: DFT / phase extraction (cached complex_maps) ─────────────
+
+[complex_maps.alt_fwd]
+max_abs = 1e-5
+mean_abs = 1e-6
+
+[complex_maps.alt_rev]
+max_abs = 1e-5
+mean_abs = 1e-6
+
+[complex_maps.azi_fwd]
+max_abs = 1e-5
+mean_abs = 1e-6
+
+[complex_maps.azi_rev]
+max_abs = 1e-5
+mean_abs = 1e-6
+
+# ── Stages 1–3: CycleCombine, PhaseSmoothing, VfsComputation ──────────
+# Outputs flow into the azi/alt phase, amplitude, and VFS maps. Phase
+# datasets use wrap-aware distance in the comparator.
+
+[results.azi_phase]            # measured max_abs 1.2e-6
+max_abs = 5e-5
+mean_abs = 5e-6
+
+[results.alt_phase]            # measured max_abs 1.9e-6
+max_abs = 5e-5
+mean_abs = 5e-6
+
+[results.azi_phase_degrees]    # measured max_abs 1.9e-5
+max_abs = 5e-4
+mean_abs = 5e-5
+
+[results.alt_phase_degrees]    # measured max_abs 3.0e-5
+max_abs = 5e-4
+mean_abs = 5e-5
+
+[results.azi_amplitude]        # measured max_abs 3.8e-6
+max_abs = 1e-4
+mean_abs = 1e-5
+
+[results.alt_amplitude]        # measured max_abs 3.8e-6
+max_abs = 1e-4
+mean_abs = 1e-5
+
+[results.vfs]                  # measured max_abs 6.0e-5
+# VFS is bounded to [-1, 1]; per-pixel sign flips at gradient zeros could
+# in principle spike max_abs, but the measured drift is uniformly small.
+max_abs = 1e-3
+mean_abs = 5e-5
+
+# ── Stage 4: SignMapSmoothing ─────────────────────────────────────────
+[results.vfs_smoothed]         # measured max_abs 1.1e-6
+max_abs = 5e-5
+mean_abs = 5e-6
+
+# ── Stage 5: CortexSource ─────────────────────────────────────────────
+[results.cortex_mask]
+bit_exact = true
+
+# ── Stage 6: PatchThreshold derivative ────────────────────────────────
+[results.vfs_smoothed_thresholded]   # measured max_abs 1.1e-6 over 16743 finite px
+# This map is NaN outside the cortex mask. The equivalence comparator is
+# NaN-aware: it requires NaN positions to MATCH between candidate and
+# baseline (a mismatch is a hard failure) and computes drift only over the
+# finite (in-cortex) pixels. Both gates below apply to the finite subset.
+max_abs = 5e-5
+mean_abs = 1e-5
+
+# ── Stages 7–8: PatchExtraction + PatchRefinement ─────────────────────
+# Patch IDs may renumber under different algorithm implementations even
+# when patch content matches; the equivalence test runner is responsible
+# for trying a Hungarian-style label matching before applying these
+# bit-exact gates. Labels match exactly (the segmentation is identical
+# under the small upstream float drift).
+[results.area_labels]
+bit_exact = true
+
+[results.area_signs]
+bit_exact = true
+
+[results.area_borders]
+bit_exact = true
+
+# ── Stage 10: Eccentricity ────────────────────────────────────────────
+[results.eccentricity]         # measured max_abs 7.4e-6
+max_abs = 1e-4
+mean_abs = 1e-5
+
+[results.magnification]        # measured max_abs 7.1e-5
+max_abs = 1e-3
+mean_abs = 1e-5
+
+# ── Derived contours ─────────────────────────────────────────────────
+[results.contours_azi]
+bit_exact = true
+
+[results.contours_alt]
+bit_exact = true
+
+# ── Optional responsiveness / reliability (present only for raw-acquisition inputs) ─
+[results.spectral_snr_azi]
+max_abs = 1e-3
+mean_abs = 1e-4
+
+[results.spectral_snr_alt]
+max_abs = 1e-3
+mean_abs = 1e-4
+
+[results.allen_power_snr_azi]
+max_abs = 1e-3
+mean_abs = 1e-4
+
+[results.allen_power_snr_alt]
+max_abs = 1e-3
+mean_abs = 1e-4

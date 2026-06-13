@@ -5,6 +5,12 @@ edition = "2024"
 description = "OpenISI — Intrinsic Signal Imaging acquisition and analysis"
 default-run = "openisi"
 
+[features]
+# Build the app with the CUDA Burn backend for analysis compute. Forwards
+# to `isi-analysis/cuda`; requires the CUDA toolkit at build time. Default
+# (no feature) uses the portable ndarray CPU backend.
+cuda = ["isi-analysis/cuda"]
+
 [dependencies]
 openisi-stimulus = { path = "../crates/openisi-stimulus" }
 openisi-params = { path = "../crates/openisi-params" }
@@ -15,6 +21,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 crossbeam-channel = "0.5"
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ndarray = "0.17"
 hdf5 = { package = "hdf5-metno", version = "0.12" }
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.11", features = ["static", "zlib"] }
@@ -22,9 +31,15 @@ wgpu = "24"
 pollster = "0.4"
 raw-window-handle = "0.6"
 png = "0.17"
+clap = { version = "4", features = ["derive"] }
 tauri-plugin-dialog = "2"
 ureq = "3"
-zip = "2"
+# Used only to extract a downloaded sample-data bundle (sample_data.rs).
+# Default features pull `lzma`/`xz` support (→ lzma-sys, which links the
+# native `lzma` lib and collides with the `liblzma-sys` that burn-cuda's
+# CubeCL-CPU LLVM bundler pulls). Sample bundles use deflate, so we drop
+# the xz/lzma codecs and keep the common ones.
+zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "zstd"] }
 thiserror = "2"
 paste = "1"
 
@@ -41,6 +56,8 @@ windows = { version = "0.59", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Graphics_Dwm",
     "Win32_System_Time",
+    "Win32_System_Threading",
+    "Win32_Media",
 ] }
 
 [dev-dependencies]
@@ -59,4 +76,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "headless"
-path = "src/bin/headless.rs"
+path = "src/bin/headless/main.rs"

@@ -55,6 +55,8 @@
 //! above is what defines patches.
 
 pub(crate) mod connectivity;
+#[cfg(test)]
+mod golden_cortex_morph;
 pub(crate) mod morphology;
 
 use ndarray::Array2;
@@ -130,11 +132,15 @@ pub(crate) fn extract_label_borders(labels: &Array2<i32>) -> Array2<bool> {
     let off: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
     Array2::from_shape_fn((h, w), |(r, c)| {
         let l = labels[[r, c]];
-        if l == 0 { return false; }
+        if l == 0 {
+            return false;
+        }
         off.iter().any(|&(dr, dc)| {
             let nr = r as i32 + dr;
             let nc = c as i32 + dc;
-            if nr < 0 || nr >= h as i32 || nc < 0 || nc >= w as i32 { return true; }
+            if nr < 0 || nr >= h as i32 || nc < 0 || nc >= w as i32 {
+                return true;
+            }
             labels[[nr as usize, nc as usize]] != l
         })
     })
@@ -155,18 +161,22 @@ pub fn segment_threshold_only(
     threshold: f64,
     small_patch_thr: usize,
 ) -> (Array2<i32>, Vec<i8>) {
-    use morphology::binary_opening_disk;
     use connectivity::label_patches_with_majority_sign;
+    use morphology::binary_opening_cross;
 
     let (h, w) = vfs_smooth.dim();
     let imseg = Array2::from_shape_fn((h, w), |(r, c)| {
         let v = vfs_smooth[[r, c]];
         cortex_mask[[r, c]] && v.is_finite() && v.abs() >= threshold
     });
-    let imseg = binary_opening_disk(&imseg, 3);
+    // Allen `_getRawPatchMap` opens with `ni.binary_opening(iterations=openIter)`
+    // — a 4-conn cross iterated `openIter`× (a diamond), border_value=0 — NOT a
+    // Euclidean disk. (Was `binary_opening_disk(3)`, a 29-px disk vs the 13-px
+    // diamond, and it padded the edge as foreground so the border never eroded.)
+    let imseg = binary_opening_cross(&imseg, 3);
     let mut patches = label_patches_with_majority_sign(&imseg, vfs_smooth);
     patches.retain(|p| p.area() >= small_patch_thr);
-    patches.sort_by(|a, b| b.area().cmp(&a.area()));
+    patches.sort_by_key(|b| std::cmp::Reverse(b.area()));
 
     let mut area_labels = Array2::<i32>::zeros((h, w));
     let mut area_signs: Vec<i8> = Vec::with_capacity(patches.len());
@@ -174,11 +184,12 @@ pub fn segment_threshold_only(
         let label = (i + 1) as i32;
         for r in 0..h {
             for c in 0..w {
-                if patch.mask[[r, c]] { area_labels[[r, c]] = label; }
+                if patch.mask[[r, c]] {
+                    area_labels[[r, c]] = label;
+                }
             }
         }
         area_signs.push(patch.sign);
     }
     (area_labels, area_signs)
 }
-

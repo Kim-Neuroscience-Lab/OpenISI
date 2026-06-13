@@ -38,7 +38,26 @@ struct Uniforms {
 
     // Monitor physical rotation (offset 96)
     monitor_rotation_deg: f32,       // 96
-    _pad0: f32,                      // 100
+    // Calibration tick overlay enable (0.0 / 1.0). Used during preview to
+    // draw 1-cm-spaced ticks around the monitor borders for rig calibration.
+    show_ticks: f32,                 // 100
+
+    // Stimulus angular envelope (offset 104)
+    // Declared sweep range (deg) and visual-space center for FOV masking.
+    swept_range_deg: vec2<f32>,      // 104
+    swept_center_deg: vec2<f32>,     // 112
+
+    // Bisector intercept (offset 120). Where the eye's perpendicular ray
+    // to the monitor lands, in cm from the monitor geometric center
+    // (+x = anterior, +y = up). Shifts the monitor's internal cm origin
+    // before the pixel→angle transform so the bisector intercept is at
+    // visual angle (0, 0). Mirrors Zhuang's `C2A_cm`/`C2T_cm`.
+    bisector_cm: vec2<f32>,          // 120
+
+    // FOV envelope as a flat axis-aligned rectangle in monitor cm
+    // (offset 128, vec4 16-aligned). (y_min, y_max, z_min, z_max).
+    // Pixels outside go to background_luminance.
+    fov_mask_cm: vec4<f32>,          // 128
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -105,9 +124,10 @@ fn uv_to_equator_angle(uv: vec2<f32>) -> vec2<f32> {
         az = (uv.x - 0.5) * uniforms.visual_field_deg.x;
         el = (0.5 - uv.y) * uniforms.visual_field_deg.y;  // flip Y: UV y-down, elevation y-up
     } else {
-        // Convert UV to physical cm on display
-        let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x;   // horizontal
-        let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y;   // vertical (flipped)
+        // Convert UV to physical cm on display, shifted so the bisector
+        // intercept is the cm origin (mirrors Zhuang's C2A/C2T convention).
+        let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x - uniforms.bisector_cm.x;
+        let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y - uniforms.bisector_cm.y;
         let xo = uniforms.viewing_distance_cm;
 
         if (uniforms.projection_type == 1) {
@@ -122,7 +142,8 @@ fn uv_to_equator_angle(uv: vec2<f32>) -> vec2<f32> {
         }
     }
 
-    // Apply center offset
+    // Apply center offset (visual-space angular offset, independent of
+    // the bisector-cm shift applied above).
     az = az - uniforms.center_offset_deg.x;
     el = el - uniforms.center_offset_deg.y;
 
@@ -130,12 +151,13 @@ fn uv_to_equator_angle(uv: vec2<f32>) -> vec2<f32> {
 }
 
 fn uv_to_polar(uv: vec2<f32>) -> vec2<f32> {
-    // Returns (eccentricity, polar_angle) in degrees
-    let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x;   // horizontal
-    let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y;   // vertical (flipped)
+    // Returns (eccentricity, polar_angle) in degrees, with origin at the
+    // bisector intercept (cm-shifted) and then visual-space center offset.
+    let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x - uniforms.bisector_cm.x;
+    let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y - uniforms.bisector_cm.y;
     let xo = uniforms.viewing_distance_cm;
 
-    // Apply center offset in cm (convert degrees to cm at viewing distance)
+    // Apply visual-space center offset in cm (convert degrees to cm at viewing distance)
     let offset_y_cm = xo * tan(radians(uniforms.center_offset_deg.x));
     let offset_z_cm = xo * tan(radians(uniforms.center_offset_deg.y));
     let cy = y_cm - offset_y_cm;
@@ -150,11 +172,12 @@ fn uv_to_polar(uv: vec2<f32>) -> vec2<f32> {
 
 fn uv_to_pattern_position(uv: vec2<f32>) -> vec2<f32> {
     // Position for checkerboard pattern in projection-appropriate units.
-    let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x;
-    let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y;
+    // Same cm-origin shift as the equator/polar transforms.
+    let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x - uniforms.bisector_cm.x;
+    let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y - uniforms.bisector_cm.y;
     let xo = uniforms.viewing_distance_cm;
 
-    // Apply center offset in cm
+    // Apply visual-space center offset in cm
     let offset_y_cm = tan(radians(uniforms.center_offset_deg.x)) * xo;
     let offset_z_cm = tan(radians(uniforms.center_offset_deg.y)) * xo;
     let cy = y_cm - offset_y_cm;
@@ -274,18 +297,21 @@ fn bar_envelope(uv: vec2<f32>) -> f32 {
 
     // Determine sweep axis based on direction:
     // 0=LR, 1=RL, 2=TB, 3=BT
+    // sweep_extent is the DECLARED angular range (not the monitor's full
+    // angular subtense) so the bar enters and exits exactly the envelope
+    // recorded in `/experiment_params`.
     var sweep_extent: f32;
     var pos_along_sweep: f32;
     var bar_center: f32;
 
     if (uniforms.direction <= 1) {
         // Horizontal sweep (left-right or right-left)
-        sweep_extent = uniforms.visual_field_deg.x;
-        pos_along_sweep = pos_deg.x;
+        sweep_extent = uniforms.swept_range_deg.x;
+        pos_along_sweep = pos_deg.x - uniforms.swept_center_deg.x;
     } else {
         // Vertical sweep (top-bottom or bottom-top)
-        sweep_extent = uniforms.visual_field_deg.y;
-        pos_along_sweep = pos_deg.y;
+        sweep_extent = uniforms.swept_range_deg.y;
+        pos_along_sweep = pos_deg.y - uniforms.swept_center_deg.y;
     }
 
     let total_travel = sweep_extent + uniforms.stimulus_width_deg;
@@ -407,6 +433,119 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         lum = fullfield_envelope(uv);
     }
+
+    // FOV mask: a flat axis-aligned rectangle in monitor cm space whose
+    // corners are the projected corners of the visual (az, el) FOV
+    // envelope. Pixels outside the rectangle go to background_luminance.
+    // The drawn outline lines (in the show_ticks block below) still
+    // show the true curved envelope in visual coords for reference.
+    if (uniforms.envelope_type >= 1 && uniforms.envelope_type <= 3) {
+        let y_cm_raw = (uv.x - 0.5) * uniforms.display_size_cm.x;
+        let z_cm_raw = (0.5 - uv.y) * uniforms.display_size_cm.y;
+        if (y_cm_raw < uniforms.fov_mask_cm.x ||
+            y_cm_raw > uniforms.fov_mask_cm.y ||
+            z_cm_raw < uniforms.fov_mask_cm.z ||
+            z_cm_raw > uniforms.fov_mask_cm.w) {
+            lum = uniforms.background_luminance;
+        }
+    }
+
+    // Calibration tick overlay (preview only). 1-cm-spaced ticks along
+    // all four monitor borders, centered on monitor geometric center.
+    // Minor = 1 cm, major = 5 cm. Same thickness, longer length on majors.
+    // Major ticks carry signed cm labels via a 7-segment digit renderer.
+    if (uniforms.show_ticks > 0.5) {
+        let y_cm = (uv.x - 0.5) * uniforms.display_size_cm.x;
+        let z_cm = (0.5 - uv.y) * uniforms.display_size_cm.y;
+        let half_w = uniforms.display_size_cm.x * 0.5;
+        let half_h = uniforms.display_size_cm.y * 0.5;
+
+        // ~1.5-pixel thickness via screen-space derivatives. fwidth in cm
+        // per fragment ≈ 1 px of cm; multiply for a hair of antialias.
+        let thick_cm_h = fwidth(y_cm) * 1.5;   // for vertical strokes
+        let thick_cm_v = fwidth(z_cm) * 1.5;   // for horizontal strokes
+        let minor_len_cm = 0.4;
+        let major_len_cm = 1.2;
+
+        let dist_to_top = half_h - z_cm;
+        let dist_to_bot = z_cm + half_h;
+        let dist_to_left = y_cm + half_w;
+        let dist_to_right = half_w - y_cm;
+
+        // Horizontal border (top + bottom): vertical tick at integer y_cm.
+        let near_horiz_edge = min(dist_to_top, dist_to_bot);
+        if (near_horiz_edge >= 0.0 && near_horiz_edge < major_len_cm) {
+            let nearest = round(y_cm);
+            let dy = abs(y_cm - nearest);
+            let is_major = abs(nearest - round(nearest / 5.0) * 5.0) < 0.01;
+            let len = select(minor_len_cm, major_len_cm, is_major);
+            if (dy < thick_cm_h && near_horiz_edge < len) {
+                lum = 1.0;
+            }
+        }
+        // Vertical border (left + right): horizontal tick at integer z_cm.
+        let near_vert_edge = min(dist_to_left, dist_to_right);
+        if (near_vert_edge >= 0.0 && near_vert_edge < major_len_cm) {
+            let nearest = round(z_cm);
+            let dz = abs(z_cm - nearest);
+            let is_major = abs(nearest - round(nearest / 5.0) * 5.0) < 0.01;
+            let len = select(minor_len_cm, major_len_cm, is_major);
+            if (dz < thick_cm_v && near_vert_edge < len) {
+                lum = 1.0;
+            }
+        }
+
+        // Bisector crosshair: a full-width horizontal + full-height
+        // vertical line crossing at (bisector_cm.x, bisector_cm.y) on
+        // the monitor face, with a small filled dot at the intersection.
+        // Marks where the eye's perpendicular ray hits the monitor —
+        // the origin of the visual-field coordinate system (az=0, el=0).
+        let bx = uniforms.bisector_cm.x;
+        let by = uniforms.bisector_cm.y;
+        let xhair_thick_h = fwidth(z_cm) * 1.5;
+        let xhair_thick_v = fwidth(y_cm) * 1.5;
+        if (abs(z_cm - by) < xhair_thick_h) { lum = 1.0; }
+        if (abs(y_cm - bx) < xhair_thick_v) { lum = 1.0; }
+        let dot_radius_cm = 0.2;
+        let dx_cm = y_cm - bx;
+        let dy_cm = z_cm - by;
+        if (dx_cm * dx_cm + dy_cm * dy_cm < dot_radius_cm * dot_radius_cm) {
+            lum = 1.0;
+        }
+
+        // FOV envelope outline: a white box at the four edges of the
+        // declared `azi_angular_range × alt_angular_range` rectangle in
+        // VISUAL (az, el) space — so the mouse's stimulated FOV is
+        // visible against the gray FOV-masked background. The box is
+        // straight in visual coordinates but curves in monitor cm
+        // coordinates due to the spherical projection. Thickness in
+        // visual degrees so it stays visible across the spherical
+        // periphery where pos_deg.x changes slowly with pixel x.
+        let pos_deg = uv_to_equator_angle(uv);
+        let half_az = uniforms.swept_range_deg.x * 0.5;
+        let half_el = uniforms.swept_range_deg.y * 0.5;
+        let az_min = uniforms.swept_center_deg.x - half_az;
+        let az_max = uniforms.swept_center_deg.x + half_az;
+        let el_min = uniforms.swept_center_deg.y - half_el;
+        let el_max = uniforms.swept_center_deg.y + half_el;
+        // Pixel-aware thickness, but with a 0.3° floor so the line stays
+        // visible even where the projection is near-linear (center) and
+        // fwidth is small. At the spherical periphery, the projection
+        // squashes pos_deg, so the floor kicks in to keep the line ≥1 px.
+        let az_line_thick = max(fwidth(pos_deg.x) * 2.0, 0.3);
+        let el_line_thick = max(fwidth(pos_deg.y) * 2.0, 0.3);
+        let inside_el = pos_deg.y >= el_min - el_line_thick && pos_deg.y <= el_max + el_line_thick;
+        let inside_az = pos_deg.x >= az_min - az_line_thick && pos_deg.x <= az_max + az_line_thick;
+        if (inside_el && (abs(pos_deg.x - az_min) < az_line_thick ||
+                          abs(pos_deg.x - az_max) < az_line_thick)) {
+            lum = 1.0;
+        }
+        if (inside_az && (abs(pos_deg.y - el_min) < el_line_thick ||
+                          abs(pos_deg.y - el_max) < el_line_thick)) {
+            lum = 1.0;
+        }
+    }
+
     lum = clamp(lum, 0.0, 1.0);
     return vec4<f32>(lum, lum, lum, 1.0);
 }

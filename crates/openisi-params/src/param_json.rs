@@ -15,10 +15,10 @@ use serde_json::Value;
 
 use crate::error::{ParamsError, ParamsResult};
 use crate::{
-    Carrier, CortexSourceKind, CycleCombineKind, EccentricityKind, Envelope, Order,
-    ParamValue, PatchExtractionKind, PatchRefinementKind, PatchThresholdKind,
-    PhaseSmoothingKind, Projection, QualityGateKind, SignMapSmoothingKind, Structure,
-    VfsComputationKind,
+    BaselineKind, Carrier, CortexSourceKind, CycleAverageKind, CycleCombineKind, EccentricityKind,
+    Envelope, Order, ParamValue, PatchExtractionKind, PatchRefinementKind, PatchThresholdKind,
+    PhaseSmoothingKind, Projection, SignMapSmoothingKind, Structure, VfsComputationKind,
+    VisualField,
 };
 
 /// Convert a `ParamValue` to a `serde_json::Value`. Enums serialize via
@@ -47,6 +47,9 @@ pub fn to_json(v: &ParamValue) -> Value {
         ParamValue::Projection(p) => ser(p),
         ParamValue::Structure(s) => ser(s),
         ParamValue::Order(o) => ser(o),
+        ParamValue::VisualField(v) => ser(v),
+        ParamValue::Baseline(k) => ser(k),
+        ParamValue::CycleAverage(k) => ser(k),
         ParamValue::CycleCombine(k) => ser(k),
         ParamValue::PhaseSmoothing(k) => ser(k),
         ParamValue::VfsComputation(k) => ser(k),
@@ -55,7 +58,6 @@ pub fn to_json(v: &ParamValue) -> Value {
         ParamValue::PatchThreshold(k) => ser(k),
         ParamValue::PatchExtraction(k) => ser(k),
         ParamValue::PatchRefinement(k) => ser(k),
-        ParamValue::QualityGate(k) => ser(k),
         ParamValue::Eccentricity(k) => ser(k),
     }
 }
@@ -79,25 +81,35 @@ pub fn from_json(template: &ParamValue, json: &Value, path: &str) -> ParamsResul
             let n = json
                 .as_u64()
                 .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
-            u16::try_from(n)
-                .map(ParamValue::U16)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for u16 (0..={})", u16::MAX)))
+            u16::try_from(n).map(ParamValue::U16).map_err(|_| {
+                cfg(format!(
+                    "value {n} at {path} out of range for u16 (0..={})",
+                    u16::MAX
+                ))
+            })
         }
         ParamValue::U32(_) => {
             let n = json
                 .as_u64()
                 .ok_or_else(|| cfg(format!("expected non-negative integer at {path}")))?;
-            u32::try_from(n)
-                .map(ParamValue::U32)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for u32 (0..={})", u32::MAX)))
+            u32::try_from(n).map(ParamValue::U32).map_err(|_| {
+                cfg(format!(
+                    "value {n} at {path} out of range for u32 (0..={})",
+                    u32::MAX
+                ))
+            })
         }
         ParamValue::I32(_) => {
             let n = json
                 .as_i64()
                 .ok_or_else(|| cfg(format!("expected integer at {path}")))?;
-            i32::try_from(n)
-                .map(ParamValue::I32)
-                .map_err(|_| cfg(format!("value {n} at {path} out of range for i32 ({}..={})", i32::MIN, i32::MAX)))
+            i32::try_from(n).map(ParamValue::I32).map_err(|_| {
+                cfg(format!(
+                    "value {n} at {path} out of range for i32 ({}..={})",
+                    i32::MIN,
+                    i32::MAX
+                ))
+            })
         }
         ParamValue::Usize(_) => {
             let n = json
@@ -119,7 +131,11 @@ pub fn from_json(template: &ParamValue, json: &Value, path: &str) -> ParamsResul
         ParamValue::StringVec(_) => json
             .as_array()
             .map(|arr| {
-                ParamValue::StringVec(arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                ParamValue::StringVec(
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
+                )
             })
             .ok_or_else(|| cfg(format!("expected array of strings at {path}"))),
         ParamValue::Envelope(_) => json
@@ -147,6 +163,25 @@ pub fn from_json(template: &ParamValue, json: &Value, path: &str) -> ParamsResul
             .and_then(|s| serde_json::from_str::<Order>(&str_enum(s)).ok())
             .map(ParamValue::Order)
             .ok_or_else(|| cfg(format!("expected order string at {path}"))),
+        ParamValue::VisualField(_) => json
+            .as_str()
+            .and_then(|s| serde_json::from_str::<VisualField>(&str_enum(s)).ok())
+            .map(ParamValue::VisualField)
+            .ok_or_else(|| {
+                cfg(format!(
+                    "expected visual_field string (\"left\" or \"right\") at {path}"
+                ))
+            }),
+        ParamValue::Baseline(_) => json
+            .as_str()
+            .and_then(|s| serde_json::from_str::<BaselineKind>(&str_enum(s)).ok())
+            .map(ParamValue::Baseline)
+            .ok_or_else(|| cfg(format!("expected baseline method string at {path}"))),
+        ParamValue::CycleAverage(_) => json
+            .as_str()
+            .and_then(|s| serde_json::from_str::<CycleAverageKind>(&str_enum(s)).ok())
+            .map(ParamValue::CycleAverage)
+            .ok_or_else(|| cfg(format!("expected cycle_average method string at {path}"))),
         ParamValue::CycleCombine(_) => json
             .as_str()
             .and_then(|s| serde_json::from_str::<CycleCombineKind>(&str_enum(s)).ok())
@@ -166,7 +201,11 @@ pub fn from_json(template: &ParamValue, json: &Value, path: &str) -> ParamsResul
             .as_str()
             .and_then(|s| serde_json::from_str::<SignMapSmoothingKind>(&str_enum(s)).ok())
             .map(ParamValue::SignMapSmoothing)
-            .ok_or_else(|| cfg(format!("expected sign_map_smoothing method string at {path}"))),
+            .ok_or_else(|| {
+                cfg(format!(
+                    "expected sign_map_smoothing method string at {path}"
+                ))
+            }),
         ParamValue::CortexSource(_) => json
             .as_str()
             .and_then(|s| serde_json::from_str::<CortexSourceKind>(&str_enum(s)).ok())
@@ -187,11 +226,6 @@ pub fn from_json(template: &ParamValue, json: &Value, path: &str) -> ParamsResul
             .and_then(|s| serde_json::from_str::<PatchRefinementKind>(&str_enum(s)).ok())
             .map(ParamValue::PatchRefinement)
             .ok_or_else(|| cfg(format!("expected patch_refinement method string at {path}"))),
-        ParamValue::QualityGate(_) => json
-            .as_str()
-            .and_then(|s| serde_json::from_str::<QualityGateKind>(&str_enum(s)).ok())
-            .map(ParamValue::QualityGate)
-            .ok_or_else(|| cfg(format!("expected quality_gate method string at {path}"))),
         ParamValue::Eccentricity(_) => json
             .as_str()
             .and_then(|s| serde_json::from_str::<EccentricityKind>(&str_enum(s)).ok())

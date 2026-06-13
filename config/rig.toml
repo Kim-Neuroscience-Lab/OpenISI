@@ -35,5 +35,10 @@ drop_detection_warmup_frames = 10
 drop_detection_threshold = 1.5
 
 [paths]
-data_directory = "/Users/Adam/openisi/data"
+# Per-machine data location. Empty string = fall back to the platform
+# default (`~/Documents/OpenISI` on Windows/macOS) chosen at startup
+# in src-tauri/src/lib.rs. Override in the user/dev rig.toml overlay
+# if a specific path is wanted on this machine; do not commit a
+# machine-specific path to the shared baseline.
+data_directory = ""
 experiments_directory = ""

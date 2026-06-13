@@ -47,8 +47,9 @@ pub enum StimulusEvt {
     /// Stimulus preview frame (PNG bytes for the scientist's preview panel).
     /// Sent periodically during acquisition and preview mode (~10 fps).
     PreviewFrame(StimulusPreviewFrame),
-    /// Acquisition completed normally.
-    Complete(AcquisitionResult),
+    /// Acquisition completed normally. Boxed: `AcquisitionResult` is large
+    /// (~790 B) relative to the other variants of this channel message.
+    Complete(Box<AcquisitionResult>),
     /// Acquisition stopped by user.
     Stopped,
     /// Transient error — acquisition continues. Logged to UI but the
@@ -119,13 +120,59 @@ pub enum CameraCmd {
     /// Enumerate available cameras (results sent via CameraEvt::Enumerated).
     Enumerate,
     /// Connect to camera by index, with initial exposure and binning.
-    Connect { index: u16, exposure_us: u32, binning: u16 },
+    Connect {
+        index: u16,
+        exposure_us: u32,
+        binning: u16,
+    },
     /// Disconnect from the camera.
     Disconnect,
     /// Set camera exposure in microseconds.
     SetExposure(u32),
     /// Shut down the thread entirely.
     Shutdown,
+}
+
+// =============================================================================
+// Analysis Thread
+// =============================================================================
+
+/// Commands sent TO the analysis worker thread.
+///
+/// `Run` always preempts any in-flight analysis (the worker sets the
+/// previous request's cancel flag and joins before starting). This is
+/// the architectural fix for "UI freezes during analysis" — the IPC
+/// command thread now just sends and returns, the worker owns the
+/// heavy work, and rapid param changes don't pile up.
+pub enum AnalysisCmd {
+    /// Boxed: `AnalysisRequest` is large relative to the unit `Shutdown` variant.
+    Run(Box<AnalysisRequest>),
+    Shutdown,
+}
+
+pub struct AnalysisRequest {
+    pub path: std::path::PathBuf,
+    pub snapshot: crate::params::RegistrySnapshot,
+    pub params_tree: serde_json::Value,
+}
+
+/// Events sent FROM the analysis worker thread (forwarded to the
+/// frontend as Tauri `analysis-*` events).
+pub enum AnalysisEvt {
+    /// New analysis has started running on the worker.
+    Started { path: std::path::PathBuf },
+    /// Analysis completed successfully. UI should reload results.
+    Complete {
+        path: std::path::PathBuf,
+        message: String,
+    },
+    /// Analysis returned an error.
+    Failed {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// Analysis was preempted by a newer request.
+    Cancelled { path: std::path::PathBuf },
 }
 
 /// Events sent FROM the camera thread.

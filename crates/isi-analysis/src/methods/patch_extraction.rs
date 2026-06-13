@@ -32,10 +32,11 @@ pub enum PatchExtractionMethod {
     /// 3. Per-patch `scipy.ndimage.binary_closing(currPatch,
     ///    iterations=close_iter)` — smooth each patch's boundary using
     ///    the same 4-conn cross / Manhattan-disk SE.
-    /// 4. `_dilationPatches2(labels, dilation_iter, border_width)` —
-    ///    iterative label-aware dilation that preserves single-pixel
-    ///    inter-patch borders (a pixel only takes a label if exactly
-    ///    one label is in its 8-neighborhood).
+    /// 4. `dilation_patches2_allen(patchmap, dilation_iter, border_width)` —
+    ///    Allen's bulk-dilate-then-skeletonize separation: dilate the seed
+    ///    patches, skeletonize the halo where dilations collide, subtract
+    ///    that skeleton from the dilated union, and keep only components
+    ///    that still overlap a seed (`RetinotopicMapping.py` L190–225).
     /// 5. Trim labels within `border_width` of the image edge.
     /// 6. Majority-sign assignment per final patch from `vfs_smoothed`.
     AllenZhuang2017LabelOpenCloseDilate {
@@ -71,20 +72,59 @@ pub struct PatchExtractionOutput {
     pub patches: Vec<Patch>,
 }
 
+/// Allen `_getRawPatchMap` (`RetinotopicMapping.py` L1404-1439): the binary
+/// patch-candidate map — `binary_opening(open_iter)` (4-conn cross) →
+/// `label` (4-conn) → close each labeled component independently
+/// (`binary_closing(close_iter)`) → recombine. Allen *sums* the closed patches;
+/// we OR-union, which has identical binary support and is associative, so the
+/// parallel reduce stays bit-exact. Extracted from [`PatchExtractionMethod::apply`]
+/// so it is golden-testable directly against scipy.
+pub(crate) fn raw_patch_map_allen(
+    imseg: &Array2<bool>,
+    open_iter: i32,
+    close_iter: i32,
+) -> Array2<bool> {
+    use rayon::prelude::*;
+
+    use crate::segmentation::connectivity::label_4conn;
+    use crate::segmentation::morphology::{binary_closing_cross, binary_opening_cross};
+
+    let (h, w) = imseg.dim();
+    let opened = binary_opening_cross(imseg, open_iter);
+    let (labels, n_initial) = label_4conn(&opened);
+    (1..=n_initial as i32)
+        .into_par_iter()
+        .map(|k| {
+            let mask_k = Array2::from_shape_fn((h, w), |(r, c)| labels[[r, c]] == k);
+            if close_iter > 0 {
+                binary_closing_cross(&mask_k, close_iter)
+            } else {
+                mask_k
+            }
+        })
+        .reduce(
+            || Array2::<bool>::from_elem((h, w), false),
+            |mut acc, m| {
+                ndarray::Zip::from(&mut acc).and(&m).for_each(|a, &b| {
+                    if b {
+                        *a = true;
+                    }
+                });
+                acc
+            },
+        )
+}
+
 impl PatchExtractionMethod {
     /// Extract patches from `imseg` (the post-threshold binary mask) and
     /// the smoothed VFS (used to assign patch signs). Mirrors Allen's
     /// `_getRawPatchMap` (`RetinotopicMapping.py` L1089–1124) followed
     /// by `_getRawPatches` (L1126–1182) end-to-end.
-    pub fn apply(
-        &self,
-        imseg: &Array2<bool>,
-        vfs_smoothed: &Array2<f64>,
-    ) -> PatchExtractionOutput {
-        use crate::segmentation::morphology::{binary_closing_cross, binary_opening_cross};
+    pub fn apply(&self, imseg: &Array2<bool>, vfs_smoothed: &Array2<f64>) -> PatchExtractionOutput {
+        use rayon::prelude::*;
+
         use crate::segmentation::connectivity::{
-            dilation_patches2_allen, is_adjacent, label_4conn,
-            patches_from_labels_majority_sign,
+            dilation_patches2_allen, is_adjacent, label_4conn, patches_from_labels_majority_sign,
         };
         match self {
             Self::AllenZhuang2017LabelOpenCloseDilate {
@@ -94,51 +134,74 @@ impl PatchExtractionMethod {
                 border_width,
                 small_patch_thr,
             } => {
-                let (open_iter, close_iter, dilation_iter, border_width, small_patch_thr) =
-                    (*open_iter, *close_iter, *dilation_iter, *border_width, *small_patch_thr);
+                let (open_iter, close_iter, dilation_iter, border_width, small_patch_thr) = (
+                    *open_iter,
+                    *close_iter,
+                    *dilation_iter,
+                    *border_width,
+                    *small_patch_thr,
+                );
                 let (h, w) = imseg.dim();
-
-                let opened = binary_opening_cross(imseg, open_iter);
-                let (labels, n_initial) = label_4conn(&opened);
-
-                let mut patchmap2 = Array2::<bool>::from_elem((h, w), false);
-                for k in 1..=n_initial as i32 {
-                    let mask_k = Array2::from_shape_fn((h, w), |(r, c)| labels[[r, c]] == k);
-                    let closed = if close_iter > 0 {
-                        binary_closing_cross(&mask_k, close_iter)
-                    } else {
-                        mask_k
-                    };
-                    for r in 0..h {
-                        for c in 0..w {
-                            if closed[[r, c]] { patchmap2[[r, c]] = true; }
-                        }
-                    }
-                }
-
-                let dilated = dilation_patches2_allen(&patchmap2, dilation_iter, border_width);
-                let (final_labels, n_final) = label_4conn(&dilated);
-                let mut patches = patches_from_labels_majority_sign(
-                    &final_labels, n_final, vfs_smoothed,
+                tracing::debug!(
+                    width = w,
+                    height = h,
+                    open_iter,
+                    close_iter,
+                    dilation_iter,
+                    "patch extraction start"
                 );
 
-                patches.retain(|p| p.area() >= small_patch_thr);
+                // Allen `_getRawPatchMap` — extracted so it is golden-tested
+                // directly against scipy (see `raw_patch_map_allen`).
+                let patchmap2 = raw_patch_map_allen(imseg, open_iter, close_iter);
 
-                // Drop isolated patches: no other patch adjacent within `2·border_width`.
+                tracing::debug!("starting Allen dilation+skeleton");
+                let dilated = dilation_patches2_allen(&patchmap2, dilation_iter, border_width);
+                tracing::debug!("Allen dilation done; relabeling");
+                let (final_labels, n_final) = label_4conn(&dilated);
+                tracing::debug!(components = n_final, "final components; assigning signs");
+                let mut patches =
+                    patches_from_labels_majority_sign(&final_labels, n_final, vfs_smoothed);
+
+                let before = patches.len();
+                patches.retain(|p| p.area() >= small_patch_thr);
+                tracing::debug!(
+                    before,
+                    after = patches.len(),
+                    threshold = small_patch_thr,
+                    "patches after size filter"
+                );
+
+                // Drop isolated patches: no other patch adjacent within
+                // `2·border_width`. Skipped when the patch count is in
+                // noise-dominated territory (real mouse retinotopy ≈ 10–15
+                // areas; > 100 patches means the input VFS has no SNR and
+                // the adjacency filter would just be expensive theatre on
+                // garbage data — the user needs more cycles, not more
+                // post-processing on a noise field).
+                const ADJACENCY_FILTER_MAX_PATCHES: usize = 100;
                 let adjacency_width = (2 * border_width).max(1);
-                let masks: Vec<Array2<bool>> = patches.iter().map(|p| p.mask.clone()).collect();
-                let mut keep = vec![true; patches.len()];
-                for i in 0..patches.len() {
-                    let mut touching = false;
-                    for j in 0..patches.len() {
-                        if i == j { continue; }
-                        if is_adjacent(&masks[i], &masks[j], adjacency_width) {
-                            touching = true;
-                            break;
-                        }
-                    }
-                    if !touching { keep[i] = false; }
-                }
+                let keep: Vec<bool> = if patches.len() > ADJACENCY_FILTER_MAX_PATCHES {
+                    tracing::warn!(
+                        patches = patches.len(),
+                        threshold = ADJACENCY_FILTER_MAX_PATCHES,
+                        "skipping adjacency filter — patch count over threshold \
+                         (input VFS is noise-dominated; acquire more cycles for better SNR)",
+                    );
+                    vec![true; patches.len()]
+                } else {
+                    let masks: Vec<Array2<bool>> = patches.iter().map(|p| p.mask.clone()).collect();
+                    // Each patch's "is any other patch adjacent?" test is
+                    // independent; ordered `collect` keeps `keep[i]` aligned.
+                    (0..patches.len())
+                        .into_par_iter()
+                        .map(|i| {
+                            (0..patches.len()).any(|j| {
+                                i != j && is_adjacent(&masks[i], &masks[j], adjacency_width)
+                            })
+                        })
+                        .collect()
+                };
                 let mut idx = 0;
                 patches.retain(|_| {
                     let k = keep[idx];

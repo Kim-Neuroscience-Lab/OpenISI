@@ -41,7 +41,11 @@ impl Profile {
     /// Pure core of [`Profile::resolve`], factored out for testing.
     pub fn from_env_value(value: Option<&str>, default_is_dev: bool) -> Result<Profile, String> {
         match value {
-            None => Ok(if default_is_dev { Profile::Dev } else { Profile::User }),
+            None => Ok(if default_is_dev {
+                Profile::Dev
+            } else {
+                Profile::User
+            }),
             Some(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "dev" => Ok(Profile::Dev),
                 "user" => Ok(Profile::User),
@@ -113,7 +117,10 @@ pub fn resolve_layout(
             .to_path_buf(),
     };
 
-    Ok(ConfigLayout { shipped_dir, user_dir })
+    Ok(ConfigLayout {
+        shipped_dir,
+        user_dir,
+    })
 }
 
 /// The default data directory when the user has not set one:
@@ -132,10 +139,19 @@ mod tests {
 
     #[test]
     fn profile_env_explicit_wins() {
-        assert_eq!(Profile::from_env_value(Some("dev"), false).unwrap(), Profile::Dev);
-        assert_eq!(Profile::from_env_value(Some("user"), true).unwrap(), Profile::User);
+        assert_eq!(
+            Profile::from_env_value(Some("dev"), false).unwrap(),
+            Profile::Dev
+        );
+        assert_eq!(
+            Profile::from_env_value(Some("user"), true).unwrap(),
+            Profile::User
+        );
         // Case/whitespace tolerant.
-        assert_eq!(Profile::from_env_value(Some("  DEV "), false).unwrap(), Profile::Dev);
+        assert_eq!(
+            Profile::from_env_value(Some("  DEV "), false).unwrap(),
+            Profile::Dev
+        );
     }
 
     #[test]
@@ -179,7 +195,8 @@ mod tests {
     #[test]
     fn layout_missing_shipped_baseline_is_fatal() {
         // installed build but no resource_dir resolved.
-        let err = resolve_layout(false, Profile::User, None, None, Some(Path::new("/x"))).unwrap_err();
+        let err =
+            resolve_layout(false, Profile::User, None, None, Some(Path::new("/x"))).unwrap_err();
         assert!(err.contains("bundle resource"), "got: {err}");
     }
 

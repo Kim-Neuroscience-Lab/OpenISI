@@ -3,13 +3,21 @@
 //! A snapshot clones all values at a point in time. Thread-safe (Send + Sync via Clone).
 //! Typed getters match Registry's interface so consumers can use either interchangeably.
 
+use super::hardware::HardwareContext;
+use super::{Carrier, Envelope, Order, Projection, Structure, VisualField};
 use super::{ParamId, ParamValue, PARAM_DEFS};
-use super::{Carrier, Envelope, Order, Projection, Structure};
 
-/// Frozen snapshot of all parameter values at a point in time.
+/// Frozen snapshot of all parameter values at a point in time, plus the
+/// hardware context they were captured against. The hardware fields are
+/// the EDID/runtime facts the registry currently believes about the
+/// connected hardware; snapshot consumers should prefer the
+/// `effective_*` accessors which apply the user-override > hardware >
+/// shipped-default precedence rather than reading the raw param.
 #[derive(Debug, Clone)]
 pub struct RegistrySnapshot {
     pub(crate) values: Vec<ParamValue>,
+    pub(crate) hardware: HardwareContext,
+    pub(crate) user_overrides: std::collections::HashSet<ParamId>,
 }
 
 impl RegistrySnapshot {
@@ -35,6 +43,38 @@ impl RegistrySnapshot {
         &PARAM_DEFS[id as usize]
     }
 
+    /// True iff the named param was set by the user (UI / overlay file)
+    /// rather than coming from the shipped baseline.
+    pub fn is_user_override(&self, id: ParamId) -> bool {
+        self.user_overrides.contains(&id)
+    }
+
+    /// The hardware context this snapshot was captured against.
+    pub fn hardware(&self) -> &HardwareContext {
+        &self.hardware
+    }
+
+    /// Effective monitor panel width in cm — see
+    /// [`crate::hardware::effective_hardware_value`] for precedence rules.
+    pub fn effective_monitor_width_cm(&self) -> Option<f64> {
+        crate::hardware::effective_hardware_value(
+            self.user_overrides.contains(&ParamId::MonitorWidthCm),
+            self.monitor_width_cm(),
+            self.hardware.monitor_width_cm,
+            |w| *w > 0.0,
+        )
+    }
+
+    /// Effective monitor panel height in cm — same precedence as width.
+    pub fn effective_monitor_height_cm(&self) -> Option<f64> {
+        crate::hardware::effective_hardware_value(
+            self.user_overrides.contains(&ParamId::MonitorHeightCm),
+            self.monitor_height_cm(),
+            self.hardware.monitor_height_cm,
+            |h| *h > 0.0,
+        )
+    }
+
     /// Serialize every param with `def.persist == target` into a nested
     /// JSON object, using each param's `toml_path` as the dotted key. The
     /// resulting tree mirrors the TOML layout — `[segmentation] open_radius`
@@ -48,7 +88,9 @@ impl RegistrySnapshot {
     pub fn to_json_for_target(&self, target: super::PersistTarget) -> serde_json::Value {
         let mut root = serde_json::Map::new();
         for def in PARAM_DEFS.iter() {
-            if def.persist != target { continue; }
+            if def.persist != target {
+                continue;
+            }
             let value = &self.values[def.id as usize];
             insert_dotted(&mut root, def.toml_path, crate::param_json::to_json(value));
         }
@@ -124,7 +166,15 @@ impl RegistrySnapshot {
             )));
         }
 
-        Ok(Self { values })
+        // Reconstructing from a .oisi file: no live hardware context and
+        // no user_overrides info — the file already encodes the effective
+        // value at acquisition time. Consumers should query
+        // `monitor_width_cm()` directly when reading these snapshots.
+        Ok(Self {
+            values,
+            hardware: HardwareContext::default(),
+            user_overrides: std::collections::HashSet::new(),
+        })
     }
 }
 
@@ -140,7 +190,11 @@ fn collect_unknown_json_leaves(
 ) {
     if let serde_json::Value::Object(map) = val {
         for (k, v) in map {
-            let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+            let path = if prefix.is_empty() {
+                k.clone()
+            } else {
+                format!("{prefix}.{k}")
+            };
             if v.is_object() {
                 collect_unknown_json_leaves(v, &path, known, out);
             } else if !known.contains(path.as_str()) {
@@ -166,9 +220,15 @@ fn navigate_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a se
 /// two `define_params!` entries declared conflicting paths) the insert
 /// is skipped — the conflict surfaces at TOML serialize time via the
 /// stricter `toml_io::insert_at_path`.
-fn insert_dotted(root: &mut serde_json::Map<String, serde_json::Value>, path: &str, value: serde_json::Value) {
+fn insert_dotted(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    value: serde_json::Value,
+) {
     let parts: Vec<&str> = path.split('.').collect();
-    let Some((last, head)) = parts.split_last() else { return };
+    let Some((last, head)) = parts.split_last() else {
+        return;
+    };
     if head.is_empty() {
         root.insert((*last).to_string(), value);
         return;
@@ -178,7 +238,9 @@ fn insert_dotted(root: &mut serde_json::Map<String, serde_json::Value>, path: &s
         let entry = current
             .entry(part.to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        let Some(next) = entry.as_object_mut() else { return };
+        let Some(next) = entry.as_object_mut() else {
+            return;
+        };
         current = next;
     }
     current.insert((*last).to_string(), value);
@@ -319,6 +381,16 @@ macro_rules! snapshot_getter {
             }
         }
     };
+    ($variant:ident, VisualField) => {
+        paste::paste! {
+            pub fn [<$variant:snake>](&self) -> VisualField {
+                match &self.values[ParamId::$variant as usize] {
+                    ParamValue::VisualField(v) => *v,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
 }
 
 impl RegistrySnapshot {
@@ -328,6 +400,13 @@ impl RegistrySnapshot {
 
     // Rig Geometry
     snapshot_getter!(ViewingDistanceCm, F64);
+    snapshot_getter!(MonitorWidthCm, F64);
+    snapshot_getter!(MonitorHeightCm, F64);
+    snapshot_getter!(BisectorXCm, F64);
+    snapshot_getter!(BisectorYCm, F64);
+    snapshot_getter!(MonitorYawDeg, F64);
+    snapshot_getter!(MonitorPitchDeg, F64);
+    snapshot_getter!(StimulusVisualField, VisualField);
 
     // Ring Overlay
     snapshot_getter!(RingOverlayEnabled, Bool);
@@ -446,8 +525,16 @@ mod from_json_tree_tests {
         let snap = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
             .expect("complete tree should load");
         let def_snap = default_snapshot();
-        for def in PARAM_DEFS.iter().filter(|d| d.persist == PersistTarget::Analysis) {
-            assert_eq!(snap.get(def.id), def_snap.get(def.id), "mismatch at {}", def.toml_path);
+        for def in PARAM_DEFS
+            .iter()
+            .filter(|d| d.persist == PersistTarget::Analysis)
+        {
+            assert_eq!(
+                snap.get(def.id),
+                def_snap.get(def.id),
+                "mismatch at {}",
+                def.toml_path
+            );
         }
     }
 
@@ -455,7 +542,8 @@ mod from_json_tree_tests {
     #[test]
     fn missing_key_is_fatal() {
         let mut tree = default_analysis_tree();
-        let victim = PARAM_DEFS.iter()
+        let victim = PARAM_DEFS
+            .iter()
             .find(|d| d.persist == PersistTarget::Analysis)
             .expect("at least one Analysis param");
         // Drop the whole top-level section so its leaf(s) go missing.
@@ -464,14 +552,18 @@ mod from_json_tree_tests {
 
         let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
             .expect_err("missing key must fail");
-        assert!(format!("{err}").contains("missing required key"), "got: {err}");
+        assert!(
+            format!("{err}").contains("missing required key"),
+            "got: {err}"
+        );
     }
 
     /// An unknown leaf key is fatal (deny-unknown parity with the TOML loader).
     #[test]
     fn unknown_key_is_fatal() {
         let mut tree = default_analysis_tree();
-        tree.as_object_mut().unwrap()
+        tree.as_object_mut()
+            .unwrap()
             .insert("bogus_stage".into(), serde_json::json!({ "nonsense": 1 }));
         let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
             .expect_err("unknown key must fail");
@@ -484,9 +576,14 @@ mod from_json_tree_tests {
         let mut tree = default_analysis_tree();
         let int_param = PARAM_DEFS.iter().find(|d| {
             d.persist == PersistTarget::Analysis
-                && matches!(d.default, ParamValue::U16(_) | ParamValue::U32(_) | ParamValue::I32(_))
+                && matches!(
+                    d.default,
+                    ParamValue::U16(_) | ParamValue::U32(_) | ParamValue::I32(_)
+                )
         });
-        let Some(p) = int_param else { return; }; // no integer analysis param to exercise
+        let Some(p) = int_param else {
+            return;
+        }; // no integer analysis param to exercise
 
         // Set the leaf well beyond u32::MAX — out of range for u16/u32/i32 alike.
         let huge = serde_json::json!(u64::from(u32::MAX) + 1_000_000);
@@ -495,7 +592,9 @@ mod from_json_tree_tests {
         for seg in &parts[..parts.len() - 1] {
             cur = cur.as_object_mut().unwrap().get_mut(*seg).unwrap();
         }
-        cur.as_object_mut().unwrap().insert(parts[parts.len() - 1].to_string(), huge);
+        cur.as_object_mut()
+            .unwrap()
+            .insert(parts[parts.len() - 1].to_string(), huge);
 
         let err = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
             .expect_err("out-of-range integer must fail");

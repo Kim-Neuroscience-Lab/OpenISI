@@ -20,7 +20,7 @@ use crate::{AnalysisError, ReliabilityMaps};
 /// sourced tunables.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub enum CortexSource {
+pub enum CortexSourceMethod {
     /// Cross-cycle reliability cortex (Allen Brain Observatory; Zhuang,
     /// Ng, Williams, Valley, Li, Garrett, Waters 2017, eLife 6:e18372).
     /// Largest connected component of pixels where the per-direction
@@ -29,9 +29,7 @@ pub enum CortexSource {
     /// fill_holes` cleanup. Requires per-cycle data — fails over to a
     /// different method (orchestrator's choice) for cycle-averaged
     /// imports without reliability.
-    Reliability {
-        threshold: f64,
-    },
+    Reliability { threshold: f64 },
 
     /// User-drawn polygon stored at `.oisi /anatomical/cortex_roi` as a
     /// bool mask. Pure user input, no inference. The orchestrator reads
@@ -51,23 +49,24 @@ pub enum CortexSource {
     /// (apertured single-cycle, etc.), expanding cortex to most of the
     /// frame. Use only for clean signal-dominated data per the Garrett
     /// 2014 assumption.
-    SnlcGarrett2014ImBound {
-        k: f64,
-        close: i32,
-        dilate: i32,
-    },
+    SnlcGarrett2014ImBound { k: f64, close: i32, dilate: i32 },
 
-    /// No cortex restriction — Allen `retinotopic_mapping` default
-    /// (Zhuang 2017; `RetinotopicMapping.py` operates on full frames).
-    /// The sign-map threshold + morphology does all the patch gating.
+    /// No cortex restriction — analysis runs over the full frame and
+    /// the sign-map threshold + morphology does all the patch gating.
+    /// Allen `retinotopic_mapping` happens to operate this way by default
+    /// (Zhuang 2017; `RetinotopicMapping.py` operates on full frames)
+    /// but they did not introduce "full frame" as a distinct method —
+    /// they simply omitted the restriction. Named for what it does.
     /// Used for cycle-averaged imports where reliability isn't
     /// available and no user override is provided.
-    AllenZhuang2017FullFrame,
+    NoRestriction,
 }
 
-impl CortexSource {
+impl CortexSourceMethod {
     pub fn reliability(threshold: Tagged<CortexSourceReliabilityThreshold>) -> Self {
-        Self::Reliability { threshold: threshold.into_inner() }
+        Self::Reliability {
+            threshold: threshold.into_inner(),
+        }
     }
 
     pub fn user_polygon() -> Self {
@@ -86,8 +85,8 @@ impl CortexSource {
         }
     }
 
-    pub fn allen_zhuang2017_full_frame() -> Self {
-        Self::AllenZhuang2017FullFrame
+    pub fn no_restriction() -> Self {
+        Self::NoRestriction
     }
 
     /// Short label for this variant — used in figure-grid headers.
@@ -96,14 +95,14 @@ impl CortexSource {
             Self::Reliability { .. } => "reliability",
             Self::UserPolygon => "user_polygon",
             Self::SnlcGarrett2014ImBound { .. } => "snlc_imbound",
-            Self::AllenZhuang2017FullFrame => "allen_full_frame",
+            Self::NoRestriction => "no_restriction",
         }
     }
 }
 
 /// Inputs available when resolving a cortex mask. Different variants
 /// consume different fields. The orchestrator builds this and passes
-/// it to `CortexSource::resolve`.
+/// it to `CortexSourceMethod::apply`.
 pub struct CortexResolveContext<'a> {
     pub shape: (usize, usize),
     /// Per-direction reliability maps (raw acquisition path only).
@@ -114,36 +113,47 @@ pub struct CortexResolveContext<'a> {
     pub vfs_smoothed: Option<&'a Array2<f64>>,
 }
 
-impl CortexSource {
+impl CortexSourceMethod {
     /// Resolve the cortex mask under the active method. Returns an
     /// error if the variant's required input isn't in `ctx`.
-    pub fn resolve(&self, ctx: &CortexResolveContext) -> Result<Array2<bool>, AnalysisError> {
+    pub fn apply(&self, ctx: &CortexResolveContext) -> Result<Array2<bool>, AnalysisError> {
         use crate::segmentation::connectivity::keep_largest_component;
         use crate::segmentation::morphology::{
             binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
         };
         match self {
             Self::Reliability { threshold } => {
-                let rel = ctx.reliability.ok_or_else(|| AnalysisError::MissingData(
-                    "CortexSource::Reliability requires per-cycle reliability maps; \
-                     the file has no raw acquisition data".into()
-                ))?;
+                let rel = ctx.reliability.ok_or_else(|| {
+                    AnalysisError::MissingData(
+                        "CortexSourceMethod::Reliability requires per-cycle reliability maps; \
+                     the file has no raw acquisition data"
+                            .into(),
+                    )
+                })?;
                 Ok(crate::segmentation::cortex_from_reliability(
-                    &rel.rel_azi_fwd, &rel.rel_azi_rev,
-                    &rel.rel_alt_fwd, &rel.rel_alt_rev,
+                    &rel.rel_azi_fwd,
+                    &rel.rel_azi_rev,
+                    &rel.rel_alt_fwd,
+                    &rel.rel_alt_rev,
                     *threshold,
                 ))
             }
-            Self::UserPolygon => ctx.user_polygon.clone().ok_or_else(|| AnalysisError::MissingData(
-                "CortexSource::UserPolygon requires /anatomical/cortex_roi in the .oisi file".into()
-            )),
-            Self::AllenZhuang2017FullFrame => Ok(Array2::from_elem(ctx.shape, true)),
+            Self::UserPolygon => ctx.user_polygon.clone().ok_or_else(|| {
+                AnalysisError::MissingData(
+                    "CortexSourceMethod::UserPolygon requires /anatomical/cortex_roi in the .oisi file"
+                        .into(),
+                )
+            }),
+            Self::NoRestriction => Ok(Array2::from_elem(ctx.shape, true)),
             Self::SnlcGarrett2014ImBound { k, close, dilate } => {
                 let (k, close, dilate) = (*k, *close, *dilate);
-                let vfs = ctx.vfs_smoothed.ok_or_else(|| AnalysisError::MissingData(
-                    "CortexSource::SnlcGarrett2014ImBound requires the smoothed VFS \
-                     (vfs_smoothed) for the σ-scaled threshold".into()
-                ))?;
+                let vfs = ctx.vfs_smoothed.ok_or_else(|| {
+                    AnalysisError::MissingData(
+                        "CortexSourceMethod::SnlcGarrett2014ImBound requires the smoothed VFS \
+                     (vfs_smoothed) for the σ-scaled threshold"
+                            .into(),
+                    )
+                })?;
                 let std_vfs = std_of_finite(vfs);
                 let thr_mask = k * std_vfs * 0.5;
                 let imseg = Array2::from_shape_fn(vfs.dim(), |(r, c)| {
@@ -164,20 +174,15 @@ impl CortexSource {
 /// σ of finite values in a 2D array. Used by `SnlcGarrett2014ImBound`
 /// for the SNLC `threshSeg = 1.5 * std(VFS(:))` formula.
 fn std_of_finite(data: &Array2<f64>) -> f64 {
-    let mut n = 0usize;
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
-    for &v in data.iter() {
-        if v.is_finite() {
-            n += 1;
-            sum += v;
-            sum_sq += v * v;
-        }
+    // Sample (N−1) std over finite values — SNLC/Garrett 2014 `std(VFS(:))`.
+    // Uses ndarray's validated two-pass `.std(ddof=1)`, which matches MATLAB
+    // `std` (also two-pass) bit-for-bit, rather than a one-pass
+    // sum-of-squares (less numerically stable).
+    let finite: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.len() < 2 {
+        return 0.0;
     }
-    if n < 2 { return 0.0; }
-    let mean = sum / n as f64;
-    let var = (sum_sq / n as f64) - mean * mean;
-    var.max(0.0).sqrt()
+    ndarray::Array1::from_vec(finite).std(1.0)
 }
 
 #[cfg(test)]
@@ -186,27 +191,27 @@ mod tests {
 
     #[test]
     fn full_frame_resolves_to_all_true() {
-        let m = CortexSource::AllenZhuang2017FullFrame;
+        let m = CortexSourceMethod::NoRestriction;
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,
             user_polygon: None,
             vfs_smoothed: None,
         };
-        let mask = m.resolve(&ctx).unwrap();
+        let mask = m.apply(&ctx).unwrap();
         assert_eq!(mask.dim(), (10, 10));
         assert!(mask.iter().all(|&b| b));
     }
 
     #[test]
     fn reliability_without_data_errors() {
-        let m = CortexSource::Reliability { threshold: 0.5 };
+        let m = CortexSourceMethod::Reliability { threshold: 0.5 };
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,
             user_polygon: None,
             vfs_smoothed: None,
         };
-        assert!(m.resolve(&ctx).is_err());
+        assert!(m.apply(&ctx).is_err());
     }
 }

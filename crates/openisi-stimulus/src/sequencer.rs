@@ -40,15 +40,23 @@ impl State {
 }
 
 /// Sweep ordering mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
+    #[strum(to_string = "Sequential")]
     Sequential,
+    #[strum(to_string = "Interleaved")]
     Interleaved,
+    #[strum(to_string = "Randomized")]
     Randomized,
 }
 
 impl Order {
+    // Returns Option (not the Result-based FromStr trait); keep the descriptive
+    // name rather than implementing FromStr, which would change the return type.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "sequential" => Some(Order::Sequential),
@@ -70,10 +78,22 @@ impl Order {
 /// Events emitted by the sequencer. Collected by the caller after each `advance()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    StateChanged { new_state: State, old_state: State },
-    SweepStarted { sweep_index: usize, direction: String },
-    SweepCompleted { sweep_index: usize, direction: String },
-    DirectionChanged { new_direction: String, old_direction: String },
+    StateChanged {
+        new_state: State,
+        old_state: State,
+    },
+    SweepStarted {
+        sweep_index: usize,
+        direction: String,
+    },
+    SweepCompleted {
+        sweep_index: usize,
+        direction: String,
+    },
+    DirectionChanged {
+        new_direction: String,
+        old_direction: String,
+    },
     SequenceStarted,
     SequenceCompleted,
 }
@@ -158,11 +178,8 @@ impl Sequencer {
         );
 
         // Generate sweep sequence (locked for this run)
-        self.sweep_sequence = generate_sweep_sequence(
-            &config.conditions,
-            config.repetitions,
-            config.order,
-        );
+        self.sweep_sequence =
+            generate_sweep_sequence(&config.conditions, config.repetitions, config.order);
 
         if self.sweep_sequence.is_empty() {
             // No conditions configured — caller should have validated
@@ -887,9 +904,7 @@ mod tests {
         seq.advance(1.01);
         let events = seq.drain_events();
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::SequenceCompleted)),
+            events.iter().any(|e| matches!(e, Event::SequenceCompleted)),
             "Should emit SequenceCompleted"
         );
     }

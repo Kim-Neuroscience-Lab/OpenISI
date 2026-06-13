@@ -17,4 +17,67 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = "1"
 thiserror = "2"
-tch = "0.24"
+
+# ── Tensor / GPU compute substrate (Burn) ──────────────────────────────
+#
+# Burn is the single tensor/GPU compute substrate. The whole analysis
+# pipeline is written against ONE backend type — `burn_dispatch::Dispatch`
+# — which is Burn's runtime multi-backend layer (the PyTorch-style device
+# model). Backend SELECTION is a runtime value (`DispatchDevice::Cuda` /
+# `::NdArray` / …), not a compile-time type, so there is no `<B: Backend>`
+# plumbing and no per-device methods — one binary picks the device at
+# runtime. See `compute/backend.rs`.
+#
+# Cargo features control which backends are COMPILED IN (available to
+# select at runtime); they do not select the device. `ndarray` (CPU) is
+# always in. `--features cuda` additionally compiles in the CUDA backend,
+# so a cuda-built binary can run on CPU *or* CUDA chosen at runtime.
+#
+#   - burn-tensor   : the `Tensor<B, D>` type + all tensor ops
+#   - burn-dispatch : the `Dispatch` runtime multi-backend + `DispatchDevice`
+#   - burn-ndarray  : pulled for the `NdArrayDevice` type (CPU device value)
+#   - burn-cuda     : pulled (behind `cuda`) for the `CudaDevice` type
+#
+# We depend on the GRANULAR crates, NOT the `burn` umbrella (whose default
+# features pull `burn-tch`/libtorch — a native dep we avoid). Pinned
+# exactly (CubeCL, Burn's kernel substrate, is alpha — minor versions break).
+burn-tensor = "=0.21"
+burn-dispatch = { version = "=0.21", default-features = false, features = ["ndarray"] }
+burn-ndarray = "=0.21"
+burn-cuda = { version = "=0.21", optional = true }
+
+# DAG + scheduling for the pipeline orchestrator. Toposort + Graph from
+# petgraph + ~50 LOC ready-set scheduler on top, per the architecture
+# doc — no separate DAG runner crate.
+petgraph = "0.8"
+
+# Faster + smaller-footprint Mutex than std::sync::Mutex. Adopted per
+# the audit recommendation in `docs/UNIFIED_COMPUTE_ARCHITECTURE.md` §8.
+parking_lot = "0.12"
+
+# Structured logging + per-stage timing.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Stage-output content addressing for the incremental re-analysis cache.
+blake3 = "1"
+
+ndarray-stats = "0.7.0"
+noisy_float = "0.2.1"
+
+[features]
+# `cuda` compiles the NVIDIA CUDA backend INTO the dispatch set, so a
+# cuda-built binary can select CPU or CUDA at runtime via `DispatchDevice`.
+# Requires the CUDA toolkit (12.x) at build time. (It does not *select*
+# CUDA — device selection is a runtime value; see compute/backend.rs.)
+cuda = ["dep:burn-cuda", "burn-dispatch/cuda"]
+
+[dev-dependencies]
+# Property-based testing: per-value strategies, richer shrinking than quickcheck.
+# Used inline in each stage's #[cfg(test)] mod for invariant verification.
+proptest = "1"
+# Numerical tolerance macros (assert_relative_eq!, assert_abs_diff_eq!).
+# For Vec<f64> comparisons, use slice form: assert_abs_diff_eq!(&v1[..], &v2[..], epsilon = …).
+approx = "0.5"
+# Cross-implementation equivalence harness reads tolerances.toml.
+toml = "0.8"

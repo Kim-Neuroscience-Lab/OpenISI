@@ -4,11 +4,13 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::commands::SharedState;
-use crate::error::{lock_state, AppError, AppResult};
+use crate::error::{AppError, AppResult};
+
+use openisi_params::{EnumOption, enum_options};
 
 use super::constraints::EffectiveConstraint;
 use super::registry::param_value_to_json;
-use super::{GroupId, ParamId, ParamValue, StaticConstraint, PARAM_DEFS};
+use super::{GroupId, PARAM_DEFS, ParamId, ParamValue, StaticConstraint};
 
 // ─── Descriptor JSON ─────────────────────────────────────────────────────────
 
@@ -37,6 +39,12 @@ pub struct ParamDescriptorJson {
 /// Serializable constraint for the frontend.
 /// Uses a flat format: { min?, max?, values? } — no tagged unions.
 /// The frontend checks: if `values` exists → enum, if `min`/`max` exist → range, else → unconstrained.
+///
+/// `values` is a list of `{ value, label }` objects — `value` is the
+/// wire string the registry persists (snake_case), `label` is the
+/// human-facing string the UI renders inside `<option>`. Both come
+/// from the same enum declaration in `openisi-params` (serde for the
+/// wire string, `strum::Display` for the label), so they cannot drift.
 #[derive(Debug, Serialize)]
 pub struct ConstraintJson {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,29 +52,50 @@ pub struct ConstraintJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
+    pub values: Option<Vec<EnumOption>>,
 }
 
 impl ConstraintJson {
     fn none() -> Self {
-        Self { min: None, max: None, values: None }
+        Self {
+            min: None,
+            max: None,
+            values: None,
+        }
     }
 
     fn range(min: f64, max: f64) -> Self {
-        Self { min: Some(min), max: Some(max), values: None }
+        Self {
+            min: Some(min),
+            max: Some(max),
+            values: None,
+        }
     }
 
     fn min_only(min: f64) -> Self {
-        Self { min: Some(min), max: None, values: None }
+        Self {
+            min: Some(min),
+            max: None,
+            values: None,
+        }
     }
 
-    fn enum_values(vals: Vec<&str>) -> Self {
-        Self { min: None, max: None, values: Some(vals.into_iter().map(String::from).collect()) }
+    fn enum_values(vals: Vec<EnumOption>) -> Self {
+        Self {
+            min: None,
+            max: None,
+            values: Some(vals),
+        }
     }
 
-    fn from_effective(eff: &EffectiveConstraint, static_c: &StaticConstraint, value: &ParamValue) -> Self {
-        // If this is an enum type, return enum values regardless of constraint
-        if let Some(vals) = super::commands::enum_values(value) {
+    fn from_effective(
+        eff: &EffectiveConstraint,
+        static_c: &StaticConstraint,
+        value: &ParamValue,
+    ) -> Self {
+        // If this is an enum type, return its (wire, label) options
+        // regardless of constraint — enum constraints aren't ranges.
+        if let Some(vals) = super::commands::enum_options_for(value) {
             return Self::enum_values(vals);
         }
         match eff {
@@ -109,6 +138,9 @@ fn param_type_str(value: &ParamValue) -> &'static str {
         | ParamValue::Projection(_)
         | ParamValue::Structure(_)
         | ParamValue::Order(_)
+        | ParamValue::VisualField(_)
+        | ParamValue::Baseline(_)
+        | ParamValue::CycleAverage(_)
         | ParamValue::CycleCombine(_)
         | ParamValue::PhaseSmoothing(_)
         | ParamValue::VfsComputation(_)
@@ -117,24 +149,76 @@ fn param_type_str(value: &ParamValue) -> &'static str {
         | ParamValue::PatchThreshold(_)
         | ParamValue::PatchExtraction(_)
         | ParamValue::PatchRefinement(_)
-        | ParamValue::QualityGate(_)
         | ParamValue::Eccentricity(_) => "enum",
     }
 }
 
-/// Get the list of valid enum values for an enum parameter.
-fn enum_values(value: &ParamValue) -> Option<Vec<&'static str>> {
-    match value {
-        ParamValue::Envelope(_) => Some(vec!["bar", "wedge", "ring", "fullfield"]),
-        ParamValue::Carrier(_) => Some(vec!["solid", "checkerboard"]),
-        ParamValue::Projection(_) => Some(vec!["cartesian", "spherical", "cylindrical"]),
-        ParamValue::Structure(_) => Some(vec!["blocked", "interleaved"]),
-        ParamValue::Order(_) => Some(vec!["sequential", "interleaved", "randomized"]),
-        _ => None,
-    }
+/// Return the `(wire, label)` options for an enum parameter.
+///
+/// Each variant arm dispatches to [`openisi_params::enum_options`],
+/// which projects the enum through serde (for the wire string) and
+/// `strum::Display` (for the label). No parallel string registry —
+/// the labels live next to the enum variant declarations in
+/// `openisi-params/src/analysis_kinds.rs`,
+/// `openisi-params/src/lib.rs` (carrier_types mod), and
+/// `openisi-stimulus/src/{dataset,geometry,sequencer}.rs`.
+fn enum_options_for(value: &ParamValue) -> Option<Vec<EnumOption>> {
+    use super::{
+        BaselineKind, Carrier, CortexSourceKind, CycleAverageKind, CycleCombineKind,
+        EccentricityKind, Envelope, Order, PatchExtractionKind, PatchRefinementKind,
+        PatchThresholdKind, PhaseSmoothingKind, Projection, SignMapSmoothingKind, Structure,
+        VfsComputationKind, VisualField,
+    };
+
+    Some(match value {
+        ParamValue::Envelope(_) => enum_options::<Envelope>(),
+        ParamValue::Carrier(_) => enum_options::<Carrier>(),
+        ParamValue::Projection(_) => enum_options::<Projection>(),
+        ParamValue::Structure(_) => enum_options::<Structure>(),
+        ParamValue::Order(_) => enum_options::<Order>(),
+        ParamValue::VisualField(_) => enum_options::<VisualField>(),
+
+        ParamValue::Baseline(_) => enum_options::<BaselineKind>(),
+        ParamValue::CycleAverage(_) => enum_options::<CycleAverageKind>(),
+        ParamValue::CycleCombine(_) => enum_options::<CycleCombineKind>(),
+        ParamValue::PhaseSmoothing(_) => enum_options::<PhaseSmoothingKind>(),
+        ParamValue::VfsComputation(_) => enum_options::<VfsComputationKind>(),
+        ParamValue::SignMapSmoothing(_) => enum_options::<SignMapSmoothingKind>(),
+        ParamValue::CortexSource(_) => enum_options::<CortexSourceKind>(),
+        ParamValue::PatchThreshold(_) => enum_options::<PatchThresholdKind>(),
+        ParamValue::PatchExtraction(_) => enum_options::<PatchExtractionKind>(),
+        ParamValue::PatchRefinement(_) => enum_options::<PatchRefinementKind>(),
+        ParamValue::Eccentricity(_) => enum_options::<EccentricityKind>(),
+
+        _ => return None,
+    })
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
+
+/// One analysis-view stage card: the snake_case group `key` (matches the
+/// `group` arg of [`get_param_descriptors`]) and its human `title`.
+#[derive(Debug, Serialize)]
+pub struct AnalysisStageJson {
+    pub key: String,
+    pub title: String,
+}
+
+/// Return the analysis pipeline stages, in order, for the analysis-view UI to
+/// render one card per stage. Single source of truth: derived from `PARAM_DEFS`
+/// (`openisi_params::analysis_stage_groups`) + `GroupId::card_title`, so the
+/// frontend never hardcodes the stage list (adding analysis params under a new
+/// `GroupId` makes the stage appear automatically).
+#[tauri::command]
+pub fn get_analysis_stages() -> Vec<AnalysisStageJson> {
+    openisi_params::analysis_stage_groups()
+        .into_iter()
+        .map(|g| AnalysisStageJson {
+            key: g.to_string(),
+            title: g.card_title().to_string(),
+        })
+        .collect()
+}
 
 /// Return descriptors for all parameters, optionally filtered by group.
 #[tauri::command]
@@ -142,21 +226,50 @@ pub fn get_param_descriptors(
     state: State<'_, SharedState>,
     group: Option<String>,
 ) -> AppResult<Vec<ParamDescriptorJson>> {
-    let s = lock_state(&state, "get_param_descriptors")?;
-    let reg = lock_state(&s.registry, "get_param_descriptors registry")?;
+    let reg = state.registry.lock();
 
-    // Parse group filter if provided.
-    let group_filter: Option<GroupId> = group.as_deref().and_then(parse_group_id);
+    // Two filter modes:
+    //   * `target=…` (special-cased "analysis" / "rig" / "experiment" /
+    //     "ui_state") returns every param of that persist target,
+    //     regardless of `GroupId`. Used by the Analysis view, which
+    //     spans many per-stage groups.
+    //   * `<GroupId>` (the normal case) filters by group.
+    // An unknown group string is now a fail-loud empty result — the
+    // previous behavior silently bypassed the filter and returned every
+    // descriptor in the registry.
+    let group_str = group.as_deref();
+    let target_filter: Option<crate::params::PersistTarget> =
+        group_str.and_then(parse_target_filter);
+    let group_filter: Option<GroupId> = match (group_str, target_filter) {
+        (Some(_), Some(_)) => None, // target_filter wins
+        (Some(s), None) => match parse_group_id(s) {
+            Some(g) => Some(g),
+            None => {
+                tracing::warn!(group = ?s, "get_param_descriptors: unknown group — returning empty");
+                return Ok(Vec::new());
+            }
+        },
+        (None, _) => None,
+    };
 
     let mut descriptors = Vec::new();
     for def in PARAM_DEFS.iter() {
-        if let Some(filter) = group_filter {
-            if def.group != filter {
+        if let Some(t) = target_filter {
+            if def.persist != t {
                 continue;
             }
+        } else if let Some(filter) = group_filter
+            && def.group != filter
+        {
+            continue;
         }
 
-        let value = reg.get(def.id);
+        // Show the EFFECTIVE value (user-override > hardware > default)
+        // for hardware-influenced params like MonitorWidthCm so the UI
+        // reflects what the system is actually using, not the shipped
+        // default. For everything else, this is identical to `reg.get`.
+        let effective_value = reg.effective_value(def.id);
+        let value = &effective_value;
         let effective = reg.effective_constraint(def.id);
 
         let active = reg.is_active(def.id);
@@ -173,8 +286,12 @@ pub fn get_param_descriptors(
         });
     }
 
-    eprintln!("[params] get_param_descriptors(group={:?}) returning {} descriptors: {:?}",
-        group, descriptors.len(), descriptors.iter().map(|d| d.id.as_str()).collect::<Vec<_>>());
+    tracing::debug!(
+        group = ?group,
+        count = descriptors.len(),
+        descriptors = ?descriptors.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+        "get_param_descriptors",
+    );
 
     Ok(descriptors)
 }
@@ -207,8 +324,6 @@ pub fn set_params(
         .as_object()
         .ok_or_else(|| AppError::Validation("updates must be a JSON object".into()))?;
 
-    let s = lock_state(&state, "set_params")?;
-
     // Build a lookup from toml_path to ParamId.
     let path_to_id: std::collections::HashMap<&str, ParamId> = PARAM_DEFS
         .iter()
@@ -229,7 +344,7 @@ pub fn set_params(
     }
 
     // Phase 2: Apply in batch mode.
-    let mut reg = lock_state(&s.registry, "set_params registry")?;
+    let mut reg = state.registry.lock();
     let mut updated = 0;
     let mut errors = Vec::new();
 
@@ -261,114 +376,47 @@ pub fn set_params(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Parse a JSON value into a ParamValue based on the parameter's known type.
-/// Errors are `AppError::Validation` — no `Result<_, String>` exemption.
+///
+/// Delegates to [`openisi_params::param_json::from_json`] — the single
+/// canonical `Value` → `ParamValue` converter used everywhere a JSON
+/// boundary crosses into the registry (Tauri IPC here, `.oisi`
+/// provenance round-trip, TOML overlay parsing). One implementation;
+/// every range check, every enum-string parse, every unit conversion
+/// lives in one file.
+///
+/// Prior to this delegation, this function maintained a parallel
+/// implementation that used lossy `as u16` / `as i32` casts instead of
+/// range-checked `try_from`, silently truncating out-of-range input
+/// before validation ever saw it. That bug is gone; range overflows now
+/// surface as `AppError::Validation` with the exact value and bound.
 fn json_to_param_value(id: ParamId, val: &serde_json::Value) -> AppResult<ParamValue> {
     let def = &PARAM_DEFS[id as usize];
-    let v = |msg: &str| AppError::Validation(msg.into());
-    match &def.default {
-        ParamValue::Bool(_) => val.as_bool().map(ParamValue::Bool)
-            .ok_or_else(|| v("expected boolean")),
-        ParamValue::U16(_) => val.as_u64().map(|x| ParamValue::U16(x as u16))
-            .ok_or_else(|| v("expected integer")),
-        ParamValue::U32(_) => val.as_u64().map(|x| ParamValue::U32(x as u32))
-            .ok_or_else(|| v("expected integer")),
-        ParamValue::I32(_) => val.as_i64().map(|x| ParamValue::I32(x as i32))
-            .ok_or_else(|| v("expected integer")),
-        ParamValue::Usize(_) => val.as_u64().map(|x| ParamValue::Usize(x as usize))
-            .ok_or_else(|| v("expected integer")),
-        ParamValue::F64(_) => val.as_f64().map(ParamValue::F64)
-            .ok_or_else(|| v("expected number")),
-        ParamValue::String(_) => val.as_str().map(|s| ParamValue::String(s.to_string()))
-            .ok_or_else(|| v("expected string")),
-        ParamValue::StringVec(_) => val.as_array().map(|arr| {
-            ParamValue::StringVec(arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        }).ok_or_else(|| v("expected array of strings")),
-        ParamValue::Envelope(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::Envelope>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Envelope)
-            .ok_or_else(|| v("expected envelope string")),
-        ParamValue::Carrier(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::Carrier>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Carrier)
-            .ok_or_else(|| v("expected carrier string")),
-        ParamValue::Projection(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::Projection>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Projection)
-            .ok_or_else(|| v("expected projection string")),
-        ParamValue::Structure(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::Structure>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Structure)
-            .ok_or_else(|| v("expected structure string")),
-        ParamValue::Order(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::Order>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Order)
-            .ok_or_else(|| v("expected order string")),
-        ParamValue::CycleCombine(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::CycleCombineKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::CycleCombine)
-            .ok_or_else(|| v("expected cycle_combine method string")),
-        ParamValue::PhaseSmoothing(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::PhaseSmoothingKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PhaseSmoothing)
-            .ok_or_else(|| v("expected phase_smoothing method string")),
-        ParamValue::VfsComputation(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::VfsComputationKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::VfsComputation)
-            .ok_or_else(|| v("expected vfs_computation method string")),
-        ParamValue::SignMapSmoothing(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::SignMapSmoothingKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::SignMapSmoothing)
-            .ok_or_else(|| v("expected sign_map_smoothing method string")),
-        ParamValue::CortexSource(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::CortexSourceKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::CortexSource)
-            .ok_or_else(|| v("expected cortex_source method string")),
-        ParamValue::PatchThreshold(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchThresholdKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchThreshold)
-            .ok_or_else(|| v("expected patch_threshold method string")),
-        ParamValue::PatchExtraction(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchExtractionKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchExtraction)
-            .ok_or_else(|| v("expected patch_extraction method string")),
-        ParamValue::PatchRefinement(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::PatchRefinementKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::PatchRefinement)
-            .ok_or_else(|| v("expected patch_refinement method string")),
-        ParamValue::QualityGate(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::QualityGateKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::QualityGate)
-            .ok_or_else(|| v("expected quality_gate method string")),
-        ParamValue::Eccentricity(_) => val.as_str()
-            .and_then(|s| serde_json::from_str::<super::EccentricityKind>(&format!("\"{s}\"")).ok())
-            .map(ParamValue::Eccentricity)
-            .ok_or_else(|| v("expected eccentricity method string")),
-    }
+    Ok(openisi_params::param_json::from_json(
+        &def.default,
+        val,
+        def.toml_path,
+    )?)
 }
 
 /// Parse a group name string into a GroupId.
-fn parse_group_id(s: &str) -> Option<GroupId> {
+/// Accept persist-target names ("analysis", "rig", "experiment",
+/// "ui_state") as a separate filter axis from `GroupId`. The Analysis
+/// view uses "analysis" to gather every analysis-pipeline param across
+/// all per-stage groups (CycleCombine, PhaseSmoothing, …).
+fn parse_target_filter(s: &str) -> Option<crate::params::PersistTarget> {
     match s {
-        "stimulus" => Some(GroupId::Stimulus),
-        "geometry" => Some(GroupId::Geometry),
-        "timing" => Some(GroupId::Timing),
-        "presentation" => Some(GroupId::Presentation),
-        "retinotopy" => Some(GroupId::Retinotopy),
-        "camera" => Some(GroupId::Camera),
-        "display" => Some(GroupId::Display),
-        "ring" => Some(GroupId::Ring),
-        "system" => Some(GroupId::System),
-        "paths" => Some(GroupId::Paths),
-        "cycle_combine" => Some(GroupId::CycleCombine),
-        "phase_smoothing" => Some(GroupId::PhaseSmoothing),
-        "vfs_computation" => Some(GroupId::VfsComputation),
-        "sign_map_smoothing" => Some(GroupId::SignMapSmoothing),
-        "cortex_source" => Some(GroupId::CortexSource),
-        "patch_threshold" => Some(GroupId::PatchThreshold),
-        "patch_extraction" => Some(GroupId::PatchExtraction),
-        "patch_refinement" => Some(GroupId::PatchRefinement),
-        "quality_gate" => Some(GroupId::QualityGate),
-        "eccentricity" => Some(GroupId::Eccentricity),
+        "analysis" => Some(crate::params::PersistTarget::Analysis),
+        "rig" => Some(crate::params::PersistTarget::Rig),
+        "experiment" => Some(crate::params::PersistTarget::Experiment),
+        "ui_state" => Some(crate::params::PersistTarget::UiState),
         _ => None,
     }
+}
+
+/// Parse a snake_case group key into a `GroupId`. Delegates to the
+/// `strum::EnumString` derive on `GroupId` (single source of truth — adding a
+/// `GroupId` variant extends this automatically, so the parser can't drift).
+fn parse_group_id(s: &str) -> Option<GroupId> {
+    use std::str::FromStr;
+    GroupId::from_str(s).ok()
 }

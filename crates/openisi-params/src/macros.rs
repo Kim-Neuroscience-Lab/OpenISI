@@ -137,6 +137,15 @@ macro_rules! define_params {
     (@extract Order, $v:expr) => {
         match $v { ParamValue::Order(x) => *x, _ => unreachable!() }
     };
+    (@extract VisualField, $v:expr) => {
+        match $v { ParamValue::VisualField(x) => *x, _ => unreachable!() }
+    };
+    (@extract BaselineKind, $v:expr) => {
+        match $v { ParamValue::Baseline(x) => *x, _ => unreachable!() }
+    };
+    (@extract CycleAverageKind, $v:expr) => {
+        match $v { ParamValue::CycleAverage(x) => *x, _ => unreachable!() }
+    };
     (@extract CycleCombineKind, $v:expr) => {
         match $v { ParamValue::CycleCombine(x) => *x, _ => unreachable!() }
     };
@@ -161,9 +170,6 @@ macro_rules! define_params {
     (@extract PatchRefinementKind, $v:expr) => {
         match $v { ParamValue::PatchRefinement(x) => *x, _ => unreachable!() }
     };
-    (@extract QualityGateKind, $v:expr) => {
-        match $v { ParamValue::QualityGate(x) => *x, _ => unreachable!() }
-    };
     (@extract EccentricityKind, $v:expr) => {
         match $v { ParamValue::Eccentricity(x) => *x, _ => unreachable!() }
     };
@@ -182,6 +188,9 @@ macro_rules! define_params {
     (@rust_type Projection) => { Projection };
     (@rust_type Structure) => { Structure };
     (@rust_type Order) => { Order };
+    (@rust_type VisualField) => { VisualField };
+    (@rust_type BaselineKind) => { BaselineKind };
+    (@rust_type CycleAverageKind) => { CycleAverageKind };
     (@rust_type CycleCombineKind) => { CycleCombineKind };
     (@rust_type PhaseSmoothingKind) => { PhaseSmoothingKind };
     (@rust_type VfsComputationKind) => { VfsComputationKind };
@@ -190,7 +199,6 @@ macro_rules! define_params {
     (@rust_type PatchThresholdKind) => { PatchThresholdKind };
     (@rust_type PatchExtractionKind) => { PatchExtractionKind };
     (@rust_type PatchRefinementKind) => { PatchRefinementKind };
-    (@rust_type QualityGateKind) => { QualityGateKind };
     (@rust_type EccentricityKind) => { EccentricityKind };
 
     // ── active_when arm ──────────────────────────────────────────
@@ -212,6 +220,9 @@ macro_rules! define_params {
     (@default Projection $val:expr) => { ParamValue::Projection($val) };
     (@default Structure $val:expr) => { ParamValue::Structure($val) };
     (@default Order $val:expr) => { ParamValue::Order($val) };
+    (@default VisualField $val:expr) => { ParamValue::VisualField($val) };
+    (@default BaselineKind $val:expr) => { ParamValue::Baseline($val) };
+    (@default CycleAverageKind $val:expr) => { ParamValue::CycleAverage($val) };
     (@default CycleCombineKind $val:expr) => { ParamValue::CycleCombine($val) };
     (@default PhaseSmoothingKind $val:expr) => { ParamValue::PhaseSmoothing($val) };
     (@default VfsComputationKind $val:expr) => { ParamValue::VfsComputation($val) };
@@ -220,7 +231,6 @@ macro_rules! define_params {
     (@default PatchThresholdKind $val:expr) => { ParamValue::PatchThreshold($val) };
     (@default PatchExtractionKind $val:expr) => { ParamValue::PatchExtraction($val) };
     (@default PatchRefinementKind $val:expr) => { ParamValue::PatchRefinement($val) };
-    (@default QualityGateKind $val:expr) => { ParamValue::QualityGate($val) };
     (@default EccentricityKind $val:expr) => { ParamValue::Eccentricity($val) };
 
     // ── Typed getter arms ────────────────────────────────────────
@@ -354,6 +364,36 @@ macro_rules! define_params {
             }
         }
     };
+    (@getter $variant:ident, VisualField) => {
+        paste::paste! {
+            pub fn [<$variant:snake>](&self) -> VisualField {
+                match &self.values[ParamId::$variant as usize] {
+                    ParamValue::VisualField(v) => *v,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
+    (@getter $variant:ident, BaselineKind) => {
+        paste::paste! {
+            pub fn [<$variant:snake>](&self) -> BaselineKind {
+                match &self.values[ParamId::$variant as usize] {
+                    ParamValue::Baseline(v) => *v,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
+    (@getter $variant:ident, CycleAverageKind) => {
+        paste::paste! {
+            pub fn [<$variant:snake>](&self) -> CycleAverageKind {
+                match &self.values[ParamId::$variant as usize] {
+                    ParamValue::CycleAverage(v) => *v,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
     (@getter $variant:ident, CycleCombineKind) => {
         paste::paste! {
             pub fn [<$variant:snake>](&self) -> CycleCombineKind {
@@ -429,16 +469,6 @@ macro_rules! define_params {
             pub fn [<$variant:snake>](&self) -> PatchRefinementKind {
                 match &self.values[ParamId::$variant as usize] {
                     ParamValue::PatchRefinement(v) => *v,
-                    _ => unreachable!(),
-                }
-            }
-        }
-    };
-    (@getter $variant:ident, QualityGateKind) => {
-        paste::paste! {
-            pub fn [<$variant:snake>](&self) -> QualityGateKind {
-                match &self.values[ParamId::$variant as usize] {
-                    ParamValue::QualityGate(v) => *v,
                     _ => unreachable!(),
                 }
             }
@@ -547,6 +577,27 @@ macro_rules! define_params {
             }
         }
     };
+    (@setter $variant:ident, VisualField) => {
+        paste::paste! {
+            pub fn [<set_ $variant:snake>](&mut self, v: VisualField) -> crate::error::ParamsResult<()> {
+                self.set(ParamId::$variant, ParamValue::VisualField(v))
+            }
+        }
+    };
+    (@setter $variant:ident, BaselineKind) => {
+        paste::paste! {
+            pub fn [<set_ $variant:snake>](&mut self, v: BaselineKind) -> crate::error::ParamsResult<()> {
+                self.set(ParamId::$variant, ParamValue::Baseline(v))
+            }
+        }
+    };
+    (@setter $variant:ident, CycleAverageKind) => {
+        paste::paste! {
+            pub fn [<set_ $variant:snake>](&mut self, v: CycleAverageKind) -> crate::error::ParamsResult<()> {
+                self.set(ParamId::$variant, ParamValue::CycleAverage(v))
+            }
+        }
+    };
     (@setter $variant:ident, CycleCombineKind) => {
         paste::paste! {
             pub fn [<set_ $variant:snake>](&mut self, v: CycleCombineKind) -> crate::error::ParamsResult<()> {
@@ -600,13 +651,6 @@ macro_rules! define_params {
         paste::paste! {
             pub fn [<set_ $variant:snake>](&mut self, v: PatchRefinementKind) -> crate::error::ParamsResult<()> {
                 self.set(ParamId::$variant, ParamValue::PatchRefinement(v))
-            }
-        }
-    };
-    (@setter $variant:ident, QualityGateKind) => {
-        paste::paste! {
-            pub fn [<set_ $variant:snake>](&mut self, v: QualityGateKind) -> crate::error::ParamsResult<()> {
-                self.set(ParamId::$variant, ParamValue::QualityGate(v))
             }
         }
     };

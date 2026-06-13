@@ -1,0 +1,13 @@
+[camera]
+exposure_us = 100000
+
+[display]
+monitor_rotation_deg = 0.0
+
+[geometry]
+bisector_x_cm = 0.0
+monitor_pitch_deg = 20.0
+visual_field = "right"
+
+[paths]
+data_directory = 'C:\Users\ISI User\Documents\ISI Data'

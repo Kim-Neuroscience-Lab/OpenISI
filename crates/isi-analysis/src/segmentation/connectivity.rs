@@ -30,7 +30,9 @@ pub(crate) fn label_4conn(mask: &Array2<bool>) -> (Array2<i32>, usize) {
     let off: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
     for r in 0..h {
         for c in 0..w {
-            if !mask[[r, c]] || labels[[r, c]] != 0 { continue; }
+            if !mask[[r, c]] || labels[[r, c]] != 0 {
+                continue;
+            }
             let lbl = next_label;
             next_label += 1;
             labels[[r, c]] = lbl;
@@ -40,7 +42,9 @@ pub(crate) fn label_4conn(mask: &Array2<bool>) -> (Array2<i32>, usize) {
                 for &(dr, dc) in &off {
                     let nr = rr as i32 + dr;
                     let nc = cc as i32 + dc;
-                    if nr < 0 || nr >= h as i32 || nc < 0 || nc >= w as i32 { continue; }
+                    if nr < 0 || nr >= h as i32 || nc < 0 || nc >= w as i32 {
+                        continue;
+                    }
                     let (nr, nc) = (nr as usize, nc as usize);
                     if mask[[nr, nc]] && labels[[nr, nc]] == 0 {
                         labels[[nr, nc]] = lbl;
@@ -65,9 +69,17 @@ pub(crate) fn keep_largest_component(mask: &Array2<bool>) -> Array2<bool> {
     }
     let mut counts = vec![0usize; n + 1];
     for &l in labels.iter() {
-        if l > 0 { counts[l as usize] += 1; }
+        if l > 0 {
+            counts[l as usize] += 1;
+        }
     }
-    let largest = (1..=n).max_by_key(|&i| counts[i]).unwrap_or(1) as i32;
+    // First-max tie-break: on equal size, keep the LOWEST label — matching
+    // SNLC `getMouseAreasX.m` `[~,id]=max(S)` / numpy `argmax`, which return
+    // the first maximum. (`max_by_key` returns the LAST max, so we break ties
+    // toward the smaller index via `Reverse(i)`.)
+    let largest = (1..=n)
+        .max_by_key(|&i| (counts[i], std::cmp::Reverse(i)))
+        .unwrap_or(1) as i32;
     Array2::from_shape_fn((h, w), |(r, c)| labels[[r, c]] == largest)
 }
 
@@ -82,7 +94,7 @@ pub(crate) fn keep_largest_component(mask: &Array2<bool>) -> Array2<bool> {
 ///   1. `total_area = binary_dilation(raw_patches, iterations=dilation_iter)`
 ///      with scipy default 4-conn cross — the union of all dilated patches.
 ///   2. `halo = total_area ∧ ¬raw_patches` — the donut of dilated-only pixels.
-///   3. `skel = skeletonize_zs(halo)` — the medial axis through the halo,
+///   3. `skel = skeletonize(halo)` (skimage-faithful) — the medial axis through the halo,
 ///      which sits exactly where two patches' dilations meet.
 ///   4. If `border_width > 1`, dilate the skeleton by `border_width - 1`
 ///      to thicken inter-patch borders. Allen default `border_width=1`
@@ -102,25 +114,21 @@ pub(crate) fn dilation_patches2_allen(
     dilation_iter: i32,
     border_width: i32,
 ) -> Array2<bool> {
-    use crate::segmentation::morphology::{binary_dilation_cross, binary_skeletonize_zs};
+    use crate::segmentation::morphology::{binary_dilation_cross, binary_skeletonize_skimage};
 
     let (h, w) = raw_patches.dim();
     // Step 1
     let total_area = binary_dilation_cross(raw_patches, dilation_iter);
     // Step 2
-    let halo = Array2::from_shape_fn((h, w), |(r, c)| {
-        total_area[[r, c]] && !raw_patches[[r, c]]
-    });
+    let halo = Array2::from_shape_fn((h, w), |(r, c)| total_area[[r, c]] && !raw_patches[[r, c]]);
     // Step 3
-    let mut skel = binary_skeletonize_zs(&halo);
+    let mut skel = binary_skeletonize_skimage(&halo);
     // Step 4 (optional)
     if border_width > 1 {
         skel = binary_dilation_cross(&skel, border_width - 1);
     }
     // Step 5
-    let new_patches = Array2::from_shape_fn((h, w), |(r, c)| {
-        total_area[[r, c]] && !skel[[r, c]]
-    });
+    let new_patches = Array2::from_shape_fn((h, w), |(r, c)| total_area[[r, c]] && !skel[[r, c]]);
     // Step 6
     let (labels, n) = label_4conn(&new_patches);
     let mut keep = vec![false; n + 1];
@@ -144,19 +152,29 @@ pub(crate) fn dilation_patches2_allen(
 
 /// Allen `tools.ImageAnalysis.is_adjacent` (`ImageAnalysis.py` L918).
 /// Two patches are adjacent iff `max(dilate(a, bw-1) + dilate(b, bw-1)) > 1`
-/// — i.e. their `(border_width - 1)`-pixel dilations overlap somewhere.
-/// Allen calls this with `border_width = 2 · stored_border_width` in
-/// `_getRawPatches` (single-pixel dilation each → patches separated by
-/// ≤ 2 background pixels are adjacent).
+/// — i.e. their `scipy.ndimage.binary_dilation(iterations = border_width-1)`
+/// dilations overlap somewhere. Allen calls this with
+/// `border_width = 2 · stored_border_width` in `_getRawPatches`.
+///
+/// Border-width edge case: scipy `binary_dilation(iterations=0)` (reached
+/// when `border_width <= 1`) dilates to *convergence* — for any non-empty
+/// seed that fills the whole frame — so two patches are adjacent iff both
+/// are simply non-empty. (The previous code took a raw `a ∩ b` overlap
+/// here, which is the opposite: True only when they already touch.)
 pub(crate) fn is_adjacent(a: &Array2<bool>, b: &Array2<bool>, border_width: i32) -> bool {
     use crate::segmentation::morphology::binary_dilation_cross;
-    let bw = (border_width - 1).max(0);
-    let a_dil = if bw == 0 { a.clone() } else { binary_dilation_cross(a, bw) };
-    let b_dil = if bw == 0 { b.clone() } else { binary_dilation_cross(b, bw) };
+    let iters = border_width - 1;
+    if iters <= 0 {
+        return a.iter().any(|&v| v) && b.iter().any(|&v| v);
+    }
+    let a_dil = binary_dilation_cross(a, iters);
+    let b_dil = binary_dilation_cross(b, iters);
     let (h, w) = a.dim();
     for r in 0..h {
         for c in 0..w {
-            if a_dil[[r, c]] && b_dil[[r, c]] { return true; }
+            if a_dil[[r, c]] && b_dil[[r, c]] {
+                return true;
+            }
         }
     }
     false
@@ -213,10 +231,96 @@ pub(crate) fn patches_from_labels_majority_sign(
                 }
             }
         }
-        if count == 0 { continue; }
+        if count == 0 {
+            continue;
+        }
         let sign = if sum >= 0.0 { 1i8 } else { -1i8 };
         let comp_mask = Array2::from_shape_fn((h, w), |(r, c)| labels[[r, c]] == k);
-        patches.push(Patch { mask: comp_mask, sign });
+        patches.push(Patch {
+            mask: comp_mask,
+            sign,
+        });
     }
     patches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Property: label_4conn of an all-true mask returns exactly 1 component
+    // whose cells all carry label 1. Connected-components identity for
+    // fully-connected input.
+    #[test]
+    fn property_label_4conn_all_true_one_component() {
+        let mask = Array2::<bool>::from_elem((8, 8), true);
+        let (labels, n) = label_4conn(&mask);
+        assert_eq!(n, 1);
+        assert!(labels.iter().all(|&l| l == 1));
+    }
+
+    // Property: label_4conn of an all-false mask returns 0 components and an
+    // all-zero label array. Empty-input identity.
+    #[test]
+    fn property_label_4conn_all_false_zero_components() {
+        let mask = Array2::<bool>::from_elem((8, 8), false);
+        let (labels, n) = label_4conn(&mask);
+        assert_eq!(n, 0);
+        assert!(labels.iter().all(|&l| l == 0));
+    }
+
+    // Property: keep_largest_component is idempotent. Applying it a second
+    // time on its output cannot change anything (the output is already
+    // either empty or a single connected component).
+    #[test]
+    fn property_keep_largest_is_idempotent() {
+        let mut mask = Array2::<bool>::from_elem((10, 10), false);
+        // Big component (4 pixels) at top-left
+        mask[[0, 0]] = true;
+        mask[[0, 1]] = true;
+        mask[[1, 0]] = true;
+        mask[[1, 1]] = true;
+        // Smaller component (2 pixels) at bottom-right
+        mask[[8, 8]] = true;
+        mask[[8, 9]] = true;
+        // Singleton in the middle
+        mask[[5, 5]] = true;
+
+        let first = keep_largest_component(&mask);
+        let second = keep_largest_component(&first);
+        assert_eq!(first, second, "keep_largest_component must be idempotent");
+        let count: usize = first.iter().filter(|&&b| b).count();
+        assert_eq!(count, 4, "largest component is the 2x2 block of 4 pixels");
+    }
+
+    // Property: is_adjacent is symmetric. Adjacency does not depend on
+    // argument order.
+    #[test]
+    fn property_is_adjacent_symmetric() {
+        let mut a = Array2::<bool>::from_elem((8, 8), false);
+        let mut b = Array2::<bool>::from_elem((8, 8), false);
+        a[[3, 3]] = true;
+        a[[3, 4]] = true;
+        b[[3, 5]] = true; // one-pixel gap from a → adjacent at bw=2
+        b[[3, 6]] = true;
+
+        let ab = is_adjacent(&a, &b, 2);
+        let ba = is_adjacent(&b, &a, 2);
+        assert_eq!(ab, ba, "is_adjacent must be symmetric");
+        assert!(
+            ab,
+            "patches one pixel apart should be adjacent at border_width=2"
+        );
+    }
+
+    // Property: is_adjacent reflexive on non-empty input. A non-empty mask
+    // is always adjacent to itself for any border_width ≥ 1.
+    #[test]
+    fn property_is_adjacent_reflexive_on_nonempty() {
+        let mut m = Array2::<bool>::from_elem((6, 6), false);
+        m[[2, 2]] = true;
+        m[[2, 3]] = true;
+        assert!(is_adjacent(&m, &m, 1));
+        assert!(is_adjacent(&m, &m, 3));
+    }
 }

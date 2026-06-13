@@ -13,19 +13,42 @@
 //! versions were not preserved.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use openisi_lib::commands::SharedState;
 use openisi_lib::commands::analysis::{migrate_oisi, set_active_oisi_impl};
-use openisi_lib::state::AppState;
 use openisi_lib::params::Registry;
+use openisi_lib::state::{AppState, StimulusSpawn, ThreadHandles};
 
 /// Build a minimal `SharedState` for testing — Registry with defaults,
-/// no real config dir loaded.
+/// no real config dir loaded. `AppState` is decomposed into per-group
+/// `parking_lot` mutexes, so the shared handle is a plain `Arc`.
 fn make_state() -> SharedState {
     let tmp_cfg = tempfile::tempdir().unwrap();
     let registry = Registry::new(tmp_cfg.path(), tmp_cfg.path());
-    Arc::new(Mutex::new(AppState::new(registry)))
+
+    let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
+    let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
+    let (cam_cmd_tx, _cam_cmd_rx) = crossbeam_channel::unbounded();
+    let (_cam_evt_tx, cam_evt_rx) = crossbeam_channel::unbounded();
+    let (analysis_cmd_tx, _analysis_cmd_rx) = crossbeam_channel::unbounded();
+    let (_analysis_evt_tx, analysis_evt_rx) = crossbeam_channel::unbounded();
+
+    let threads = ThreadHandles {
+        stimulus_tx: stim_cmd_tx,
+        stimulus_rx: stim_evt_rx,
+        camera_tx: cam_cmd_tx,
+        camera_rx: cam_evt_rx,
+        analysis_tx: analysis_cmd_tx,
+        analysis_rx: analysis_evt_rx,
+        stimulus_spawn: parking_lot::Mutex::new(StimulusSpawn {
+            cmd_rx: Some(stim_cmd_rx),
+            evt_tx: Some(stim_evt_tx),
+            spawned: false,
+        }),
+    };
+
+    Arc::new(AppState::new(registry, threads, Vec::new()))
 }
 
 /// Build a real (HDF5) .oisi tempfile so set_active_oisi's existence
@@ -53,8 +76,7 @@ fn set_active_oisi_accepts_existing_path() {
     let state = make_state();
     let (path, _dir) = make_oisi_tempfile();
     set_active_oisi_impl(&state, path.to_string_lossy().into_owned()).unwrap();
-    let app = state.lock().unwrap();
-    assert_eq!(app.active_oisi_path.as_ref().unwrap(), &path);
+    assert_eq!(state.active_oisi.lock().as_ref().unwrap(), &path);
 }
 
 #[test]
@@ -62,10 +84,10 @@ fn set_active_oisi_empty_string_clears_active_path() {
     let state = make_state();
     let (path, _dir) = make_oisi_tempfile();
     set_active_oisi_impl(&state, path.to_string_lossy().into_owned()).unwrap();
-    assert!(state.lock().unwrap().active_oisi_path.is_some());
+    assert!(state.active_oisi.lock().is_some());
 
     set_active_oisi_impl(&state, String::new()).unwrap();
-    assert!(state.lock().unwrap().active_oisi_path.is_none());
+    assert!(state.active_oisi.lock().is_none());
 }
 
 #[test]

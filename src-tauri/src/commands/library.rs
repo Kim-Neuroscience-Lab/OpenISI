@@ -3,7 +3,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::error::{lock_state, AppError, AppResult};
+use crate::error::{AppError, AppResult};
 use crate::params::ParamValue;
 
 use super::SharedState;
@@ -23,10 +23,7 @@ pub struct OisiFileInfo {
 /// List .oisi files in the data directory.
 #[tauri::command]
 pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileInfo>> {
-    let app = lock_state(&state, "list_oisi_files")?;
-    let reg = lock_state(&app.registry, "list_oisi_files registry")?;
-    let data_dir = reg.data_directory().to_string();
-    drop(reg);
+    let data_dir = state.registry.lock().data_directory().to_string();
 
     if data_dir.is_empty() {
         return Ok(Vec::new());
@@ -44,7 +41,8 @@ pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileI
             if path.extension().is_some_and(|ext| ext == "oisi") {
                 let metadata = entry.metadata();
                 let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                let mod_epoch = metadata.ok()
+                let mod_epoch = metadata
+                    .ok()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
@@ -58,7 +56,8 @@ pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileI
 
                 files.push(OisiFileInfo {
                     path: path.to_string_lossy().to_string(),
-                    filename: path.file_name()
+                    filename: path
+                        .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "—".into()),
                     size_bytes: size,
@@ -76,19 +75,20 @@ pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileI
 /// Get the data directory path.
 #[tauri::command]
 pub fn get_data_directory(state: State<'_, SharedState>) -> AppResult<String> {
-    let app = lock_state(&state, "get_data_directory")?;
-    let reg = lock_state(&app.registry, "get_data_directory registry")?;
-    Ok(reg.data_directory().to_string())
+    Ok(state.registry.lock().data_directory().to_string())
 }
 
 /// Set the data directory path. Persists to rig.toml.
 #[tauri::command]
 pub fn set_data_directory(state: State<'_, SharedState>, path: String) -> AppResult<()> {
-    let app = lock_state(&state, "set_data_directory")?;
-    let mut reg = lock_state(&app.registry, "set_data_directory registry")?;
-    reg.set(crate::params::ParamId::DataDirectory, ParamValue::String(path))?;
+    // Registry-scoped, brief: intentionally save while holding the registry lock.
+    let mut reg = state.registry.lock();
+    reg.set(
+        crate::params::ParamId::DataDirectory,
+        ParamValue::String(path),
+    )?;
     if let Err(e) = reg.save_rig() {
-        eprintln!("[params] Failed to save data directory: {e}");
+        tracing::error!(error = %e, "failed to save data directory");
     }
     Ok(())
 }
@@ -104,7 +104,7 @@ pub fn delete_oisi_files(paths: Vec<String>) -> AppResult<u32> {
             deleted += 1;
         }
     }
-    eprintln!("[commands] deleted {deleted} file(s)");
+    tracing::info!(deleted, "deleted files");
     Ok(deleted)
 }
 
@@ -114,14 +114,13 @@ pub fn delete_oisi_files(paths: Vec<String>) -> AppResult<u32> {
 #[tauri::command]
 pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult<String> {
     let src_dir = std::path::Path::new(&dir_path);
-    let folder_name = src_dir.file_name()
+    let folder_name = src_dir
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "import".into());
 
     let out_dir = {
-        let app = lock_state(&state, "import_snlc")?;
-        let reg = lock_state(&app.registry, "import_snlc registry")?;
-        let data_dir = reg.data_directory().to_string();
+        let data_dir = state.registry.lock().data_directory().to_string();
         if data_dir.is_empty() {
             src_dir.parent().unwrap_or(src_dir).to_path_buf()
         } else {
@@ -134,7 +133,7 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
     isi_analysis::io::import_snlc_directory(src_dir, &output_path)?;
 
     let path_str = output_path.to_string_lossy().to_string();
-    eprintln!("[commands] imported SNLC data to {path_str}");
+    tracing::info!(path = %path_str, "imported SNLC data");
     Ok(path_str)
 }
 
@@ -143,9 +142,7 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
 #[tauri::command]
 pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<String>> {
     let out_dir = {
-        let app = lock_state(&state, "import_snlc_sample_data")?;
-        let reg = lock_state(&app.registry, "import_snlc_sample_data registry")?;
-        let data_dir = reg.data_directory().to_string();
+        let data_dir = state.registry.lock().data_directory().to_string();
         if data_dir.is_empty() {
             return Err(AppError::Validation(
                 "Set a data directory before downloading sample data.".into(),
@@ -155,7 +152,8 @@ pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<S
     };
 
     let imported = crate::sample_data::import_snlc_sample_bundle(&out_dir)?;
-    Ok(imported.into_iter()
+    Ok(imported
+        .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect())
 }

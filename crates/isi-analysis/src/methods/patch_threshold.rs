@@ -24,9 +24,7 @@ pub enum PatchThresholdMethod {
     /// fixed absolute value depends on the sign map being heavily
     /// smoothed (Allen `signMapFilterSigma = 9`) so noise tails are
     /// suppressed before thresholding.
-    AllenZhuang2017FixedSignMapThr {
-        value: f64,
-    },
+    AllenZhuang2017FixedSignMapThr { value: f64 },
 
     /// σ-scaled threshold — Garrett et al. 2014, J Neurosci
     /// 34(37):12587-12600 (SNLC MATLAB `getMouseAreasX.m`:
@@ -37,14 +35,14 @@ pub enum PatchThresholdMethod {
     /// **Known failure mode**: σ inflates when the VFS distribution is
     /// bimodal-but-noisy (e.g. apertured single-cycle data), causing
     /// the threshold to collapse to ≈ noise median.
-    Garrett2014SigmaScaled {
-        k: f64,
-    },
+    Garrett2014SigmaScaled { k: f64 },
 }
 
 impl PatchThresholdMethod {
     pub fn allen_zhuang2017_fixed_sign_map_thr(value: Tagged<PatchThresholdAllenValue>) -> Self {
-        Self::AllenZhuang2017FixedSignMapThr { value: value.into_inner() }
+        Self::AllenZhuang2017FixedSignMapThr {
+            value: value.into_inner(),
+        }
     }
 
     pub fn garrett2014_sigma_scaled(k: Tagged<PatchThresholdGarrettK>) -> Self {
@@ -83,7 +81,10 @@ impl PatchThresholdMethod {
                     let v = vfs_smoothed[[r, c]];
                     cortex_mask[[r, c]] && v.is_finite() && v.abs() >= value
                 });
-                PatchThresholdOutput { imseg, threshold_applied: value }
+                PatchThresholdOutput {
+                    imseg,
+                    threshold_applied: value,
+                }
             }
             Self::Garrett2014SigmaScaled { k } => {
                 // SNLC `getMouseAreasX.m` (Garrett 2014, J Neurosci
@@ -99,33 +100,29 @@ impl PatchThresholdMethod {
                     let v = vfs_smoothed[[r, c]];
                     cortex_mask[[r, c]] && v.is_finite() && v.abs() > thr_mask
                 });
-                PatchThresholdOutput { imseg, threshold_applied: thr_mask }
+                PatchThresholdOutput {
+                    imseg,
+                    threshold_applied: thr_mask,
+                }
             }
         }
     }
 }
 
 fn std_of_finite_within(data: &Array2<f64>, mask: &Array2<bool>) -> f64 {
-    let (h, w) = data.dim();
-    debug_assert_eq!(mask.dim(), (h, w));
-    let mut n = 0usize;
-    let mut sum = 0.0_f64;
-    let mut sum_sq = 0.0_f64;
-    for r in 0..h {
-        for c in 0..w {
-            if !mask[[r, c]] { continue; }
-            let v = data[[r, c]];
-            if v.is_finite() {
-                n += 1;
-                sum += v;
-                sum_sq += v * v;
-            }
-        }
+    debug_assert_eq!(mask.dim(), data.dim());
+    // Sample (N−1) std over finite in-mask values — MATLAB-faithful two-pass
+    // `.std(ddof=1)` (SNLC/Garrett 2014).
+    let finite: Vec<f64> = data
+        .iter()
+        .zip(mask.iter())
+        .filter(|(v, &m)| m && v.is_finite())
+        .map(|(v, _)| *v)
+        .collect();
+    if finite.len() < 2 {
+        return 0.0;
     }
-    if n < 2 { return 0.0; }
-    let mean = sum / n as f64;
-    let var = (sum_sq / n as f64) - mean * mean;
-    var.max(0.0).sqrt()
+    ndarray::Array1::from_vec(finite).std(1.0)
 }
 
 #[cfg(test)]
@@ -136,8 +133,8 @@ mod tests {
     #[test]
     fn allen_threshold_gates_by_magnitude_and_cortex() {
         let mut v = Array2::<f64>::zeros((3, 3));
-        v[[0, 0]] = 0.8;  // passes
-        v[[0, 1]] = 0.2;  // below
+        v[[0, 0]] = 0.8; // passes
+        v[[0, 1]] = 0.2; // below
         v[[0, 2]] = -0.5; // passes (|...|)
         let cortex = Array2::from_shape_fn((3, 3), |(r, _)| r < 1);
         let m = PatchThresholdMethod::AllenZhuang2017FixedSignMapThr { value: 0.35 };
@@ -146,7 +143,9 @@ mod tests {
         assert!(!out.imseg[[0, 1]]);
         assert!(out.imseg[[0, 2]]);
         assert_eq!(out.threshold_applied, 0.35);
-        for c in 0..3 { assert!(!out.imseg[[1, c]], "outside cortex must be false"); }
+        for c in 0..3 {
+            assert!(!out.imseg[[1, c]], "outside cortex must be false");
+        }
     }
 
     #[test]

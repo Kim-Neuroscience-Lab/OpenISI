@@ -4,10 +4,10 @@ target/
 *.dll
 *.pdb
 
-# Vendored libtorch (downloaded by scripts/setup.sh)
+# Vendored third-party artifacts
 vendor/
 
-# Dev debugging output (per docs/ANALYSIS_COMPUTE.md)
+# Dev debugging output (generated figures)
 dev_figures/
 
 # Data files
@@ -59,3 +59,17 @@ test_data/
 
 # Claude artifacts
 .claude/
+
+# External reference codebases (MATLAB/Python pipelines we port from) — not tracked
+/reference/
+
+# Editor/backup scratch files (never commit)
+*.bak
+*.orig
+
+# Python bytecode (golden-fixture generators are run, not byte-compiled into VCS)
+__pycache__/
+*.pyc
+
+# Transient persisted session state (resumability) — per-machine runtime, not source
+config/dev/session.json

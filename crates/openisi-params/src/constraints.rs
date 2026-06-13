@@ -23,41 +23,75 @@ impl EffectiveConstraint {
     /// Validate a ParamValue against this effective constraint.
     /// Errors are `ParamsError::Validation` — no `Result<_, String>`
     /// "internal helper" exemption.
-    pub fn validate(&self, value: &ParamValue, static_constraint: &StaticConstraint) -> crate::error::ParamsResult<()> {
+    pub fn validate(
+        &self,
+        value: &ParamValue,
+        static_constraint: &StaticConstraint,
+    ) -> crate::error::ParamsResult<()> {
         use crate::error::ParamsError;
-        let oor = |v: &dyn std::fmt::Display, min: &dyn std::fmt::Display, max: &dyn std::fmt::Display| {
+        let oor = |v: &dyn std::fmt::Display,
+                   min: &dyn std::fmt::Display,
+                   max: &dyn std::fmt::Display| {
             ParamsError::Validation(format!("value {v} out of range [{min}, {max}]"))
         };
         match self {
             EffectiveConstraint::Static => static_constraint.validate(value),
             EffectiveConstraint::RangeU16(min, max) => {
                 if let ParamValue::U16(v) = value {
-                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
-                } else { Ok(()) }
+                    if *v >= *min && *v <= *max {
+                        Ok(())
+                    } else {
+                        Err(oor(v, min, max))
+                    }
+                } else {
+                    Ok(())
+                }
             }
             EffectiveConstraint::RangeU32(min, max) => {
                 if let ParamValue::U32(v) = value {
-                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
-                } else { Ok(()) }
+                    if *v >= *min && *v <= *max {
+                        Ok(())
+                    } else {
+                        Err(oor(v, min, max))
+                    }
+                } else {
+                    Ok(())
+                }
             }
             EffectiveConstraint::RangeF64(min, max) => {
                 if let ParamValue::F64(v) = value {
-                    if *v >= *min && *v <= *max { Ok(()) } else { Err(oor(v, min, max)) }
-                } else { Ok(()) }
+                    if *v >= *min && *v <= *max {
+                        Ok(())
+                    } else {
+                        Err(oor(v, min, max))
+                    }
+                } else {
+                    Ok(())
+                }
             }
             EffectiveConstraint::MinF64(min) => {
                 if let ParamValue::F64(v) = value {
-                    if *v >= *min { Ok(()) } else {
-                        Err(ParamsError::Validation(format!("value {v} below minimum {min}")))
+                    if *v >= *min {
+                        Ok(())
+                    } else {
+                        Err(ParamsError::Validation(format!(
+                            "value {v} below minimum {min}"
+                        )))
                     }
-                } else { Ok(()) }
+                } else {
+                    Ok(())
+                }
             }
         }
     }
 
     /// Clamp a ParamValue to fit within this constraint. Returns the clamped value
     /// if it changed, or None if it was already in bounds.
-    pub fn clamp(&self, value: &ParamValue, static_constraint: &StaticConstraint) -> Option<ParamValue> {
+    pub fn clamp(
+        &self,
+        value: &ParamValue,
+        static_constraint: &StaticConstraint,
+    ) -> Option<ParamValue> {
         if self.validate(value, static_constraint).is_ok() {
             return None;
         }
@@ -121,13 +155,25 @@ fn clamp_static(value: &ParamValue, constraint: &StaticConstraint) -> Option<Par
             Some(ParamValue::F64(v.clamp(*min, *max)))
         }
         (StaticConstraint::MinF64(min), ParamValue::F64(v)) => {
-            if *v < *min { Some(ParamValue::F64(*min)) } else { None }
+            if *v < *min {
+                Some(ParamValue::F64(*min))
+            } else {
+                None
+            }
         }
         (StaticConstraint::MinU32(min), ParamValue::U32(v)) => {
-            if *v < *min { Some(ParamValue::U32(*min)) } else { None }
+            if *v < *min {
+                Some(ParamValue::U32(*min))
+            } else {
+                None
+            }
         }
         (StaticConstraint::MinUsize(min), ParamValue::Usize(v)) => {
-            if *v < *min { Some(ParamValue::Usize(*min)) } else { None }
+            if *v < *min {
+                Some(ParamValue::Usize(*min))
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -172,44 +218,36 @@ pub fn build_dynamic_constraints() -> Vec<DynamicConstraint> {
         DynamicConstraint {
             target: ParamId::CameraExposureUs,
             dependencies: vec![ConstraintDependency::Hardware],
-            compute: |_values, hw| {
-                match (hw.camera_min_exposure_us, hw.camera_max_exposure_us) {
-                    (Some(min), Some(max)) => EffectiveConstraint::RangeU32(min, max),
-                    _ => EffectiveConstraint::Static,
-                }
+            compute: |_values, hw| match (hw.camera_min_exposure_us, hw.camera_max_exposure_us) {
+                (Some(min), Some(max)) => EffectiveConstraint::RangeU32(min, max),
+                _ => EffectiveConstraint::Static,
             },
         },
         // 2. Camera binning max
         DynamicConstraint {
             target: ParamId::CameraBinning,
             dependencies: vec![ConstraintDependency::Hardware],
-            compute: |_values, hw| {
-                match hw.camera_max_binning {
-                    Some(max) => EffectiveConstraint::RangeU16(1, max),
-                    None => EffectiveConstraint::Static,
-                }
+            compute: |_values, hw| match hw.camera_max_binning {
+                Some(max) => EffectiveConstraint::RangeU16(1, max),
+                None => EffectiveConstraint::Static,
             },
         },
         // 3. Target stimulus FPS from monitor refresh
         DynamicConstraint {
             target: ParamId::TargetStimulusFps,
             dependencies: vec![ConstraintDependency::Hardware],
-            compute: |_values, hw| {
-                match hw.monitor_refresh_hz {
-                    Some(hz) => EffectiveConstraint::RangeU32(1, hz),
-                    None => EffectiveConstraint::Static,
-                }
+            compute: |_values, hw| match hw.monitor_refresh_hz {
+                Some(hz) => EffectiveConstraint::RangeU32(1, hz),
+                None => EffectiveConstraint::Static,
             },
         },
         // 4. Strobe frequency max from measured refresh / 2
         DynamicConstraint {
             target: ParamId::StrobeFrequencyHz,
             dependencies: vec![ConstraintDependency::Hardware],
-            compute: |_values, hw| {
-                match hw.measured_refresh_hz {
-                    Some(hz) => EffectiveConstraint::RangeF64(0.0, hz / 2.0),
-                    None => EffectiveConstraint::Static,
-                }
+            compute: |_values, hw| match hw.measured_refresh_hz {
+                Some(hz) => EffectiveConstraint::RangeF64(0.0, hz / 2.0),
+                None => EffectiveConstraint::Static,
             },
         },
         // 5. Stimulus width max from visual field width
@@ -224,6 +262,16 @@ pub fn build_dynamic_constraints() -> Vec<DynamicConstraint> {
             compute: |values, hw| {
                 let (width_cm, height_cm) = match (hw.monitor_width_cm, hw.monitor_height_cm) {
                     (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
+                    _ => return EffectiveConstraint::Static,
+                };
+
+                // No fictional 1920×1080 fallback. If the monitor's pixel
+                // resolution isn't known, the visual-field-width constraint
+                // is *also* unknown — return Static so the UI shows the
+                // shipped static bounds rather than rendering a constraint
+                // computed against a guessed canvas.
+                let (width_px, height_px) = match (hw.monitor_width_px, hw.monitor_height_px) {
+                    (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
                     _ => return EffectiveConstraint::Static,
                 };
 
@@ -244,10 +292,14 @@ pub fn build_dynamic_constraints() -> Vec<DynamicConstraint> {
                 let geom = openisi_stimulus::geometry::DisplayGeometry::new(
                     projection,
                     viewing_distance,
-                    0.0, 0.0,
-                    width_cm, height_cm,
-                    hw.monitor_width_px.unwrap_or(1920),
-                    hw.monitor_height_px.unwrap_or(1080),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0, // bisector intercept — irrelevant for visual_field_width_deg constraint
+                    width_cm,
+                    height_cm,
+                    width_px,
+                    height_px,
                 );
 
                 let vf_width = geom.visual_field_width_deg();

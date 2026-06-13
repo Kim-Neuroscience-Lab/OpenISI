@@ -2,6 +2,7 @@
 //!
 //! HDF5 layout:
 //!
+//! ```text
 //!   /version                     attr: "1.0"
 //!   /created_at                  attr: ISO-8601 string
 //!   /source_type                 attr: "raw_acquisition" | "complex_maps_import" | ...
@@ -21,17 +22,28 @@
 //!     azi_phase                  dataset: f64 (H, W)
 //!     alt_phase, azi_phase_degrees, alt_phase_degrees
 //!     azi_amplitude, alt_amplitude, vfs
+//! ```
 
 use hdf5::File as H5File;
-use ndarray::{Array2, Array3};
+use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex64;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use crate::{
-    AcquisitionProperties, AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps, ProgressSink,
-    RawProcessingResult,
+    AcquisitionProperties, AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps,
+    ProgressSink, RawAcquisition, RawProcessingResult,
 };
+
+// Per-dataset rendering metadata (the `/results/*` palette/units contract) and
+// foreign SNLC `.mat` import are distinct concerns, split into submodules. They
+// reach the shared low-level HDF5 helpers in this module via `super::`.
+mod import;
+mod meta;
+pub use import::import_snlc_directory;
+pub use meta::{classify_result_type, meta_for_f64, read_map_meta, MapMeta};
+use meta::{attach_meta, map_meta_bool, map_meta_labels};
 
 // ---------------------------------------------------------------------------
 // Capability detection — what can the system do with this file?
@@ -45,6 +57,21 @@ pub struct ResultInfo {
     pub result_type: String,
 }
 
+/// Summary of an acquisition's stimulus schedule, derived from the single
+/// source of truth — `/acquisition/schedule`'s `sweep_sequence` — the same
+/// schedule the DFT groups by direction. `cycles_per_direction` is the
+/// repetition count the analysis actually averages over.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScheduleSummary {
+    /// Total sweeps in the schedule (all directions).
+    pub total_sweeps: usize,
+    /// Number of distinct, recognized stimulus directions.
+    pub directions: usize,
+    /// Cycles (repetitions) per direction — the standard protocol runs the
+    /// same count for each; this is the minimum if they differ.
+    pub cycles_per_direction: usize,
+}
+
 /// What's present in an .oisi file.
 pub struct FileCapabilities {
     pub has_anatomical: bool,
@@ -53,8 +80,9 @@ pub struct FileCapabilities {
     pub has_results: bool,
     /// Map dimensions (H, W) — from whichever data is present
     pub dimensions: Option<(usize, usize)>,
-    /// Names of acquisition cycle groups
-    pub acquisition_cycles: Vec<String>,
+    /// Stimulus schedule summary (sweeps / directions / cycles-per-direction),
+    /// derived from `/acquisition/schedule`. `None` if there's no schedule.
+    pub acquisition_schedule: Option<ScheduleSummary>,
     /// Typed result entries
     pub results: Vec<ResultInfo>,
 }
@@ -105,13 +133,13 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
         }
     }
 
-    // Camera frames live at acquisition/camera/frames (single contiguous
-    // dataset). The reader supports nothing else; reporting any other
-    // shape here would advertise a capability the read path can't honor.
-    let acquisition_cycles = if has_acquisition && file.group("acquisition/camera").is_ok() {
-        vec!["all".into()]
+    // Stimulus schedule summary — the real cycle count, read from the same
+    // `/acquisition/schedule` `sweep_sequence` the DFT groups by direction
+    // (one source of truth, not a separate count).
+    let acquisition_schedule = if has_acquisition {
+        schedule_summary(&file)
     } else {
-        vec![]
+        None
     };
 
     // Classify each result dataset by type.
@@ -119,16 +147,19 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
         let group = file.group("results").ok();
         if let Some(g) = group {
             let names = list_group_members_from_group(&g)?;
-            names.into_iter().filter_map(|name| {
-                if let Ok(ds) = g.dataset(&name) {
-                    let shape = ds.shape();
-                    let dtype = ds.dtype().ok();
-                    let result_type = classify_result_type(&name, &shape, dtype.as_ref());
-                    Some(ResultInfo { name, result_type })
-                } else {
-                    None // skip sub-groups
-                }
-            }).collect()
+            names
+                .into_iter()
+                .filter_map(|name| {
+                    if let Ok(ds) = g.dataset(&name) {
+                        let shape = ds.shape();
+                        let dtype = ds.dtype().ok();
+                        let result_type = classify_result_type(&name, &shape, dtype.as_ref());
+                        Some(ResultInfo { name, result_type })
+                    } else {
+                        None // skip sub-groups
+                    }
+                })
+                .collect()
         } else {
             vec![]
         }
@@ -142,7 +173,7 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
         has_complex_maps,
         has_results,
         dimensions,
-        acquisition_cycles,
+        acquisition_schedule,
         results,
     })
 }
@@ -151,22 +182,23 @@ pub fn inspect(path: &Path) -> Result<FileCapabilities, AnalysisError> {
 // Reading
 // ---------------------------------------------------------------------------
 
-
 /// Read the four complex maps.
 pub fn read_complex_maps(path: &Path) -> Result<ComplexMaps, AnalysisError> {
     let file = open_read(path)?;
 
     let read_complex = |name: &str| -> Result<Array2<Complex64>, AnalysisError> {
         let ds_path = format!("complex_maps/{name}");
-        let ds = file.dataset(&ds_path)
+        let ds = file
+            .dataset(&ds_path)
             .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
-        let raw: Array3<f64> = ds.read()
+        let raw: Array3<f64> = ds
+            .read()
             .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
         let (h, w, c) = raw.dim();
         if c != 2 {
-            return Err(AnalysisError::InvalidPackage(
-                format!("{ds_path}: expected shape (H,W,2), got dim 2 = {c}")
-            ));
+            return Err(AnalysisError::InvalidPackage(format!(
+                "{ds_path}: expected shape (H,W,2), got dim 2 = {c}"
+            )));
         }
         let mut result = Array2::<Complex64>::zeros((h, w));
         for r in 0..h {
@@ -185,15 +217,316 @@ pub fn read_complex_maps(path: &Path) -> Result<ComplexMaps, AnalysisError> {
     })
 }
 
+/// Read the cached retinotopy maps from `/results`, for the incremental cache's
+/// retinotopy restore point. Returns `Ok(None)` if any required dataset is
+/// absent (a cache miss — `magnification_raw` in particular is only present in
+/// results written by the current pipeline). The caller restores these only
+/// after confirming the stored retinotopy fingerprint matches.
+pub fn read_retinotopy_maps(path: &Path) -> Result<Option<crate::RetinotopyMaps>, AnalysisError> {
+    let r = |name: &str| read_result_map(path, name);
+    match (
+        r("azi_phase"),
+        r("alt_phase"),
+        r("azi_phase_degrees"),
+        r("alt_phase_degrees"),
+        r("azi_amplitude"),
+        r("alt_amplitude"),
+        r("vfs"),
+        r("magnification_raw"),
+    ) {
+        (
+            Ok(azi_phase),
+            Ok(alt_phase),
+            Ok(azi_phase_degrees),
+            Ok(alt_phase_degrees),
+            Ok(azi_amplitude),
+            Ok(alt_amplitude),
+            Ok(vfs),
+            Ok(magnification_raw),
+        ) => Ok(Some(crate::RetinotopyMaps {
+            azi_phase,
+            alt_phase,
+            azi_phase_degrees,
+            alt_phase_degrees,
+            azi_amplitude,
+            alt_amplitude,
+            vfs,
+            magnification_raw,
+        })),
+        _ => Ok(None),
+    }
+}
+
+/// Read a stage's stored fingerprint from `/analysis_state@<stage>`. `Ok(None)`
+/// if the group or attribute is absent (no cache to compare against).
+pub fn read_stage_fingerprint(path: &Path, stage: &str) -> Result<Option<String>, AnalysisError> {
+    let file = open_read(path)?;
+    let Ok(group) = file.group("analysis_state") else {
+        return Ok(None);
+    };
+    match group.attr(stage) {
+        Ok(a) => {
+            let s = a
+                .read_scalar::<hdf5::types::VarLenUnicode>()
+                .map_err(|e| AnalysisError::Hdf5(format!("reading fingerprint {stage}: {e}")))?;
+            Ok(Some(s.as_str().to_string()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Record a stage's fingerprint at `/analysis_state@<stage>` — the identity of
+/// the inputs that produced the cached output, so the next run can decide
+/// whether to restore or recompute.
+pub fn write_stage_fingerprint(path: &Path, stage: &str, fp: &str) -> Result<(), AnalysisError> {
+    let file = open_readwrite(path)?;
+    let group = match file.group("analysis_state") {
+        Ok(g) => g,
+        Err(_) => file
+            .create_group("analysis_state")
+            .map_err(|e| AnalysisError::Hdf5(format!("creating analysis_state group: {e}")))?,
+    };
+    write_str_attr(&group, stage, fp)
+}
+
+/// Read every stored stage fingerprint at once (the `/analysis_state` group's
+/// attributes, `stage → key`). One file open instead of one per stage. An empty
+/// map means no cache has been written (or the group is absent).
+pub fn read_all_stage_fingerprints(path: &Path) -> Result<HashMap<String, String>, AnalysisError> {
+    let file = open_read(path)?;
+    let Ok(group) = file.group("analysis_state") else {
+        return Ok(HashMap::new());
+    };
+    let names = group
+        .attr_names()
+        .map_err(|e| AnalysisError::Hdf5(format!("listing analysis_state attrs: {e}")))?;
+    let mut out = HashMap::with_capacity(names.len());
+    for name in names {
+        match group
+            .attr(&name)
+            .and_then(|a| a.read_scalar::<hdf5::types::VarLenUnicode>())
+        {
+            Ok(s) => {
+                out.insert(name, s.as_str().to_string());
+            }
+            // A fingerprint we can't read is a corrupt cache entry: treat it as
+            // absent (the stage recomputes — safe, never stale) but say so, so a
+            // damaged file doesn't silently masquerade as a cold cache.
+            Err(e) => {
+                tracing::warn!(attr = %name, error = %e, "unreadable stage fingerprint — recomputing")
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Which cached stage artifacts are physically present on disk, by stage. The
+/// incremental cut consults this so a fingerprint match on a stage whose data
+/// was stripped (or never written, e.g. a pre-`/cache` file) still recomputes
+/// rather than trying to restore absent data. Each field is `true` iff **all**
+/// datasets that stage's restore reads exist.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StageArtifacts {
+    pub retinotopy: bool,
+    pub sign_smoothing: bool,
+    pub cortex_source: bool,
+    pub patch_threshold: bool,
+    pub labels: bool,
+    pub eccentricity: bool,
+    pub derived_maps: bool,
+}
+
+/// Probe the file once for every cacheable tail stage's restore artifacts.
+pub fn stage_artifacts_present(path: &Path) -> Result<StageArtifacts, AnalysisError> {
+    let file = open_read(path)?;
+    let has = |p: &str| file.link_exists(p);
+    let all = |ps: &[&str]| ps.iter().all(|p| has(p));
+
+    // `/cache`: the patch-threshold intermediates — `imseg` dataset + the
+    // `threshold_applied` scalar carried as an attribute on the group. Resolve
+    // the group once and check both from it.
+    let patch_threshold = file
+        .group("cache")
+        .map(|g| g.link_exists("imseg") && g.attr("threshold_applied").is_ok())
+        .unwrap_or(false);
+
+    Ok(StageArtifacts {
+        retinotopy: all(&[
+            "results/azi_phase",
+            "results/alt_phase",
+            "results/azi_phase_degrees",
+            "results/alt_phase_degrees",
+            "results/azi_amplitude",
+            "results/alt_amplitude",
+            "results/vfs",
+            "results/magnification_raw",
+        ]),
+        sign_smoothing: has("results/vfs_smoothed"),
+        cortex_source: has("results/cortex_mask"),
+        patch_threshold,
+        labels: all(&[
+            "results/area_labels",
+            "results/area_signs",
+            "results/area_borders",
+        ]),
+        eccentricity: has("results/eccentricity"),
+        derived_maps: all(&[
+            "results/magnification",
+            "results/contours_azi",
+            "results/contours_alt",
+            "results/vfs_smoothed_thresholded",
+        ]),
+    })
+}
+
+/// Persist the two non-result `PatchThreshold` intermediates to `/cache` so a
+/// later run can restore that stage instead of recomputing the threshold. The
+/// binary candidate mask (`imseg`) is the dataset; the applied scalar threshold
+/// is a group attribute. Rewritten wholesale each time the stage executes;
+/// `read_stage_fingerprint(path, "patch_threshold")` is what gates reuse.
+pub fn write_stage_cache(
+    path: &Path,
+    imseg: &Array2<bool>,
+    threshold_applied: f64,
+) -> Result<(), AnalysisError> {
+    let file = open_readwrite(path)?;
+    let _ = file.unlink("cache");
+    let group = file
+        .create_group("cache")
+        .map_err(|e| AnalysisError::Hdf5(format!("creating cache group: {e}")))?;
+    let u8data = imseg.mapv(|b| b as u8);
+    group
+        .new_dataset_builder()
+        .with_data(&u8data)
+        .create("imseg")
+        .map_err(|e| AnalysisError::Hdf5(format!("writing cache/imseg: {e}")))?;
+    write_f64_attr(&group, "threshold_applied", threshold_applied)?;
+    Ok(())
+}
+
+/// Read the cached binary candidate-patch mask (`/cache/imseg`).
+pub fn read_cache_imseg(path: &Path) -> Result<Array2<bool>, AnalysisError> {
+    let file = open_read(path)?;
+    let ds = file
+        .dataset("cache/imseg")
+        .map_err(|e| AnalysisError::MissingData(format!("cache/imseg: {e}")))?;
+    let data: Array2<u8> = ds
+        .read()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading cache/imseg: {e}")))?;
+    Ok(data.mapv(|v| v != 0))
+}
+
+/// Read the cached applied `|VFS|` threshold (`/cache@threshold_applied`).
+pub fn read_cache_threshold(path: &Path) -> Result<f64, AnalysisError> {
+    let file = open_read(path)?;
+    let group = file
+        .group("cache")
+        .map_err(|e| AnalysisError::MissingData(format!("cache: {e}")))?;
+    read_f64_attr(&group, "threshold_applied")
+        .ok_or_else(|| AnalysisError::MissingData("cache@threshold_applied".into()))
+}
+
+/// Read cached spectral responsiveness maps if all four datasets
+/// (`/results/{spectral_snr,allen_power_snr}_{azi,alt}`) exist; returns
+/// `Ok(None)` if any is missing (cache miss, not an error — e.g. a file
+/// analyzed under the old `snr_*` schema). Used by the boundary to seed the
+/// responsiveness maps when the cached complex maps are reused; both metrics are
+/// parameterless on the raw acquisition, so cached values are correct as long as
+/// the raw frames + baseline haven't changed (gated by the projection fingerprint).
+pub fn read_responsiveness_maps(
+    path: &Path,
+) -> Result<Option<crate::ResponsivenessMaps>, AnalysisError> {
+    match (
+        read_result_map(path, "spectral_snr_azi"),
+        read_result_map(path, "spectral_snr_alt"),
+        read_result_map(path, "allen_power_snr_azi"),
+        read_result_map(path, "allen_power_snr_alt"),
+    ) {
+        (Ok(spectral_snr_azi), Ok(spectral_snr_alt), Ok(allen_power_snr_azi), Ok(allen_power_snr_alt)) => {
+            Ok(Some(crate::ResponsivenessMaps {
+                spectral_snr_azi,
+                spectral_snr_alt,
+                allen_power_snr_azi,
+                allen_power_snr_alt,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Read cached per-direction reliability maps; returns `Ok(None)` if
+/// any of the four datasets is missing (e.g. K=1 capture where
+/// reliability is undefined). Companion to `read_responsiveness_maps`.
+pub fn read_reliability_maps(path: &Path) -> Result<Option<crate::ReliabilityMaps>, AnalysisError> {
+    match (
+        read_result_map(path, "reliability_azi_fwd"),
+        read_result_map(path, "reliability_azi_rev"),
+        read_result_map(path, "reliability_alt_fwd"),
+        read_result_map(path, "reliability_alt_rev"),
+    ) {
+        (Ok(rel_azi_fwd), Ok(rel_azi_rev), Ok(rel_alt_fwd), Ok(rel_alt_rev)) => {
+            Ok(Some(crate::ReliabilityMaps {
+                rel_azi_fwd,
+                rel_azi_rev,
+                rel_alt_fwd,
+                rel_alt_rev,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Read a single result map by name (e.g. "azi_phase", "vfs").
 pub fn read_result_map(path: &Path, name: &str) -> Result<Array2<f64>, AnalysisError> {
     let file = open_read(path)?;
     let ds_path = format!("results/{name}");
-    let ds = file.dataset(&ds_path)
+    let ds = file
+        .dataset(&ds_path)
         .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
-    let data: Array2<f64> = ds.read()
+    let data: Array2<f64> = ds
+        .read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
     Ok(data)
+}
+
+/// Read a `/results` boolean mask (stored `u8` 0/1) by name — the read half of
+/// the masks `write_results` writes (`cortex_mask`, `area_borders`,
+/// `contours_*`). Used by the incremental cache to restore a skipped stage's
+/// mask output.
+pub fn read_result_mask(path: &Path, name: &str) -> Result<Array2<bool>, AnalysisError> {
+    let file = open_read(path)?;
+    let ds_path = format!("results/{name}");
+    let ds = file
+        .dataset(&ds_path)
+        .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
+    let data: Array2<u8> = ds
+        .read()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
+    Ok(data.mapv(|v| v != 0))
+}
+
+/// Read the `/results/area_labels` integer label map (the `Labels` stage output)
+/// for the incremental cache.
+pub fn read_result_labels(path: &Path) -> Result<Array2<i32>, AnalysisError> {
+    let file = open_read(path)?;
+    let ds = file
+        .dataset("results/area_labels")
+        .map_err(|e| AnalysisError::MissingData(format!("results/area_labels: {e}")))?;
+    ds.read()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading results/area_labels: {e}")))
+}
+
+/// Read the `/results/area_signs` per-area sign array (the `Labels` stage
+/// output) for the incremental cache.
+pub fn read_result_signs(path: &Path) -> Result<Vec<i8>, AnalysisError> {
+    let file = open_read(path)?;
+    let ds = file
+        .dataset("results/area_signs")
+        .map_err(|e| AnalysisError::MissingData(format!("results/area_signs: {e}")))?;
+    let arr: Array1<i8> = ds
+        .read_1d()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading results/area_signs: {e}")))?;
+    Ok(arr.to_vec())
 }
 
 /// Read the self-describing render metadata (palette, display range,
@@ -254,7 +587,7 @@ pub fn write_analysis_params_attr(
 ) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
     let json = serde_json::to_string(registry_tree)
-        .map_err(|e| AnalysisError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| AnalysisError::Io(std::io::Error::other(e)))?;
     write_str_attr(&file, "analysis_params", &json)?;
     Ok(())
 }
@@ -288,7 +621,9 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
     let Some(value) = read_analysis_params_attr(path)? else {
         return Ok(false);
     };
-    let Some(obj) = value.as_object() else { return Ok(false); };
+    let Some(obj) = value.as_object() else {
+        return Ok(false);
+    };
     if MOVED_FIELDS.iter().any(|f| obj.contains_key(*f)) {
         return Ok(true);
     }
@@ -304,11 +639,11 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
     // whose value is NOT an object (a scalar tunable).
     //
     // Method-only stages (`{"method": "x"}`) are NOT a marker: tunable-less
-    // methods (cycle_combine, vfs_computation, quality_gate, eccentricity)
+    // methods (cycle_combine, vfs_computation, eccentricity)
     // serialize to exactly that shape in the *current* schema, so flagging
     // them as legacy would falsely reject valid files (and break
     // re-analysis of already-analyzed files).
-    for (_stage, stage_val) in obj.iter() {
+    for (stage, stage_val) in obj.iter() {
         if let Some(stage_obj) = stage_val.as_object() {
             if stage_obj.contains_key("method") {
                 let has_flat_tunable = stage_obj
@@ -316,6 +651,23 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
                     .any(|(k, v)| k != "method" && !v.is_object());
                 if has_flat_tunable {
                     return Ok(true);
+                }
+                // Renamed-variant detection: a current-shape file whose
+                // method string or variant subtree key matches a known
+                // legacy name needs `translate_pre_2026_analysis_params`
+                // to be re-run to bring it up to the canonical name set.
+                if let Some(method) = stage_obj.get("method").and_then(|v| v.as_str()) {
+                    if crate::migrate::rename_legacy_method(stage, method) != method {
+                        return Ok(true);
+                    }
+                }
+                for (k, _) in stage_obj.iter() {
+                    if k == "method" {
+                        continue;
+                    }
+                    if crate::migrate::rename_legacy_method(stage, k) != k {
+                        return Ok(true);
+                    }
                 }
             }
         }
@@ -334,14 +686,17 @@ pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
 /// is the only construction path.
 pub fn read_analysis_params_attr(path: &Path) -> Result<Option<serde_json::Value>, AnalysisError> {
     let file = open_read(path)?;
-    let attr_names = file.attr_names()
+    let attr_names = file
+        .attr_names()
         .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
     if !attr_names.iter().any(|n| n == "analysis_params") {
         return Ok(None);
     }
-    let attr = file.attr("analysis_params")
+    let attr = file
+        .attr("analysis_params")
         .map_err(|e| AnalysisError::Hdf5(format!("opening analysis_params attr: {e}")))?;
-    let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
+    let json_vlu: hdf5::types::VarLenUnicode = attr
+        .read_scalar()
         .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
     let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
@@ -368,16 +723,22 @@ pub fn read_experiment_params(path: &Path) -> Result<Option<serde_json::Value>, 
 /// Helper for reading a JSON-encoded root HDF5 attribute that may be
 /// absent on older files. Used by `read_rig_params` and
 /// `read_experiment_params`.
-fn read_root_json_attr(path: &Path, name: &str) -> Result<Option<serde_json::Value>, AnalysisError> {
+fn read_root_json_attr(
+    path: &Path,
+    name: &str,
+) -> Result<Option<serde_json::Value>, AnalysisError> {
     let file = open_read(path)?;
-    let attr_names = file.attr_names()
+    let attr_names = file
+        .attr_names()
         .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
     if !attr_names.iter().any(|n| n == name) {
         return Ok(None);
     }
-    let attr = file.attr(name)
+    let attr = file
+        .attr(name)
         .map_err(|e| AnalysisError::Hdf5(format!("opening {name} attr: {e}")))?;
-    let json_vlu: hdf5::types::VarLenUnicode = attr.read_scalar()
+    let json_vlu: hdf5::types::VarLenUnicode = attr
+        .read_scalar()
         .map_err(|e| AnalysisError::Hdf5(format!("reading {name} attr: {e}")))?;
     let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing {name}: {e}")))?;
@@ -397,22 +758,25 @@ pub fn read_cortex_roi(path: &Path) -> Result<Option<Array2<bool>>, AnalysisErro
     if !file.link_exists("anatomical/cortex_roi") {
         return Ok(None);
     }
-    let ds = file.dataset("anatomical/cortex_roi")
+    let ds = file
+        .dataset("anatomical/cortex_roi")
         .map_err(|e| AnalysisError::Hdf5(format!("opening anatomical/cortex_roi: {e}")))?;
-    let data: Array2<u8> = ds.read()
+    let data: Array2<u8> = ds
+        .read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading anatomical/cortex_roi: {e}")))?;
     Ok(Some(data.mapv(|v| v != 0)))
 }
 
 pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
     let file = open_read(path)?;
-    let ds = file.dataset("anatomical")
+    let ds = file
+        .dataset("anatomical")
         .map_err(|e| AnalysisError::MissingData(format!("anatomical: {e}")))?;
-    let data: Array2<u8> = ds.read()
+    let data: Array2<u8> = ds
+        .read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading anatomical: {e}")))?;
     Ok(data)
 }
-
 
 // ---------------------------------------------------------------------------
 // Writing
@@ -430,13 +794,35 @@ pub fn create(path: &Path, source_type: &str) -> Result<(), AnalysisError> {
     Ok(())
 }
 
+/// Strip derived, recomputable outputs so the next [`crate::analyze`] recomputes
+/// from the rawest available input: `results`, the `analysis_state` stage
+/// fingerprints, and the `/cache` intermediates always, plus `complex_maps` when
+/// raw `acquisition` frames are present (for cycle-averaged imports the complex
+/// maps ARE the input, so they are kept).
+///
+/// The retinotopy fingerprint keys on params + data, not the code version, so a
+/// stale cache can silently mask a code change. Test/baseline harnesses call
+/// this before analyzing so they exercise the compute path unconditionally.
+pub fn strip_derived_outputs(path: &Path) -> Result<(), AnalysisError> {
+    let file = open_readwrite(path)?;
+    let has_raw = file.group("acquisition").is_ok();
+    let _ = file.unlink("results");
+    let _ = file.unlink("analysis_state");
+    let _ = file.unlink("cache");
+    if has_raw {
+        let _ = file.unlink("complex_maps");
+    }
+    Ok(())
+}
+
 /// Write complex maps to the file.
 pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
 
     // Remove existing group if present, then recreate
     let _ = file.unlink("complex_maps");
-    let group = file.create_group("complex_maps")
+    let group = file
+        .create_group("complex_maps")
         .map_err(|e| AnalysisError::Hdf5(format!("creating complex_maps group: {e}")))?;
 
     let write_complex = |name: &str, data: &Array2<Complex64>| -> Result<(), AnalysisError> {
@@ -448,7 +834,8 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
                 raw[[r, c, 1]] = data[[r, c]].im;
             }
         }
-        group.new_dataset_builder()
+        group
+            .new_dataset_builder()
             .with_data(&raw)
             .create(name)
             .map_err(|e| AnalysisError::Hdf5(format!("writing complex_maps/{name}: {e}")))?;
@@ -481,7 +868,8 @@ pub fn write_results(
 
     // Remove and recreate results group (flat).
     let _ = file.unlink("results");
-    let group = file.create_group("results")
+    let group = file
+        .create_group("results")
         .map_err(|e| AnalysisError::Hdf5(format!("creating results group: {e}")))?;
 
     // Writes a f64 (H,W) dataset and attaches the meta attrs that
@@ -489,7 +877,10 @@ pub fn write_results(
     // does ZERO inference — palette, units, display range, NaN/zero
     // semantics are all decided here, once, at write time.
     let write_f64 = |name: &str, data: &Array2<f64>| -> Result<(), AnalysisError> {
-        let ds = group.new_dataset_builder().with_data(data).create(name)
+        let ds = group
+            .new_dataset_builder()
+            .with_data(data)
+            .create(name)
             .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
         let meta = meta_for_f64(name, data, acquisition);
         attach_meta(&ds, &meta)?;
@@ -497,7 +888,10 @@ pub fn write_results(
     };
     let write_mask = |name: &str, data: &Array2<bool>| -> Result<(), AnalysisError> {
         let u8data = data.mapv(|b| b as u8);
-        let ds = group.new_dataset_builder().with_data(&u8data).create(name)
+        let ds = group
+            .new_dataset_builder()
+            .with_data(&u8data)
+            .create(name)
             .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
         attach_meta(&ds, &map_meta_bool())?;
         Ok(())
@@ -520,23 +914,34 @@ pub fn write_results(
 
     // Segmentation outputs.
     write_mask("cortex_mask", &result.cortex_mask)?;
-    let labels_ds = group.new_dataset_builder().with_data(&result.area_labels).create("area_labels")
+    let labels_ds = group
+        .new_dataset_builder()
+        .with_data(&result.area_labels)
+        .create("area_labels")
         .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_labels: {e}")))?;
     attach_meta(&labels_ds, &map_meta_labels())?;
     let signs_arr = ndarray::Array1::from(result.area_signs.clone());
-    group.new_dataset_builder().with_data(&signs_arr).create("area_signs")
+    group
+        .new_dataset_builder()
+        .with_data(&signs_arr)
+        .create("area_signs")
         .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_signs: {e}")))?;
     write_mask("area_borders", &result.area_borders)?;
 
     // Derived maps.
     write_f64("eccentricity", &result.eccentricity)?;
     write_f64("magnification", &result.magnification)?;
+    // Unmasked Jacobian magnitude — persisted as a retinotopy restore input
+    // (and a legitimate raw output). Read back by `read_retinotopy_maps`.
+    write_f64("magnification_raw", &result.magnification_raw)?;
     write_mask("contours_azi", &result.contours_azi)?;
     write_mask("contours_alt", &result.contours_alt)?;
 
-    if let Some(ref snr) = result.snr {
-        write_f64("snr_azi", &snr.snr_azi)?;
-        write_f64("snr_alt", &snr.snr_alt)?;
+    if let Some(ref r) = result.responsiveness {
+        write_f64("spectral_snr_azi", &r.spectral_snr_azi)?;
+        write_f64("spectral_snr_alt", &r.spectral_snr_alt)?;
+        write_f64("allen_power_snr_azi", &r.allen_power_snr_azi)?;
+        write_f64("allen_power_snr_alt", &r.allen_power_snr_alt)?;
     }
 
     // Per-direction cross-cycle reliability (Allen / Engel). Source of
@@ -552,7 +957,7 @@ pub fn write_results(
 
     let area_count = result.area_signs.len();
     if area_count > 0 {
-        eprintln!("[analysis] {} areas segmented", area_count);
+        tracing::info!(areas = area_count, "areas segmented");
     }
 
     Ok(())
@@ -586,22 +991,22 @@ pub fn write_anatomical(path: &Path, image: &Array2<u8>) -> Result<(), AnalysisE
 ///   2. `meanFrameDur = mean(diff(cam_ts))` — uniform-regime camera period.
 ///   3. For each direction d ∈ {LR, RL, TB, BT}:
 ///      a. Gather sweep indices `k` where `sweep_sequence[k]` is this
-///         direction (10 cycles in the standard 10-repetition protocol).
+///      direction (10 cycles in the standard 10-repetition protocol).
 ///      b. Per-direction chunk duration = mean(`sweep_end - sweep_start`)
-///         across this direction's cycles.
+///      across this direction's cycles.
 ///      c. `chunkFrameDur = ceil(chunk_dur / meanFrameDur)`.
 ///      d. For each cycle: onset_frame_idx =
-///         `argmin(|cam_ts - sweep_start[k]|)`. The contiguous slice
-///         `mov[onset:onset+chunkFrameDur]` is this cycle's frames.
-///         (Allen `ImageAnalysis.py:1207-1213`.)
+///      `argmin(|cam_ts - sweep_start[k]|)`. The contiguous slice
+///      `mov[onset:onset+chunkFrameDur]` is this cycle's frames.
+///      (Allen `ImageAnalysis.py:1207-1213`.)
 ///      e. Per-cycle FFT bin 1: `freq = 1 / (chunkFrameDur · meanFrameDur)`.
 ///      f. Push (cycle complex map, global phase, cycle frames) into the
-///         `CycleAccumulator`. The accumulator handles phase-locked
-///         averaging and SNR bundling in `finalize()`.
+///      `CycleAccumulator`. The accumulator handles phase-locked
+///      averaging and SNR bundling in `finalize()`.
 ///      g. SNR computed on the cycle-averaged movie for the first fwd sweep
-///         per orientation.
+///      per orientation.
 ///   4. `accumulator.finalize()` produces the per-direction complex maps
-///      (phase-locked across cycles) and an `Option<SnrMaps>`. No
+///      (phase-locked across cycles) and an `Option<ResponsivenessMaps>`. No
 ///      baseline subtraction — `isRectify=False` default.
 ///
 /// `condition_indices`, `state_ids`, and `sweep_indices` from
@@ -609,12 +1014,15 @@ pub fn write_anatomical(path: &Path, image: &Array2<u8>) -> Result<(), AnalysisE
 /// — `sweep_start_sec` and `sweep_sequence` — is the ground truth for
 /// onset times. This matches Allen's use of `displayOnsets` from the
 /// display log.
-pub fn compute_complex_maps_from_raw(
-    path: &Path,
-    _params: &AnalysisParams,
-    progress: &dyn ProgressSink,
-    cancel: &AtomicBool,
-) -> Result<RawProcessingResult, AnalysisError> {
+/// Read the raw acquisition arrays — camera frames + timestamps + sweep
+/// schedule — from an `.oisi` file into a [`RawAcquisition`].
+///
+/// This is the HDF5 half of the raw→complex path; the pure compute half (ΔF/F
+/// baseline via [`crate::methods::BaselineMethod`] + the per-cycle DFT in
+/// [`crate::compute::projection::run`]) is HDF5-free. The split keeps the
+/// pipeline's `Baseline`/`Projection` stages HDF5-free: the boundary calls this,
+/// the stages borrow the result.
+pub fn read_raw_acquisition(path: &Path) -> Result<RawAcquisition, AnalysisError> {
     let file = open_read(path)?;
 
     if file.group("acquisition/camera").is_err() {
@@ -623,281 +1031,92 @@ pub fn compute_complex_maps_from_raw(
         ));
     }
 
-    progress.set_stage("Loading camera frames");
-    progress.set_progress(0.0);
-
-    let frames_ds = file.dataset("acquisition/camera/frames")
+    let frames_ds = file
+        .dataset("acquisition/camera/frames")
         .map_err(|e| AnalysisError::Hdf5(format!("opening camera/frames: {e}")))?;
-    let all_frames: Array3<u16> = frames_ds.read()
+    let frames: Array3<u16> = frames_ds
+        .read()
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera/frames: {e}")))?;
-    let (t_cam, _h, _w) = all_frames.dim();
-    if t_cam < 2 {
-        return Err(AnalysisError::MissingData("fewer than 2 camera frames".into()));
-    }
 
-    let cam_ts_sec: Vec<f64> = file.dataset("acquisition/camera/timestamps_sec")
+    let cam_ts_sec: Vec<f64> = file
+        .dataset("acquisition/camera/timestamps_sec")
         .map_err(|e| AnalysisError::Hdf5(format!("opening camera timestamps_sec: {e}")))?
         .read_1d()
         .map_err(|e| AnalysisError::Hdf5(format!("reading camera timestamps_sec: {e}")))?
         .to_vec();
 
     // Sweep schedule — onset times + per-sweep duration + direction.
-    let sweep_start_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_start_sec")
+    let sweep_start_sec: Vec<f64> = file
+        .dataset("acquisition/schedule/sweep_start_sec")
         .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_start_sec: {e}")))?
         .read_1d()
         .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_start_sec: {e}")))?
         .to_vec();
-    let sweep_end_sec: Vec<f64> = file.dataset("acquisition/schedule/sweep_end_sec")
+    let sweep_end_sec: Vec<f64> = file
+        .dataset("acquisition/schedule/sweep_end_sec")
         .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_end_sec: {e}")))?
         .read_1d()
         .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_end_sec: {e}")))?
         .to_vec();
-    let schedule_group = file.group("acquisition/schedule")
-        .map_err(|_| AnalysisError::MissingData("acquisition/schedule".into()))?;
-    let seq_json: hdf5::types::VarLenUnicode = schedule_group.attr("sweep_sequence")
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence: {e}")))?
-        .read_scalar()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence value: {e}")))?;
-    let sweep_sequence: Vec<String> = serde_json::from_str(seq_json.as_str())
-        .map_err(|e| AnalysisError::InvalidPackage(format!("parsing sweep_sequence: {e}")))?;
+    // `sweep_sequence` — the per-sweep direction list (SSoT for cycle
+    // grouping), read via the shared helper that `inspect` also uses.
+    let sweep_sequence = read_sweep_sequence(&file)?;
 
-    let n_sweeps = sweep_sequence.len()
-        .min(sweep_start_sec.len())
-        .min(sweep_end_sec.len());
-    if n_sweeps == 0 {
-        return Err(AnalysisError::MissingData("no sweeps in schedule".into()));
-    }
+    Ok(RawAcquisition {
+        frames,
+        cam_ts_sec,
+        sweep_start_sec,
+        sweep_end_sec,
+        sweep_sequence,
+    })
+}
 
-    if cancel.load(Ordering::Relaxed) {
-        return Err(AnalysisError::Cancelled);
-    }
-
-    // `meanFrameDur` — Allen `ImageAnalysis.py:1184`.
-    let mean_frame_dur = (cam_ts_sec[t_cam - 1] - cam_ts_sec[0]) / (t_cam - 1) as f64;
-
-    // Group sweep indices by direction.
-    use std::collections::BTreeMap;
-    let mut dir_groups: BTreeMap<crate::compute::Direction, Vec<usize>> = BTreeMap::new();
-    for k in 0..n_sweeps {
-        if let Some(direction) = classify_cycle_name(&sweep_sequence[k]) {
-            dir_groups.entry(direction).or_default().push(k);
-        }
-    }
-    if dir_groups.is_empty() {
-        return Err(AnalysisError::InvalidPackage(
-            "no sweeps with recognized direction names".into(),
-        ));
-    }
-
-    let mut accumulator = crate::compute::CycleAccumulator::new();
-    let n_dirs = dir_groups.len() as f64;
-    for (dir_idx, (direction, sweep_ks)) in dir_groups.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(AnalysisError::Cancelled);
-        }
-
-        // Allen-style chunk duration: per-direction `sweepDur` is the mean
-        // of `sweep_end - sweep_start` over this direction's cycles.
-        let chunk_dur: f64 = sweep_ks.iter()
-            .map(|&k| sweep_end_sec[k] - sweep_start_sec[k])
-            .sum::<f64>() / sweep_ks.len() as f64;
-        // `chunkFrameDur = ceil(chunkDur / meanFrameDur)` — Allen
-        // `ImageAnalysis.py:1187`.
-        let chunk_frame_dur = (chunk_dur / mean_frame_dur).ceil() as usize;
-
-        progress.set_stage(&format!(
-            "Direction {}: {} cycles × {chunk_frame_dur} frames",
-            direction.label(), sweep_ks.len(),
-        ));
-        progress.set_progress(0.1 + 0.2 * dir_idx as f64 / n_dirs);
-
-        let period_sec = chunk_frame_dur as f64 * mean_frame_dur;
-        let freq_bin1 = 1.0 / period_sec;
-
-        // For each cycle: upload frames, compute bin-1 complex map +
-        // global phase, push into the accumulator. The accumulator does
-        // the phase-locked averaging at finalize time.
-        for &k in sweep_ks {
-            let onset = sweep_start_sec[k];
-            if onset < cam_ts_sec[0] || onset + chunk_dur > cam_ts_sec[t_cam - 1] {
-                continue;
-            }
-            let onset_idx = nearest_index_sorted(&cam_ts_sec, onset);
-            if onset_idx + chunk_frame_dur > t_cam { continue; }
-
-            let frame_indices: Vec<usize> = (onset_idx..onset_idx + chunk_frame_dur).collect();
-            let cycle_t = crate::compute::frames_u16_subset_to_tensor_f32(
-                &all_frames, &frame_indices,
-            );
-
-            let cm_k = crate::compute::dft_projection_at_freq(
-                &cycle_t, mean_frame_dur, freq_bin1,
-            );
-
-            // Global per-cycle phase: arg(Σ_pixels cm_k).
-            let (re_sum, im_sum) = crate::compute::complex_tensor_real_imag_sum(&cm_k);
-            let phi_k = im_sum.atan2(re_sum);
-
-            accumulator.add_cycle(*direction, cm_k, phi_k, cycle_t)?;
-        }
-
-        // SNR on Allen's frame-domain cycle-averaged movie. Once per
-        // orientation on the first fwd direction.
-        let is_first_fwd_for_orientation = direction.is_fwd();
-        if is_first_fwd_for_orientation {
-            if let Some(averaged) = accumulator.averaged_movie(*direction) {
-                let uniform_ts: Vec<f64> = (0..chunk_frame_dur as i64)
-                    .map(|k| k as f64 * mean_frame_dur)
-                    .collect();
-                let snr = crate::compute::compute_snr(&averaged, &uniform_ts);
-                accumulator.record_snr(*direction, snr)?;
-            }
-        }
-    }
-
-    progress.set_progress(0.95);
-    accumulator.finalize()
+/// Complex maps from a path — thin shim over [`read_raw_acquisition`] + the
+/// `Baseline` (F0) + `Projection` (DFT) stages. Retained for callers that want
+/// the complex maps directly from a file (regression tests, the headless
+/// phase-spread diagnostic); the production pipeline runs the same two stages
+/// from the I/O boundary (`analyze`).
+pub fn compute_complex_maps_from_raw(
+    path: &Path,
+    params: &AnalysisParams,
+    progress: &dyn ProgressSink,
+    cancel: &AtomicBool,
+) -> Result<RawProcessingResult, AnalysisError> {
+    progress.set_stage("Loading camera frames");
+    progress.set_progress(0.0);
+    let raw = read_raw_acquisition(path)?;
+    let base = params.baseline.apply(&raw);
+    crate::compute::projection::run(
+        &raw,
+        &base.f0,
+        base.floor,
+        &params.cycle_average,
+        cancel,
+        progress,
+    )
 }
 
 /// Binary search for the index of the element in `sorted` closest to `target`.
 /// Assumes `sorted` is non-empty and non-decreasing.
-fn nearest_index_sorted(sorted: &[f64], target: f64) -> usize {
+pub(crate) fn nearest_index_sorted(sorted: &[f64], target: f64) -> usize {
     match sorted.binary_search_by(|v| v.partial_cmp(&target).unwrap_or(std::cmp::Ordering::Equal)) {
         Ok(i) => i,
         Err(insert_at) => {
-            if insert_at == 0 { 0 }
-            else if insert_at >= sorted.len() { sorted.len() - 1 }
-            else {
+            if insert_at == 0 {
+                0
+            } else if insert_at >= sorted.len() {
+                sorted.len() - 1
+            } else {
                 let lo = insert_at - 1;
                 let hi = insert_at;
-                if (target - sorted[lo]).abs() <= (sorted[hi] - target).abs() { lo } else { hi }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SNLC .mat import
-// ---------------------------------------------------------------------------
-
-/// Import a directory of SNLC .mat files into a new .oisi file.
-///
-/// Expected directory contents:
-/// - Two paired .mat files with `f1m` cell arrays (horizontal=azimuth, vertical=altitude)
-///   Convention: lower-numbered file = horizontal (004), higher = vertical (005)
-/// - Optional `grab_*.mat` anatomical reference image
-///
-/// Returns the output .oisi path.
-pub fn import_snlc_directory(
-    dir_path: &Path,
-    output_path: &Path,
-) -> Result<(), AnalysisError> {
-    use crate::mat5;
-
-    // Find .mat files in the directory
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| AnalysisError::Io(e))?;
-
-    let mut data_mats: Vec<std::path::PathBuf> = Vec::new();
-    let mut grab_mat: Option<std::path::PathBuf> = None;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| AnalysisError::Io(e))?;
-        let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext.to_ascii_lowercase() == "mat" {
-                let Some(file_name) = path.file_name() else { continue };
-                let name = file_name.to_string_lossy().to_lowercase();
-                if name.starts_with("grab") || name.starts_with("grab_") {
-                    grab_mat = Some(path);
-                } else if !name.contains("analyzer") {
-                    data_mats.push(path);
+                if (target - sorted[lo]).abs() <= (sorted[hi] - target).abs() {
+                    lo
+                } else {
+                    hi
                 }
             }
         }
     }
-
-    // Sort data .mat files by name so lower number = horizontal (azimuth)
-    data_mats.sort();
-
-    if data_mats.len() < 2 {
-        return Err(AnalysisError::MissingData(format!(
-            "need at least 2 .mat data files in {}, found {}",
-            dir_path.display(),
-            data_mats.len()
-        )));
-    }
-
-    // Read complex maps from the paired .mat files
-    // Convention: first file (lower number) = horizontal = azimuth
-    //             second file (higher number) = vertical = altitude
-    let azi_cells = mat5::read_snlc_f1m(&data_mats[0])?;
-    if azi_cells.len() < 2 {
-        return Err(AnalysisError::InvalidPackage(format!(
-            "{}: f1m has {} cells, expected 2",
-            data_mats[0].display(),
-            azi_cells.len()
-        )));
-    }
-
-    let alt_cells = mat5::read_snlc_f1m(&data_mats[1])?;
-    if alt_cells.len() < 2 {
-        return Err(AnalysisError::InvalidPackage(format!(
-            "{}: f1m has {} cells, expected 2",
-            data_mats[1].display(),
-            alt_cells.len()
-        )));
-    }
-
-    // The `< 2` length checks above guarantee these `next()` calls
-    // succeed, but unwrap would panic on a stale .mat file with an
-    // unexpected layout. Use explicit ok_or_else so any mismatch
-    // surfaces as a clean `InvalidPackage` instead of a backtrace.
-    let mut azi_iter = azi_cells.into_iter();
-    let azi_fwd = azi_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
-        format!("{}: f1m missing azi_fwd cell after length check", data_mats[0].display())
-    ))?.data;
-    let azi_rev = azi_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
-        format!("{}: f1m missing azi_rev cell after length check", data_mats[0].display())
-    ))?.data;
-
-    let mut alt_iter = alt_cells.into_iter();
-    let alt_fwd = alt_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
-        format!("{}: f1m missing alt_fwd cell after length check", data_mats[1].display())
-    ))?.data;
-    let alt_rev = alt_iter.next().ok_or_else(|| AnalysisError::InvalidPackage(
-        format!("{}: f1m missing alt_rev cell after length check", data_mats[1].display())
-    ))?.data;
-
-    let complex_maps = ComplexMaps {
-        azi_fwd,
-        azi_rev,
-        alt_fwd,
-        alt_rev,
-    };
-
-    // Create the .oisi file
-    create(output_path, "complex_maps_import")?;
-    write_complex_maps(output_path, &complex_maps)?;
-
-    // Import anatomical if present
-    if let Some(grab_path) = &grab_mat {
-        eprintln!("[import] found anatomical: {}", grab_path.display());
-        match mat5::read_snlc_anatomical(grab_path) {
-            Ok(anat) => {
-                let (h, w) = anat.dim();
-                eprintln!("[import] anatomical: {}x{}", w, h);
-                write_anatomical(output_path, &anat)?;
-            }
-            Err(e) => {
-                eprintln!("[import] WARNING: could not read anatomical from {}: {e}", grab_path.display());
-            }
-        }
-    } else {
-        eprintln!("[import] no grab_*.mat found in directory");
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -905,8 +1124,7 @@ pub fn import_snlc_directory(
 // ---------------------------------------------------------------------------
 
 fn open_read(path: &Path) -> Result<H5File, AnalysisError> {
-    H5File::open(path)
-        .map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
+    H5File::open(path).map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
 }
 
 fn open_readwrite(path: &Path) -> Result<H5File, AnalysisError> {
@@ -914,30 +1132,22 @@ fn open_readwrite(path: &Path) -> Result<H5File, AnalysisError> {
         .map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
 }
 
-fn write_str_attr(
-    location: &hdf5::Location,
-    name: &str,
-    value: &str,
-) -> Result<(), AnalysisError> {
+fn write_str_attr(location: &hdf5::Location, name: &str, value: &str) -> Result<(), AnalysisError> {
     // Remove existing attribute if present.
     let _ = location.delete_attr(name);
     let attr = location
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| AnalysisError::Hdf5(format!("creating attr {name}: {e}")))?;
-    let val: hdf5::types::VarLenUnicode = value.parse().map_err(|e| {
-        AnalysisError::Hdf5(format!("invalid UTF-8 attr {name}: {e}"))
-    })?;
+    let val: hdf5::types::VarLenUnicode = value
+        .parse()
+        .map_err(|e| AnalysisError::Hdf5(format!("invalid UTF-8 attr {name}: {e}")))?;
     attr.write_scalar(&val)
         .map_err(|e| AnalysisError::Hdf5(format!("writing attr {name}: {e}")))?;
     Ok(())
 }
 
-fn write_f64_attr(
-    location: &hdf5::Location,
-    name: &str,
-    value: f64,
-) -> Result<(), AnalysisError> {
+fn write_f64_attr(location: &hdf5::Location, name: &str, value: f64) -> Result<(), AnalysisError> {
     let _ = location.delete_attr(name);
     let attr = location
         .new_attr::<f64>()
@@ -949,298 +1159,9 @@ fn write_f64_attr(
 }
 
 fn list_group_members_from_group(group: &hdf5::Group) -> crate::Result<Vec<String>> {
-    group.member_names()
+    group
+        .member_names()
         .map_err(|e| AnalysisError::Hdf5(format!("listing HDF5 group members: {e}")))
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Self-describing /results datasets — rendering metadata as HDF5 attrs.
-//
-// Every f64 map decides palette / units / display range / NaN-semantics
-// HERE, at write time, using the params it actually used. Downstream
-// renderers (figure exporter, Tauri UI) read these attrs and do zero
-// inference — no name-matching, no auto-percentile, no unit guessing.
-// New maps added via `meta_for_f64` render automatically.
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Per-dataset rendering metadata, attached as HDF5 attrs on the dataset.
-///
-/// All renderers (`headless::render_map`, Tauri `export_map_png`) read
-/// these attrs and require nothing else. The attribute schema is the
-/// data-layer ↔ renderer contract.
-///
-/// Strings are `Cow` so the pipeline can build with static literals
-/// (zero alloc), and read-back from HDF5 produces owned `String`s
-/// (no leak).
-#[derive(Clone, Debug)]
-pub struct MapMeta {
-    /// Colormap name. Renderers map this to a palette function.
-    /// One of: `"hsv_circular"`, `"jet"`, `"hot"`, `"binary"`,
-    /// `"categorical"`.
-    pub palette: std::borrow::Cow<'static, str>,
-    /// Physical units of the data values: `"rad"`, `"deg"`,
-    /// `"unitless"`, `"bool"`, `"label"`.
-    pub units: std::borrow::Cow<'static, str>,
-    /// Value mapped to the palette start.
-    pub display_min: f64,
-    /// Value mapped to the palette end.
-    pub display_max: f64,
-    /// Period for circular palettes (`2π` for radian phases,
-    /// `angular_range` for degree phases). `0.0` means non-circular.
-    pub wrap_period: f64,
-    /// Semantic meaning of `NaN` values (e.g. `"outside_cortex"`).
-    /// Empty when NaN is not expected.
-    pub nan_means: std::borrow::Cow<'static, str>,
-    /// Semantic meaning of literal `0.0` values, when a sentinel is
-    /// used (e.g. `"outside_patch"` for eccentricity/magnification).
-    /// Empty when `0.0` is just a regular value.
-    pub zero_means: std::borrow::Cow<'static, str>,
-}
-
-/// Bool masks (cortex_mask, area_borders, contours_*): stored as u8.
-fn map_meta_bool() -> MapMeta {
-    use std::borrow::Cow;
-    MapMeta {
-        palette: Cow::Borrowed("binary"),
-        units: Cow::Borrowed("bool"),
-        display_min: 0.0,
-        display_max: 1.0,
-        wrap_period: 0.0,
-        nan_means: Cow::Borrowed(""),
-        zero_means: Cow::Borrowed(""),
-    }
-}
-
-/// Categorical label map (area_labels): each integer is an area ID;
-/// renderers pick a categorical palette indexed by label value.
-fn map_meta_labels() -> MapMeta {
-    use std::borrow::Cow;
-    MapMeta {
-        palette: Cow::Borrowed("categorical"),
-        units: Cow::Borrowed("label"),
-        display_min: 0.0,
-        display_max: 0.0,
-        wrap_period: 0.0,
-        nan_means: Cow::Borrowed(""),
-        zero_means: Cow::Borrowed("background"),
-    }
-}
-
-/// Decide the rendering metadata for a `Array2<f64>` `/results/<name>`
-/// dataset. Single source of truth — name → meta — replacing the
-/// renderer-side `render_kind_for` switch and all its inferred ranges.
-fn meta_for_f64(name: &str, data: &Array2<f64>, acquisition: &AcquisitionProperties) -> MapMeta {
-    use std::borrow::Cow;
-    let lit = Cow::Borrowed;
-    let half_azi = acquisition.azi_angular_range / 2.0;
-    let half_alt = acquisition.alt_angular_range / 2.0;
-    match name {
-        // Radian phases: HSV over [-π, π], period 2π. Full frame.
-        "azi_phase" | "alt_phase" => MapMeta {
-            palette: lit("hsv_circular"),
-            units: lit("rad"),
-            display_min: -std::f64::consts::PI,
-            display_max:  std::f64::consts::PI,
-            wrap_period:  std::f64::consts::TAU,
-            nan_means: lit(""),
-            zero_means: lit(""),
-        },
-        // Degree phases: HSV over [offset - range/2, offset + range/2].
-        "azi_phase_degrees" => MapMeta {
-            palette: lit("hsv_circular"),
-            units: lit("deg"),
-            display_min: acquisition.offset_azi - half_azi,
-            display_max: acquisition.offset_azi + half_azi,
-            wrap_period: acquisition.azi_angular_range,
-            nan_means: lit(""),
-            zero_means: lit(""),
-        },
-        "alt_phase_degrees" => MapMeta {
-            palette: lit("hsv_circular"),
-            units: lit("deg"),
-            display_min: acquisition.offset_alt - half_alt,
-            display_max: acquisition.offset_alt + half_alt,
-            wrap_period: acquisition.alt_angular_range,
-            nan_means: lit(""),
-            zero_means: lit(""),
-        },
-        // The three VFS algorithm stages. Same palette/range (jet ±1) so
-        // they're visually comparable. Threshold-masked variant uses
-        // 0 as the sentinel for "below threshold".
-        "vfs" | "vfs_smoothed" => MapMeta {
-            palette: lit("jet"),
-            units: lit("unitless"),
-            display_min: -1.0,
-            display_max:  1.0,
-            wrap_period: 0.0,
-            nan_means: lit(""),
-            zero_means: lit(""),
-        },
-        "vfs_smoothed_thresholded" => MapMeta {
-            palette: lit("jet"),
-            units: lit("unitless"),
-            display_min: -1.0,
-            display_max:  1.0,
-            wrap_period: 0.0,
-            nan_means: lit(""),
-            zero_means: lit("below_threshold"),
-        },
-        // Amplitudes are finite everywhere (they define cortex). Hot
-        // palette over the data's actual finite range — frozen here so
-        // the renderer needs no auto-fit.
-        n if n.ends_with("_amplitude") => {
-            let (lo, hi) = finite_range(data);
-            MapMeta {
-                palette: lit("hot"),
-                units: lit("unitless"),
-                display_min: lo,
-                display_max: hi,
-                wrap_period: 0.0,
-                nan_means: lit(""),
-                zero_means: lit(""),
-            }
-        }
-        // Eccentricity: jet over the 2-98 percentile of valid pixels.
-        // `0.0` is the native compute_eccentricity sentinel for
-        // pixels outside any segmented patch (`area_labels == 0`).
-        "eccentricity" => {
-            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
-            MapMeta {
-                palette: lit("jet"),
-                units: lit("deg"),
-                display_min: lo,
-                display_max: hi,
-                wrap_period: 0.0,
-                nan_means: lit(""),
-                zero_means: lit("outside_patch"),
-            }
-        }
-        // Magnification: same convention as eccentricity. The Jacobian
-        // ratio is unitless once the input phases are in degrees.
-        "magnification" => {
-            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
-            MapMeta {
-                palette: lit("jet"),
-                units: lit("unitless"),
-                display_min: lo,
-                display_max: hi,
-                wrap_period: 0.0,
-                nan_means: lit(""),
-                zero_means: lit("outside_patch"),
-            }
-        }
-        // Reliability maps (Allen / Engel cross-cycle vector coherence):
-        // bounded [0, 1] by construction. Hot palette over the full
-        // range makes the cortex region pop visually.
-        "reliability_azi_fwd" | "reliability_azi_rev"
-        | "reliability_alt_fwd" | "reliability_alt_rev" => MapMeta {
-            palette: lit("hot"),
-            units: lit("unitless"),
-            display_min: 0.0,
-            display_max: 1.0,
-            wrap_period: 0.0,
-            nan_means: lit(""),
-            zero_means: lit(""),
-        },
-        // SNR maps: per-condition. No canonical fixed range — jet over
-        // 2-98 percentile of finite values.
-        "snr_azi" | "snr_alt" => {
-            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
-            MapMeta {
-                palette: lit("jet"),
-                units: lit("unitless"),
-                display_min: lo,
-                display_max: hi,
-                wrap_period: 0.0,
-                nan_means: lit(""),
-                zero_means: lit(""),
-            }
-        }
-        // Unknown map: jet over percentile, leave NaN/zero semantics
-        // empty. Adding a new map name with bespoke conventions means
-        // adding an arm above — no renderer change needed.
-        _ => {
-            let (lo, hi) = sentinel_percentile(data, 0.02, 0.98);
-            MapMeta {
-                palette: lit("jet"),
-                units: lit("unitless"),
-                display_min: lo,
-                display_max: hi,
-                wrap_period: 0.0,
-                nan_means: lit(""),
-                zero_means: lit(""),
-            }
-        }
-    }
-}
-
-/// Min/max over finite values. Returns `(0, 1)` if there are none
-/// (avoids the renderer dividing by zero on an empty range).
-fn finite_range(data: &Array2<f64>) -> (f64, f64) {
-    let mut lo = f64::INFINITY;
-    let mut hi = f64::NEG_INFINITY;
-    for &v in data.iter() {
-        if v.is_finite() {
-            if v < lo { lo = v; }
-            if v > hi { hi = v; }
-        }
-    }
-    if !lo.is_finite() { return (0.0, 1.0); }
-    if (hi - lo).abs() < 1e-12 { (lo, lo + 1.0) } else { (lo, hi) }
-}
-
-/// Two-sided percentile of finite, non-zero values — the right range
-/// for sentinel-zero maps (eccentricity, magnification) where `0.0`
-/// means "no data" and shouldn't influence the colorbar.
-fn sentinel_percentile(data: &Array2<f64>, p_lo: f64, p_hi: f64) -> (f64, f64) {
-    let mut vals: Vec<f64> = data.iter()
-        .copied()
-        .filter(|v| v.is_finite() && *v != 0.0)
-        .collect();
-    if vals.is_empty() { return (0.0, 1.0); }
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = vals.len();
-    let idx = |p: f64| -> usize {
-        ((p * (n - 1) as f64).round() as usize).min(n - 1)
-    };
-    let lo = vals[idx(p_lo)];
-    let hi = vals[idx(p_hi)];
-    if (hi - lo).abs() < 1e-12 { (lo, lo + 1.0) } else { (lo, hi) }
-}
-
-/// Attach the `MapMeta` fields to a dataset as HDF5 attributes.
-fn attach_meta(dataset: &hdf5::Dataset, m: &MapMeta) -> Result<(), AnalysisError> {
-    write_str_attr(dataset, "palette", &m.palette)?;
-    write_str_attr(dataset, "units", &m.units)?;
-    write_f64_attr(dataset, "display_min", m.display_min)?;
-    write_f64_attr(dataset, "display_max", m.display_max)?;
-    write_f64_attr(dataset, "wrap_period", m.wrap_period)?;
-    write_str_attr(dataset, "nan_means", &m.nan_means)?;
-    write_str_attr(dataset, "zero_means", &m.zero_means)?;
-    Ok(())
-}
-
-/// Read the rendering metadata back from a dataset. Returns `None`
-/// when any required attr is missing (legacy files written before
-/// the self-describing-attrs pass, ~2026-05-23). Renderers callers
-/// must handle `None` explicitly — there is no inference fallback.
-///
-/// `nan_means` and `zero_means` are intentionally optional (returned
-/// as empty string when missing): empty-string is the correct
-/// "no sentinel semantics" value, indistinguishable from "attr
-/// genuinely absent for a non-sentinel map." All other fields are
-/// required and `None` propagates if any are missing.
-pub fn read_map_meta(dataset: &hdf5::Dataset) -> Option<MapMeta> {
-    use std::borrow::Cow;
-    Some(MapMeta {
-        palette: Cow::Owned(read_str_attr(dataset, "palette")?),
-        units: Cow::Owned(read_str_attr(dataset, "units")?),
-        display_min: read_f64_attr(dataset, "display_min")?,
-        display_max: read_f64_attr(dataset, "display_max")?,
-        wrap_period: read_f64_attr(dataset, "wrap_period")?,
-        nan_means: Cow::Owned(read_str_attr(dataset, "nan_means").unwrap_or_default()),
-        zero_means: Cow::Owned(read_str_attr(dataset, "zero_means").unwrap_or_default()),
-    })
 }
 
 fn read_str_attr(location: &hdf5::Location, name: &str) -> Option<String> {
@@ -1254,36 +1175,57 @@ fn read_f64_attr(location: &hdf5::Location, name: &str) -> Option<f64> {
     attr.read_scalar::<f64>().ok()
 }
 
-/// Classify a result dataset by its name and HDF5 shape. Single source of
-/// truth for the type tag used by `inspect()` (which reports it for the UI
-/// to discover what's available) and by the Tauri `read_result` command
-/// (which dispatches reads based on this tag).
-pub fn classify_result_type(name: &str, shape: &[usize], _dtype: Option<&hdf5::Datatype>) -> String {
-    // Known bool masks (stored as u8).
-    if name == "area_borders"
-        || name == "contours_azi"
-        || name == "contours_alt"
-        || name == "cortex_mask"
-    {
-        return "bool_mask".into();
-    }
-    // Known label maps (stored as i32).
-    if name == "area_labels" {
-        return "label_map".into();
-    }
-    // 1D arrays = metadata.
-    if shape.len() == 1 {
-        return "sign_array".into();
-    }
-    // Default: scalar map (f64 H,W).
-    "scalar_map".into()
-}
-
 fn chrono_now() -> String {
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", duration.as_secs())
+}
+
+/// Read the per-sweep direction sequence from `/acquisition/schedule`'s
+/// `sweep_sequence` JSON attribute — the single source of truth for which
+/// stimulus direction each sweep belongs to. Used by BOTH the DFT (cycle
+/// grouping) and `inspect` (schedule summary), so the two can never disagree
+/// on how many cycles a recording has.
+fn read_sweep_sequence(file: &H5File) -> Result<Vec<String>, AnalysisError> {
+    let schedule_group = file
+        .group("acquisition/schedule")
+        .map_err(|_| AnalysisError::MissingData("acquisition/schedule".into()))?;
+    let seq_json: hdf5::types::VarLenUnicode = schedule_group
+        .attr("sweep_sequence")
+        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence: {e}")))?
+        .read_scalar()
+        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence value: {e}")))?;
+    serde_json::from_str(seq_json.as_str())
+        .map_err(|e| AnalysisError::InvalidPackage(format!("parsing sweep_sequence: {e}")))
+}
+
+/// Summarize the stimulus schedule — total sweeps, distinct directions, and
+/// cycles (repetitions) per direction — from the `sweep_sequence` SSoT,
+/// counting directions the same way the DFT does (`classify_cycle_name`).
+/// Returns `None` when there's no readable schedule (e.g. a complex-maps-only
+/// import) or no recognized directions.
+fn schedule_summary(file: &H5File) -> Option<ScheduleSummary> {
+    let sweep_sequence = read_sweep_sequence(file).ok()?;
+    let total_sweeps = sweep_sequence.len();
+    if total_sweeps == 0 {
+        return None;
+    }
+    let mut per_dir: std::collections::BTreeMap<crate::compute::Direction, usize> =
+        std::collections::BTreeMap::new();
+    for name in &sweep_sequence {
+        if let Some(direction) = classify_cycle_name(name) {
+            *per_dir.entry(direction).or_default() += 1;
+        }
+    }
+    if per_dir.is_empty() {
+        return None;
+    }
+    Some(ScheduleSummary {
+        total_sweeps,
+        directions: per_dir.len(),
+        cycles_per_direction: per_dir.values().copied().min().unwrap_or(0),
+    })
 }
 
 /// Classify a sweep label from the acquisition schedule into a `Direction`.
@@ -1302,18 +1244,40 @@ fn chrono_now() -> String {
 /// Verified against `5_14_2026_test5_1778801597.oisi`: V1 edge renders
 /// blue/negative, RL/PM render orange/positive, matching Allen/Marshel
 /// figures.
-fn classify_cycle_name(name: &str) -> Option<crate::compute::Direction> {
+pub(crate) fn classify_cycle_name(name: &str) -> Option<crate::compute::Direction> {
     use crate::compute::Direction;
     let lower = name.to_lowercase();
-    if lower.starts_with("lr")           { Some(Direction::AziFwd) }
-    else if lower.starts_with("rl")      { Some(Direction::AziRev) }
-    else if lower.starts_with("tb")      { Some(Direction::AltFwd) } // absorbs camera vertical flip
-    else if lower.starts_with("bt")      { Some(Direction::AltRev) } // absorbs camera vertical flip
-    else if lower.starts_with("ccw")     { Some(Direction::AziRev) } // wedge counter-clockwise → azimuth rev (check ccw before cw)
-    else if lower.starts_with("cw")      { Some(Direction::AziFwd) } // wedge clockwise → azimuth fwd
-    else if lower.starts_with("expand")  { Some(Direction::AltFwd) } // ring expand → altitude fwd
-    else if lower.starts_with("contract") { Some(Direction::AltRev) } // ring contract → altitude rev
-    else                                 { None }
+    if lower.starts_with("lr") {
+        Some(Direction::AziFwd)
+    } else if lower.starts_with("rl") {
+        Some(Direction::AziRev)
+    } else if lower.starts_with("tb") {
+        Some(Direction::AltFwd)
+    }
+    // absorbs camera vertical flip
+    else if lower.starts_with("bt") {
+        Some(Direction::AltRev)
+    }
+    // absorbs camera vertical flip
+    else if lower.starts_with("ccw") {
+        Some(Direction::AziRev)
+    }
+    // wedge counter-clockwise → azimuth rev (check ccw before cw)
+    else if lower.starts_with("cw") {
+        Some(Direction::AziFwd)
+    }
+    // wedge clockwise → azimuth fwd
+    else if lower.starts_with("expand") {
+        Some(Direction::AltFwd)
+    }
+    // ring expand → altitude fwd
+    else if lower.starts_with("contract") {
+        Some(Direction::AltRev)
+    }
+    // ring contract → altitude rev
+    else {
+        None
+    }
 }
 
 // =============================================================================
@@ -1334,6 +1298,18 @@ mod tests {
         let dir = std::path::Path::new("/tmp/test");
         let reg = openisi_params::Registry::new(dir, dir);
         crate::bridge::analysis_params_from_snapshot(&reg.snapshot())
+    }
+
+    /// Zeroed complex maps for `AnalysisResult` round-trip fixtures (the field
+    /// is persisted to `/complex_maps`; these tests only exercise `/results`).
+    fn zeros_complex_maps(h: usize, w: usize) -> crate::ComplexMaps {
+        let z = || Array2::<num_complex::Complex64>::zeros((h, w));
+        crate::ComplexMaps {
+            azi_fwd: z(),
+            azi_rev: z(),
+            alt_fwd: z(),
+            alt_rev: z(),
+        }
     }
 
     fn test_acquisition() -> crate::AcquisitionProperties {
@@ -1375,10 +1351,7 @@ mod tests {
     fn make_complex_maps(h: usize, w: usize) -> ComplexMaps {
         let make = |scale: f64| -> Array2<Complex64> {
             Array2::from_shape_fn((h, w), |(r, c)| {
-                Complex64::new(
-                    (r as f64 + 1.0) * scale,
-                    (c as f64 + 1.0) * scale * 0.5,
-                )
+                Complex64::new((r as f64 + 1.0) * scale, (c as f64 + 1.0) * scale * 0.5)
             })
         };
         ComplexMaps {
@@ -1421,6 +1394,7 @@ mod tests {
         let params = test_params();
 
         let result = crate::AnalysisResult {
+            complex_maps: zeros_complex_maps(h, w),
             azi_phase: Array2::from_shape_fn((h, w), |(r, c)| r as f64 + c as f64),
             alt_phase: Array2::from_shape_fn((h, w), |(r, c)| r as f64 * 0.1 + c as f64 * 0.2),
             azi_phase_degrees: Array2::from_shape_fn((h, w), |(r, c)| (r + c) as f64 * 10.0),
@@ -1436,9 +1410,10 @@ mod tests {
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
+            magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr: None,
+            responsiveness: None,
             reliability: None,
         };
 
@@ -1503,6 +1478,7 @@ mod tests {
         let (h, w) = (8, 8);
 
         let result = crate::AnalysisResult {
+            complex_maps: zeros_complex_maps(h, w),
             azi_phase: Array2::zeros((h, w)),
             alt_phase: Array2::zeros((h, w)),
             azi_phase_degrees: Array2::zeros((h, w)),
@@ -1518,9 +1494,10 @@ mod tests {
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
+            magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr: None,
+            responsiveness: None,
             reliability: None,
         };
 
@@ -1534,9 +1511,15 @@ mod tests {
 
         // Verify result classification.
         let names: Vec<&str> = caps.results.iter().map(|r| r.name.as_str()).collect();
-        assert!(names.contains(&"azi_phase"), "results should list azi_phase");
+        assert!(
+            names.contains(&"azi_phase"),
+            "results should list azi_phase"
+        );
         assert!(names.contains(&"vfs"), "results should list vfs");
-        assert!(names.contains(&"area_labels"), "results should list area_labels");
+        assert!(
+            names.contains(&"area_labels"),
+            "results should list area_labels"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1545,7 +1528,8 @@ mod tests {
 
     #[test]
     fn import_snlc_missing_mat_files() {
-        let dir = std::env::temp_dir().join(format!("openisi_test_empty_dir_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("openisi_test_empty_dir_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let out = TempFile::new("import_snlc_out");
@@ -1617,6 +1601,7 @@ mod tests {
 
         // write_results stores params as an attribute.
         let result = crate::AnalysisResult {
+            complex_maps: zeros_complex_maps(h, w),
             azi_phase: Array2::zeros((h, w)),
             alt_phase: Array2::zeros((h, w)),
             azi_phase_degrees: Array2::zeros((h, w)),
@@ -1632,9 +1617,10 @@ mod tests {
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
+            magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
-            snr: None,
+            responsiveness: None,
             reliability: None,
         };
 
@@ -1647,7 +1633,7 @@ mod tests {
         assert!(read_analysis_params_attr(tmp.path()).unwrap().is_none());
 
         // Then stamp a registry tree and verify it round-trips.
-        let tree = serde_json::json!({"cycle_combine": {"method": "marshel_garrett2011_delay_subtraction"}});
+        let tree = serde_json::json!({"cycle_combine": {"method": "kalatsky_stryker2003_delay_subtraction"}});
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
         let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
         assert_eq!(loaded, tree);
@@ -1665,7 +1651,7 @@ mod tests {
 
         let tree = serde_json::json!({
             "sign_map_smoothing": { "method": "gaussian", "gaussian": { "sigma_um": 77.0 } },
-            "cortex_source":      { "method": "allen_zhuang2017_full_frame" },
+            "cortex_source":      { "method": "no_restriction" },
         });
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
         let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
@@ -1692,7 +1678,7 @@ mod tests {
     fn is_pre_2026_analysis_params_absent_attr() {
         let tmp = TempFile::new("pre2026_absent");
         create(tmp.path(), "test").unwrap();
-        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+        assert!(!is_pre_2026_analysis_params(tmp.path()).unwrap());
     }
 
     #[test]
@@ -1707,7 +1693,7 @@ mod tests {
             }
         });
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
-        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+        assert!(!is_pre_2026_analysis_params(tmp.path()).unwrap());
     }
 
     #[test]
@@ -1718,7 +1704,7 @@ mod tests {
         let stale_json = r#"{"azi_angular_range":120.0,"cycle_combine":{"method":"marshel_garrett2011_delay_subtraction"}}"#;
         write_str_attr(&file, "analysis_params", stale_json).unwrap();
         drop(file);
-        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), true);
+        assert!(is_pre_2026_analysis_params(tmp.path()).unwrap());
     }
 
     #[test]
@@ -1735,24 +1721,24 @@ mod tests {
             }
         });
         write_analysis_params_attr(tmp.path(), &stale).unwrap();
-        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), true);
+        assert!(is_pre_2026_analysis_params(tmp.path()).unwrap());
     }
 
     #[test]
     fn current_schema_tunable_less_method_only_stage_is_not_pre_2026() {
         // Regression for a detector false-positive: tunable-less methods
-        // (cycle_combine, vfs_computation, quality_gate, eccentricity)
+        // (cycle_combine, vfs_computation, eccentricity)
         // serialize as method-only in the CURRENT schema. The detector must
         // NOT flag these as legacy, or re-analysis of valid files would be
         // wrongly refused with "run migrate first".
         let tmp = TempFile::new("pre2026_method_only");
         create(tmp.path(), "test").unwrap();
         let tree = serde_json::json!({
-            "cycle_combine": { "method": "marshel_garrett2011_delay_subtraction" },
+            "cycle_combine": { "method": "kalatsky_stryker2003_delay_subtraction" },
             "vfs_computation": { "method": "open_isi_chain_rule_phasor_gradient" }
         });
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
-        assert_eq!(is_pre_2026_analysis_params(tmp.path()).unwrap(), false);
+        assert!(!is_pre_2026_analysis_params(tmp.path()).unwrap());
     }
 
     /// End-to-end: a pre-2026 `.oisi` → detect → migrate → write back →
@@ -1799,10 +1785,10 @@ mod tests {
         // Constructing AnalysisParams via the bridge == the file is analyzable.
         let _params = crate::bridge::analysis_params_from_snapshot(&snap);
 
-        // The migrated override survived the whole round-trip; the moved
-        // field was dropped.
+        // The migrated override survived the whole round-trip (under the renamed
+        // SNLC key); the moved field was dropped.
         assert_eq!(
-            tree["phase_smoothing"]["open_isi_amp_weighted_phasor"]["sigma_px"],
+            tree["phase_smoothing"]["snlc_amp_weighted_phasor"]["sigma_px"],
             serde_json::json!(2.5)
         );
         assert!(tree.get("azi_angular_range").is_none());

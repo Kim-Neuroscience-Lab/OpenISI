@@ -8,26 +8,34 @@
 
 pub mod bridge;
 pub mod compute;
-pub mod math;
-pub mod methods;
-pub mod segmentation;
+mod incremental;
 pub mod io;
 pub mod mat5;
+pub mod math;
+pub mod methods;
 pub mod migrate;
 pub mod params;
+pub mod pipeline;
+pub mod segmentation;
 
-use ndarray::Array2;
+/// Shared helpers for the in-crate golden tests (fixture decoders + the
+/// disagreement-count comparator). Test-only — not compiled into releases.
+#[cfg(test)]
+mod test_support;
+
+use ndarray::{Array2, Array3};
 pub use num_complex::Complex64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 /// Create a Complex64 from polar coordinates (re-exported for external use).
 pub fn complex_from_polar(r: f64, theta: f64) -> Complex64 {
     Complex64::from_polar(r, theta)
 }
 
-pub use params::{AcquisitionProperties, AnalysisParams, ProvenanceLevel};
 pub use io::{FileCapabilities, MapMeta};
+pub use params::{AcquisitionProperties, AnalysisParams, ProvenanceLevel};
 
 // =============================================================================
 // Core data types
@@ -41,6 +49,29 @@ pub struct ComplexMaps {
     pub azi_rev: Array2<Complex64>,
     pub alt_fwd: Array2<Complex64>,
     pub alt_rev: Array2<Complex64>,
+}
+
+/// Raw acquisition data loaded from an `.oisi` file — the input to pipeline
+/// stage 0 (ΔF/F baseline → per-cycle DFT → complex maps + reliability + SNR).
+///
+/// This is the host-side hand-off that keeps the pipeline HDF5-free: the I/O
+/// boundary (`io::read_raw_acquisition`) reads these arrays from the file, and
+/// the pipeline's `Baseline`/`Projection` stages borrow them — never touching
+/// HDF5 themselves. The
+/// `frames` array is large (the full camera movie); it is moved/borrowed, never
+/// cloned.
+pub struct RawAcquisition {
+    /// All camera frames `[T, H, W]` (raw u16 counts).
+    pub frames: Array3<u16>,
+    /// Per-frame camera timestamps (seconds), length `T`.
+    pub cam_ts_sec: Vec<f64>,
+    /// Per-sweep stimulus onset times (seconds), from `/acquisition/schedule`.
+    pub sweep_start_sec: Vec<f64>,
+    /// Per-sweep stimulus offset times (seconds).
+    pub sweep_end_sec: Vec<f64>,
+    /// Per-sweep direction labels (the `sweep_sequence` SSoT) — the ground
+    /// truth for grouping cycles by direction.
+    pub sweep_sequence: Vec<String>,
 }
 
 /// Retinotopy maps — computed from combined complex maps.
@@ -60,10 +91,21 @@ pub struct RetinotopyMaps {
     pub magnification_raw: Array2<f64>,
 }
 
-/// SNR maps — computed per-condition from raw acquisition frames.
-pub struct SnrMaps {
-    pub snr_azi: Array2<f64>,
-    pub snr_alt: Array2<f64>,
+/// Spectral responsiveness maps — per-orientation signal-quality metrics
+/// computed from raw acquisition frames (the cycle-averaged movie's temporal
+/// spectrum). Two validated metrics, each honestly named:
+/// - `spectral_snr_*` — OpenISI multi-bin ratio SNR (no external oracle).
+/// - `allen_power_snr_*` — Allen `corticalmapping` power z-score (bit-exact
+///   oracle), continuous form of the power-SNR mask.
+///
+/// Cross-cycle **reliability** is the third responsiveness metric but lives in
+/// its own [`ReliabilityMaps`] (it is a phasor-coherence quantity, not spectral).
+#[derive(Clone)]
+pub struct ResponsivenessMaps {
+    pub spectral_snr_azi: Array2<f64>,
+    pub spectral_snr_alt: Array2<f64>,
+    pub allen_power_snr_azi: Array2<f64>,
+    pub allen_power_snr_alt: Array2<f64>,
 }
 
 /// Cross-cycle reliability maps — amp-weighted vector coherence of
@@ -82,6 +124,7 @@ pub struct SnrMaps {
 ///
 /// Requires ≥ 2 cycles per direction; with `K = 1` reliability is
 /// trivially `1.0` and meaningless, so the pipeline errors out.
+#[derive(Clone)]
 pub struct ReliabilityMaps {
     pub rel_azi_fwd: Array2<f64>,
     pub rel_azi_rev: Array2<f64>,
@@ -111,6 +154,12 @@ pub struct ReliabilityMaps {
 /// All three are full frame, no cortex masking; they're different
 /// mathematical objects, not redundant copies.
 pub struct AnalysisResult {
+    /// Stage-0 output: the four per-direction complex maps the rest of the
+    /// pipeline derives from. Carried on the result so the I/O boundary can
+    /// persist them to `/complex_maps` (the DFT cache) after a from-raw run,
+    /// and so importer/cached paths round-trip the maps they seeded.
+    pub complex_maps: ComplexMaps,
+
     // Phases — raw computed values, full frame.
     pub azi_phase: Array2<f64>,
     pub alt_phase: Array2<f64>,
@@ -147,12 +196,17 @@ pub struct AnalysisResult {
     // a native output of their compute functions (not cortex masking).
     pub eccentricity: Array2<f64>,
     pub magnification: Array2<f64>,
+    /// Unmasked absolute Jacobian determinant (deg²/px²) — full frame, the raw
+    /// magnification before ROI gating. Persisted to `/results` so a parameter
+    /// tweak downstream of retinotopy can restore retinotopy from disk (stage 8
+    /// and the derived maps consume it). `magnification` is this gated to areas.
+    pub magnification_raw: Array2<f64>,
     pub contours_azi: Array2<bool>,
     pub contours_alt: Array2<bool>,
 
-    // SNR (genuine capability — present only when the file had raw acquisition
-    // frames; absent when analysis ran from imported complex maps).
-    pub snr: Option<SnrMaps>,
+    // Spectral responsiveness (spectral SNR + Allen power-SNR) — present only
+    // when the file had raw acquisition frames; absent for imported complex maps.
+    pub responsiveness: Option<ResponsivenessMaps>,
 
     /// Cross-cycle reliability maps. Present only for raw-acquisition
     /// data (requires per-cycle complex projections); `None` for
@@ -161,13 +215,13 @@ pub struct AnalysisResult {
     pub reliability: Option<ReliabilityMaps>,
 }
 
-/// Result of raw frame processing: complex maps plus optional SNR
-/// and reliability maps. Both require per-cycle data: SNR uses the
-/// frame-domain cycle-averaged movie; reliability uses the per-cycle
-/// complex projections.
+/// Result of raw frame processing: complex maps plus optional spectral
+/// responsiveness and reliability maps. Both require per-cycle data:
+/// responsiveness uses the frame-domain cycle-averaged movie; reliability uses
+/// the per-cycle complex projections.
 pub struct RawProcessingResult {
     pub complex_maps: ComplexMaps,
-    pub snr: Option<SnrMaps>,
+    pub responsiveness: Option<ResponsivenessMaps>,
     pub reliability: Option<ReliabilityMaps>,
 }
 
@@ -217,7 +271,7 @@ pub use math::compute_retinotopy;
 /// `.oisi /analysis_params` so re-analysis is bit-reproducible.
 ///
 /// `reliability` and `user_polygon` are inputs to the cortex-source
-/// stage; if the selected `CortexSource` variant requires data not
+/// stage; if the selected `CortexSourceMethod` variant requires data not
 /// supplied here (e.g. `Reliability` needs reliability maps), the
 /// function returns an `AnalysisError::MissingData` rather than
 /// silently falling back.
@@ -226,6 +280,12 @@ pub use math::compute_retinotopy;
 /// camera `um_per_pixel`). Read by the orchestrator from the file's
 /// `/rig_params` + `/experiment_params` JSON attributes; `compute_analysis`
 /// does not need to know how it was sourced.
+/// Compute the retinotopy→derived-maps pipeline from combined complex maps.
+///
+/// Expressed as a DAG of `pipeline` stages walked by the orchestrator; this is a
+/// thin delegation that seeds the given `complex_maps` (+ optional `reliability`)
+/// so the `Baseline`/`Projection` stages are skipped, and runs the rest. The
+/// full I/O path with caching lives in [`analyze`].
 pub fn compute_analysis(
     complex_maps: &ComplexMaps,
     reliability: Option<&ReliabilityMaps>,
@@ -233,121 +293,29 @@ pub fn compute_analysis(
     acquisition: &AcquisitionProperties,
     params: &AnalysisParams,
 ) -> Result<AnalysisResult> {
-    use crate::methods::cortex_source::CortexResolveContext;
-
-    let retino = math::compute_retinotopy(complex_maps, acquisition, params)?;
-
-    // Stage 4 — sign map smoothing.
-    let vfs_smooth = params.sign_map_smoothing.apply(&retino.vfs, acquisition.um_per_pixel);
-
-    // Stage 5 — cortex source.
-    let cortex_ctx = CortexResolveContext {
-        shape: vfs_smooth.dim(),
-        reliability,
-        user_polygon,
-        vfs_smoothed: Some(&vfs_smooth),
+    // Pure path: the complex maps are the *input*, so they are seeded into the
+    // pipeline (stage 0 is skipped). No cache restore (empty `restored` set → the
+    // full tail recomputes), no cancellation, silent progress — the incremental
+    // cache + cancellation are wired in `analyze`.
+    let never_cancel = AtomicBool::new(false);
+    let seed = pipeline::PipelineState {
+        complex_maps: Some(complex_maps.clone()),
+        reliability: reliability.cloned(),
+        ..Default::default()
     };
-    let cortex_mask = params.cortex_source.resolve(&cortex_ctx)?;
-
-    // Stage 6 — patch threshold (binary mask of candidate patch pixels).
-    // `threshold_applied` is the actual scalar cutoff used on |VFS| —
-    // for σ-scaled variants this is the runtime k·σ·0.5 value, not the
-    // multiplier k. Used below for the `vfs_smoothed_thresholded`
-    // diagnostic so the figure mirrors what the strategy actually
-    // applied.
-    let threshold_out = params.patch_threshold.apply(&vfs_smooth, &cortex_mask);
-    let imseg = threshold_out.imseg;
-    let threshold_applied = threshold_out.threshold_applied;
-
-    // Stage 7 — patch extraction (label + per-patch close → patches).
-    let extraction = params.patch_extraction.apply(&imseg, &vfs_smooth);
-
-    // Stage 8 — patch refinement (split + merge).
-    // Allen's split criterion compares the patch's visual-space area
-    // (AU) to the determinant-of-Jacobian integral (AS = ∑ |det(grad)|);
-    // `magnification_raw` is precisely that determinant magnitude in
-    // deg²/pixel², computed once during retinotopy on-device.
-    let mut patches = params.patch_refinement.apply(
-        extraction.patches,
-        &retino.azi_phase_degrees,
-        &retino.alt_phase_degrees,
-        &retino.magnification_raw,
-    );
-
-    // Stage 9 — per-pixel quality gate. Currently only `None` is a
-    // selectable variant (matches Allen `retinotopic_mapping`'s
-    // published behaviour — no per-pixel gate, the sign-map threshold +
-    // cortex envelope do all the gating). A non-`None` variant would
-    // be applied here as a filter on `imseg` before patch extraction.
-
-    // Sort patches by area; build area_labels and area_signs.
-    patches.sort_by(|a, b| b.area().cmp(&a.area()));
-    let (h, w) = vfs_smooth.dim();
-    let mut area_labels = ndarray::Array2::<i32>::zeros((h, w));
-    let mut area_signs: Vec<i8> = Vec::with_capacity(patches.len());
-    for (i, patch) in patches.iter().enumerate() {
-        let label = (i + 1) as i32;
-        for r in 0..h {
-            for c in 0..w {
-                if patch.mask[[r, c]] {
-                    area_labels[[r, c]] = label;
-                }
-            }
-        }
-        area_signs.push(patch.sign);
-    }
-    let area_borders = segmentation::extract_label_borders(&area_labels);
-
-    // Stage 10 — eccentricity (uses the resolved area_labels).
-    let eccentricity = params.eccentricity.apply(
-        &retino.azi_phase_degrees,
-        &retino.alt_phase_degrees,
-        &area_labels,
-    );
-
-    // Universal derived maps (not method-dispatched).
-    let magnification = math::apply_label_roi(&retino.magnification_raw, &area_labels);
-    let contours_azi = math::compute_contours(&retino.azi_phase_degrees, &area_labels, 4.0);
-    let contours_alt = math::compute_contours(&retino.alt_phase_degrees, &area_labels, 4.0);
-
-    // Literal threshold-mask of the smoothed VFS for diagnostic display:
-    // shows where `|VFS_smooth|` cleared the same cutoff the patch-
-    // threshold strategy applied to `imseg`. NaN outside the cortex
-    // mask so the renderer can show "no measurement here" rather than
-    // a misleading zero.
-    let vfs_smoothed_thresholded = ndarray::Array2::from_shape_fn(
-        vfs_smooth.dim(),
-        |(r, c)| {
-            if !cortex_mask[[r, c]] {
-                f64::NAN
-            } else {
-                let v = vfs_smooth[[r, c]];
-                if v.is_finite() && v.abs() >= threshold_applied { v } else { 0.0 }
-            }
+    let out = pipeline::run(
+        None,
+        seed,
+        &std::collections::HashSet::new(),
+        user_polygon,
+        pipeline::RunEnv {
+            acquisition,
+            params,
+            cancel: &never_cancel,
+            progress: &SilentProgress,
         },
-    );
-
-    Ok(AnalysisResult {
-        azi_phase: retino.azi_phase,
-        alt_phase: retino.alt_phase,
-        azi_phase_degrees: retino.azi_phase_degrees,
-        alt_phase_degrees: retino.alt_phase_degrees,
-        azi_amplitude: retino.azi_amplitude,
-        alt_amplitude: retino.alt_amplitude,
-        vfs: retino.vfs,
-        vfs_smoothed: vfs_smooth,
-        vfs_smoothed_thresholded,
-        cortex_mask,
-        area_labels,
-        area_signs,
-        area_borders,
-        eccentricity,
-        magnification,
-        contours_azi,
-        contours_alt,
-        snr: None,
-        reliability: None,
-    })
+    )?;
+    Ok(out.result)
 }
 
 // =============================================================================
@@ -371,86 +339,167 @@ pub fn analyze(
 ) -> Result<()> {
     let caps = io::inspect(path)?;
 
-    let (complex_maps, snr, reliability) = if caps.has_acquisition {
-        // Always reprocess from raw when raw data exists — ensures per-sweep DFT
-        // and picks up any parameter changes.
-        progress.set_stage("Processing raw frames");
-        progress.set_progress(0.0);
+    // Recording identity — keys stage 0's complex-maps cache and folds into
+    // every stage fingerprint (so two recordings can never share a cache key).
+    let identity = io::read_acquisition_identity(path)?;
+    let raw_identity = format!("{}|{}", identity.animal_id, identity.created_at);
 
-        let raw = io::compute_complex_maps_from_raw(path, params, progress, cancel)?;
-
-        if cancel.load(Ordering::Relaxed) {
-            return Err(AnalysisError::Cancelled);
-        }
-
-        io::write_complex_maps(path, &raw.complex_maps)?;
-        (raw.complex_maps, raw.snr, raw.reliability)
-    } else if caps.has_complex_maps {
-        // No raw data — use pre-computed complex maps (imports).
-        progress.set_stage("Loading complex maps");
-        progress.set_progress(0.0);
-
-        let maps = io::read_complex_maps(path)?;
-
-        if cancel.load(Ordering::Relaxed) {
-            return Err(AnalysisError::Cancelled);
-        }
-
-        (maps, None, None)
-    } else {
-        return Err(AnalysisError::MissingData(
-            "file has neither raw acquisition data nor complex maps".into()
-        ));
-    };
-
-    progress.set_stage("Computing retinotopy");
-    progress.set_progress(0.7);
-
-    // The `cortex_source` method in `params` decides the cortex source.
-    // We supply the inputs available — reliability from raw acquisition,
-    // user-drawn polygon from the file — and the method picks what to
-    // do with them. If the selected method requires data we don't have
-    // (e.g. `Reliability` on a cycle-averaged import), compute_analysis
-    // returns MissingData and the orchestrator surfaces a clear error.
-    let user_polygon = io::read_cortex_roi(path)?;
-    eprintln!("[analyze] cortex source method: {}", params.cortex_source.short_label());
-
-    // Acquisition properties (stimulus geometry, camera calibration)
-    // come from `/rig_params` + `/experiment_params` JSON attrs written
-    // at capture time. Each `.oisi` records its own — re-analysis on a
-    // different machine uses the original rig's values. The
-    // `ProvenanceLevel` on the result records exactly which fields
-    // came from the file vs were defaulted; we MUST match on it (the
-    // type forbids silent fallbacks).
+    // Acquisition properties (stimulus geometry, camera calibration) come from
+    // `/rig_params` + `/experiment_params` JSON attrs written at capture time.
+    // Each `.oisi` records its own — re-analysis on a different machine uses the
+    // original rig's values. The `ProvenanceLevel` records which fields came
+    // from the file vs were defaulted. Read up front: the retinotopy fingerprint
+    // folds the geometry, so the incremental cut needs it before deciding what
+    // to restore.
     let rig_attr = io::read_rig_params(path)?;
     let exp_attr = io::read_experiment_params(path)?;
     let acquisition = AcquisitionProperties::from_oisi_attrs(rig_attr.as_ref(), exp_attr.as_ref());
     if let Some(msg) = acquisition.provenance.warning_summary() {
-        eprintln!("[analyze] {msg}");
+        tracing::warn!("{msg}");
     }
 
-    let mut result = compute_analysis(
-        &complex_maps,
-        reliability.as_ref(),
-        user_polygon,
-        &acquisition,
+    // The user-drawn cortex polygon (an external file input the `UserPolygon`
+    // cortex source reads) and its content identity — folded into the
+    // cortex_source fingerprint so editing the ROI invalidates that stage down.
+    let user_polygon = io::read_cortex_roi(path)?;
+    let user_polygon_id = user_polygon.as_ref().map(polygon_identity);
+
+    // The full Merkle fingerprint set — one key per stage, each folding its own
+    // inputs and its dependency stages' keys. Computed once; drives both the
+    // stage-0 reuse decision and the tail restore cut.
+    let fps = pipeline::fingerprint::compute(
         params,
+        &acquisition,
+        &raw_identity,
+        user_polygon_id.as_deref(),
+    );
+
+    // ── Stage 0 (complex maps): seed from cache/import, or compute from raw ──
+    // A cached `/complex_maps` is reused only when it was produced under the
+    // current baseline (the projection fingerprint matches). Imports (no raw
+    // frames) carry no baseline — their complex maps ARE the input — so they are
+    // always seeded. A raw recording with a stale/absent cache recomputes from
+    // raw. This is the load-bearing skip for the "tweak morphology → fast re-run"
+    // workflow; the tail cut below extends it to every downstream stage.
+    let projection_key = pipeline::StageId::Projection.fingerprint_key();
+    let projection_fp = fps.projection.clone();
+    let cached_maps_usable = caps.has_complex_maps
+        && (!caps.has_acquisition
+            || io::read_stage_fingerprint(path, projection_key)?.as_deref()
+                == Some(projection_fp.as_str()));
+
+    let mut seed = pipeline::PipelineState::default();
+    let raw: Option<RawAcquisition> = if cached_maps_usable {
+        tracing::info!("using cached complex_maps");
+        progress.set_stage("Loading cached complex maps");
+        seed = pipeline::PipelineState {
+            complex_maps: Some(io::read_complex_maps(path)?),
+            responsiveness: io::read_responsiveness_maps(path)?,
+            reliability: io::read_reliability_maps(path)?,
+            ..Default::default()
+        };
+        None
+    } else if caps.has_acquisition {
+        progress.set_stage("Loading camera frames");
+        progress.set_progress(0.0);
+        Some(io::read_raw_acquisition(path)?)
+    } else {
+        return Err(AnalysisError::MissingData(
+            "file has neither raw acquisition data nor complex maps".into(),
+        ));
+    };
+
+    // ── Incremental tail cut ────────────────────────────────────────────────
+    // Decide restore-vs-recompute per cacheable stage from the fingerprints +
+    // what's on disk, seeding the restored stages' outputs into the blackboard.
+    // It never serves stale (a fingerprint mismatch recomputes); a change to a
+    // downstream-only param (e.g. eccentricity) restores everything above it —
+    // including the patch-refinement hotspot — and recomputes just the tail.
+    let (seed, restored) = incremental::restore(path, &fps, seed)?;
+
+    progress.set_stage("Computing retinotopy");
+    progress.set_progress(0.7);
+    tracing::info!(method = %params.cortex_source.short_label(), "cortex source method");
+
+    let from_raw = raw.is_some();
+    let t_run = Instant::now();
+    let out = pipeline::run(
+        raw.as_ref(),
+        seed,
+        &restored,
+        user_polygon,
+        pipeline::RunEnv {
+            acquisition: &acquisition,
+            params,
+            cancel,
+            progress,
+        },
     )?;
-    result.snr = snr;
-    result.reliability = reliability;
+    tracing::debug!(
+        pipeline_ms = t_run.elapsed().as_secs_f64() * 1e3,
+        from_raw,
+        "pipeline complete"
+    );
 
     if cancel.load(Ordering::Relaxed) {
         return Err(AnalysisError::Cancelled);
     }
 
+    // Persist freshly-computed complex maps (+ projection fingerprint) so the
+    // next run can take the fast seeded stage-0 path.
+    if from_raw {
+        io::write_complex_maps(path, &out.result.complex_maps)?;
+        io::write_stage_fingerprint(path, projection_key, &projection_fp)?;
+    }
+
     progress.set_stage("Writing results");
     progress.set_progress(0.9);
 
-    io::write_results(path, &result, &acquisition, params)?;
+    let t_wr = Instant::now();
+    io::write_results(path, &out.result, &acquisition, params)?;
+    tracing::debug!(
+        write_results_ms = t_wr.elapsed().as_secs_f64() * 1e3,
+        "io: write results"
+    );
+
+    // Persist the patch-threshold intermediates to `/cache` whenever that stage
+    // executed, so its fresh `imseg`/`threshold_applied` can be restored next
+    // run. When it was restored, `/cache` already holds the matching values.
+    if !restored.contains(&pipeline::StageId::PatchThreshold) {
+        if let (Some(imseg), Some(thr)) = (out.imseg.as_ref(), out.threshold_applied) {
+            io::write_stage_cache(path, imseg, thr)?;
+        }
+    }
+
+    // Record every tail stage's fingerprint that produced these results, so the
+    // next run restores exactly the stages whose inputs are unchanged.
+    for (key, value) in fps.tail_pairs() {
+        io::write_stage_fingerprint(path, key, value)?;
+    }
 
     progress.set_stage("Complete");
     progress.set_progress(1.0);
     Ok(())
+}
+
+/// Content identity of a user-drawn cortex ROI — a blake3 hash over its shape +
+/// bytes — folded into the cortex_source fingerprint so editing the polygon
+/// invalidates that stage (and everything downstream) but nothing above it.
+fn polygon_identity(polygon: &Array2<bool>) -> String {
+    let mut h = blake3::Hasher::new();
+    let (rows, cols) = polygon.dim();
+    h.update(&(rows as u64).to_le_bytes());
+    h.update(&(cols as u64).to_le_bytes());
+    // Hash the mask as one contiguous byte buffer (0/1 per pixel) rather than a
+    // per-pixel `update` — a single pass instead of millions of calls on a
+    // full-frame ROI. Row-major order is fixed by `as_standard_layout`.
+    let bytes: Vec<u8> = polygon
+        .as_standard_layout()
+        .iter()
+        .map(|&b| b as u8)
+        .collect();
+    h.update(&bytes);
+    h.finalize().to_hex().to_string()
 }
 
 // =============================================================================
@@ -473,7 +522,7 @@ pub enum AnalysisError {
 
     /// Compute-layer errors — tensor shape/kind/device, ndarray-tensor
     /// conversion, GPU device init/selection. Surfaces as a clean error
-    /// to the UI instead of a panic from `tch` internals.
+    /// to the UI instead of a panic from the compute backend.
     #[error("Compute: {0}")]
     Compute(String),
 

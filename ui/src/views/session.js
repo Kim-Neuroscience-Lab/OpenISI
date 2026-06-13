@@ -583,13 +583,20 @@ async function renderProtocol(body) {
     let savedExperiments = [];
     try { savedExperiments = await invoke("list_experiments"); } catch (_) {}
 
-    // Fetch descriptor groups for stimulus, geometry, and timing.
+    // Fetch descriptor groups. `display` carries the calibrated rig
+    // physical params (panel cm, bisector intercept, monitor yaw,
+    // hemifield, viewing distance) — separated from `geometry`, which
+    // carries experiment-design knobs (sweep envelope, offset). The
+    // rig calibration changes when the physical setup changes; the
+    // experiment design changes per session.
     const stimulusDescs = await fetchGroupDescriptors(invoke, "stimulus");
+    const displayDescs = await fetchGroupDescriptors(invoke, "display");
     const geometryDescs = await fetchGroupDescriptors(invoke, "geometry");
     const timingDescs = await fetchGroupDescriptors(invoke, "timing");
 
     // Build descriptor-driven HTML for each group.
     const stimulusHTML = stimulusDescs.map(buildParamInput).filter(Boolean).join('\n');
+    const displayHTML = displayDescs.map(buildParamInput).filter(Boolean).join('\n');
     const geometryHTML = geometryDescs.map(buildParamInput).filter(Boolean).join('\n');
     const timingHTML = timingDescs.map(buildParamInput).filter(Boolean).join('\n');
 
@@ -614,6 +621,12 @@ async function renderProtocol(body) {
             <input type="hidden" id="proto-rotation" value="${p.rotation_deg}">
             <div class="form-grid-3">
                 ${stimulusHTML}
+            </div>
+        </div>
+        <div class="card">
+            <h3>Rig Calibration</h3>
+            <div class="form-grid-3">
+                ${displayHTML}
             </div>
         </div>
         <div class="card">

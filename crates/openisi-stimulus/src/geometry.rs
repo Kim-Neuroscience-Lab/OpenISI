@@ -7,16 +7,21 @@
 use serde::{Deserialize, Serialize};
 
 /// Projection type for the display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumIter,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionType {
     /// Cartesian coordinates on flat screen (physical cm units)
+    #[strum(to_string = "Cartesian (flat screen)")]
     Cartesian = 0,
     /// Spherical correction for flat screen (Marshel et al. 2012)
     /// Sphere radius = viewing distance. Ensures constant spatial/temporal
     /// frequency across the visual field.
+    #[strum(to_string = "Spherical (Marshel et al. 2012)")]
     Spherical = 1,
     /// Cylindrical curved display
+    #[strum(to_string = "Cylindrical (curved)")]
     Cylindrical = 2,
 }
 
@@ -43,6 +48,9 @@ impl ProjectionType {
         }
     }
 
+    // Returns Option (not the Result-based FromStr trait); keep the descriptive
+    // name rather than implementing FromStr, which would change the return type.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cartesian" => Some(ProjectionType::Cartesian),
@@ -60,10 +68,18 @@ pub struct DisplayGeometry {
     pub projection_type: ProjectionType,
     /// Distance from subject's eye to display surface (cm)
     pub viewing_distance_cm: f64,
-    /// Horizontal angular offset of display center from straight ahead (degrees, + = right)
+    /// Horizontal angular offset of display center from straight ahead (degrees, + = right).
+    /// Visual-space concept — where the eye's gaze direction lies relative to the
+    /// monitor's bisector intercept. Combines with `bisector_x_cm` (a monitor-face
+    /// shift in cm) to fully describe the rig pose.
     pub center_azimuth_deg: f64,
-    /// Vertical angular offset of display center from straight ahead (degrees, + = up)
+    /// Vertical angular offset of display center from straight ahead (degrees, + = up).
     pub center_elevation_deg: f64,
+    /// Bisector intercept on the monitor face in cm from monitor geometric center
+    /// (+x = anterior, +y = top). Shifts the cm origin so the bisector intercept
+    /// is at visual angle (0, 0). Mirrors Zhuang's `C2A_cm`/`C2T_cm`.
+    pub bisector_x_cm: f64,
+    pub bisector_y_cm: f64,
     /// Physical display width (cm)
     pub display_width_cm: f64,
     /// Physical display height (cm)
@@ -76,11 +92,18 @@ pub struct DisplayGeometry {
 
 impl DisplayGeometry {
     /// Create with explicit parameters.
+    // Justified `#[allow]`: the arguments ARE this struct's fields, 1:1, so a
+    // parameter object would just restate `DisplayGeometry`. The fields are
+    // public, so a caller wanting swap-safety over the same-typed `_cm`/`_px`
+    // values can use the named-field literal instead of this positional ctor.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         projection_type: ProjectionType,
         viewing_distance_cm: f64,
         center_azimuth_deg: f64,
         center_elevation_deg: f64,
+        bisector_x_cm: f64,
+        bisector_y_cm: f64,
         display_width_cm: f64,
         display_height_cm: f64,
         display_width_px: u32,
@@ -91,6 +114,8 @@ impl DisplayGeometry {
             viewing_distance_cm,
             center_azimuth_deg,
             center_elevation_deg,
+            bisector_x_cm,
+            bisector_y_cm,
             display_width_cm,
             display_height_cm,
             display_width_px,
@@ -122,9 +147,7 @@ impl DisplayGeometry {
     /// Compute the visual field height in degrees.
     pub fn visual_field_height_deg(&self) -> f64 {
         match self.projection_type {
-            ProjectionType::Cartesian
-            | ProjectionType::Spherical
-            | ProjectionType::Cylindrical => {
+            ProjectionType::Cartesian | ProjectionType::Spherical | ProjectionType::Cylindrical => {
                 // All types: flat in vertical
                 let half_height = self.display_height_cm / 2.0;
                 2.0 * (half_height / self.viewing_distance_cm).atan().to_degrees()
@@ -167,7 +190,10 @@ impl DisplayGeometry {
     /// Convert visual angle to pixel coordinates.
     pub fn angle_to_px(&self, azimuth_deg: f64, elevation_deg: f64) -> (f64, f64) {
         let (u, v) = self.angle_to_uv(azimuth_deg, elevation_deg);
-        (u * self.display_width_px as f64, v * self.display_height_px as f64)
+        (
+            u * self.display_width_px as f64,
+            v * self.display_height_px as f64,
+        )
     }
 
     /// Convert pixel coordinates to visual angle.
@@ -202,14 +228,16 @@ impl DisplayGeometry {
     fn flat_angle_to_uv(&self, az_deg: f64, el_deg: f64) -> (f64, f64) {
         let x_cm = self.viewing_distance_cm * az_deg.to_radians().tan();
         let y_cm = self.viewing_distance_cm * el_deg.to_radians().tan();
-        let u = 0.5 + (x_cm / self.display_width_cm);
-        let v = 0.5 - (y_cm / self.display_height_cm); // Y inverted
+        // Pixel cm = bisector-relative cm + bisector intercept (inverse of
+        // the bisector shift applied in the forward direction).
+        let u = 0.5 + ((x_cm + self.bisector_x_cm) / self.display_width_cm);
+        let v = 0.5 - ((y_cm + self.bisector_y_cm) / self.display_height_cm); // Y inverted
         (u, v)
     }
 
     fn flat_uv_to_angle(&self, u: f64, v: f64) -> (f64, f64) {
-        let x_cm = (u - 0.5) * self.display_width_cm;
-        let y_cm = (0.5 - v) * self.display_height_cm;
+        let x_cm = (u - 0.5) * self.display_width_cm - self.bisector_x_cm;
+        let y_cm = (0.5 - v) * self.display_height_cm - self.bisector_y_cm;
         let az = (x_cm / self.viewing_distance_cm).atan().to_degrees();
         let el = (y_cm / self.viewing_distance_cm).atan().to_degrees();
         (az, el)
@@ -231,15 +259,16 @@ impl DisplayGeometry {
         let r_horizontal = (xo * xo + y_cm * y_cm).sqrt();
         let z_cm = r_horizontal * el_rad.tan();
 
-        let u = 0.5 + (y_cm / self.display_width_cm);
-        let v = 0.5 - (z_cm / self.display_height_cm);
+        // Bisector-relative cm + bisector intercept = monitor-center-relative cm.
+        let u = 0.5 + ((y_cm + self.bisector_x_cm) / self.display_width_cm);
+        let v = 0.5 - ((z_cm + self.bisector_y_cm) / self.display_height_cm);
         (u, v)
     }
 
     fn spherical_uv_to_angle(&self, u: f64, v: f64) -> (f64, f64) {
         let xo = self.viewing_distance_cm;
-        let y_cm = (u - 0.5) * self.display_width_cm;
-        let z_cm = (0.5 - v) * self.display_height_cm;
+        let y_cm = (u - 0.5) * self.display_width_cm - self.bisector_x_cm;
+        let z_cm = (0.5 - v) * self.display_height_cm - self.bisector_y_cm;
 
         let az_rad = (y_cm / xo).atan();
         let r = (xo * xo + y_cm * y_cm + z_cm * z_cm).sqrt();
@@ -256,19 +285,19 @@ impl DisplayGeometry {
         // Horizontal: curved (radius = viewing distance)
         let az_rad = az_deg.to_radians();
         let x_arc = self.viewing_distance_cm * az_rad;
-        let u = 0.5 + (x_arc / self.display_width_cm);
+        let u = 0.5 + ((x_arc + self.bisector_x_cm) / self.display_width_cm);
 
         // Vertical: flat
         let y_cm = self.viewing_distance_cm * el_deg.to_radians().tan();
-        let v = 0.5 - (y_cm / self.display_height_cm);
+        let v = 0.5 - ((y_cm + self.bisector_y_cm) / self.display_height_cm);
         (u, v)
     }
 
     fn cylindrical_uv_to_angle(&self, u: f64, v: f64) -> (f64, f64) {
-        let x_arc = (u - 0.5) * self.display_width_cm;
+        let x_arc = (u - 0.5) * self.display_width_cm - self.bisector_x_cm;
         let az = (x_arc / self.viewing_distance_cm).to_degrees();
 
-        let y_cm = (0.5 - v) * self.display_height_cm;
+        let y_cm = (0.5 - v) * self.display_height_cm - self.bisector_y_cm;
         let el = (y_cm / self.viewing_distance_cm).atan().to_degrees();
         (az, el)
     }
@@ -289,8 +318,9 @@ impl DisplayGeometry {
 
     /// Compute eccentricity at a UV position.
     fn compute_eccentricity_at_uv(&self, u: f64, v: f64) -> f64 {
-        let y_cm = (u - 0.5) * self.display_width_cm;
-        let z_cm = (0.5 - v) * self.display_height_cm;
+        // Apply bisector shift (cm origin) then visual-space center offset.
+        let y_cm = (u - 0.5) * self.display_width_cm - self.bisector_x_cm;
+        let z_cm = (0.5 - v) * self.display_height_cm - self.bisector_y_cm;
 
         let xo = self.viewing_distance_cm;
         let offset_y_cm = self.center_azimuth_deg.to_radians().tan() * xo;
@@ -312,7 +342,10 @@ impl DisplayGeometry {
         ShaderGeometryParams {
             projection_type: self.projection_type as u32,
             viewing_distance_cm: self.viewing_distance_cm as f32,
-            center_offset_deg: [self.center_azimuth_deg as f32, self.center_elevation_deg as f32],
+            center_offset_deg: [
+                self.center_azimuth_deg as f32,
+                self.center_elevation_deg as f32,
+            ],
             display_size_cm: [self.display_width_cm as f32, self.display_height_cm as f32],
             visual_field_deg: [
                 self.visual_field_width_deg() as f32,
@@ -343,7 +376,7 @@ mod tests {
     use super::*;
 
     fn test_geometry(proj: ProjectionType) -> DisplayGeometry {
-        DisplayGeometry::new(proj, 25.0, 0.0, 0.0, 53.0, 30.0, 1920, 1080)
+        DisplayGeometry::new(proj, 25.0, 0.0, 0.0, 0.0, 0.0, 53.0, 30.0, 1920, 1080)
     }
 
     // --- Visual Field ---
@@ -403,10 +436,7 @@ mod tests {
         let g = test_geometry(ProjectionType::Cylindrical);
         let (u, v) = g.angle_to_uv(20.0, -10.0);
         let (az, el) = g.uv_to_angle(u, v);
-        assert!(
-            (az - 20.0).abs() < 0.01,
-            "Cylindrical az roundtrip: {az}"
-        );
+        assert!((az - 20.0).abs() < 0.01, "Cylindrical az roundtrip: {az}");
         assert!(
             (el - (-10.0)).abs() < 0.01,
             "Cylindrical el roundtrip: {el}"
@@ -453,6 +483,61 @@ mod tests {
         assert!(ecc > 0.0, "Max eccentricity should be positive: {ecc}");
         // For a 53x30cm screen at 25cm, corners are quite far out
         assert!(ecc > 40.0, "Max eccentricity should be > 40°: {ecc}");
+    }
+
+    // --- Bisector intercept (Step B) ---
+
+    #[test]
+    fn test_bisector_shifts_origin_in_spherical() {
+        // 53×30 cm panel at 25 cm distance, bisector intercept +10 cm
+        // anterior (right of monitor center). The pixel at monitor cm
+        // (+10, 0) — i.e. uv = (0.5 + 10/53, 0.5) — should map to (az, el)
+        // = (0, 0) because it IS the bisector intercept by definition.
+        let g = DisplayGeometry::new(
+            ProjectionType::Spherical,
+            25.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            53.0,
+            30.0,
+            1920,
+            1080,
+        );
+        let intercept_u = 0.5 + 10.0 / 53.0;
+        let (az, el) = g.uv_to_angle(intercept_u, 0.5);
+        assert!(
+            az.abs() < 0.01,
+            "bisector intercept should be at az=0, got {az}"
+        );
+        assert!(
+            el.abs() < 0.01,
+            "bisector intercept should be at el=0, got {el}"
+        );
+    }
+
+    #[test]
+    fn test_bisector_roundtrip() {
+        let g = DisplayGeometry::new(
+            ProjectionType::Spherical,
+            10.0,
+            0.0,
+            0.0,
+            5.0,
+            -2.0,
+            88.0,
+            50.0,
+            1920,
+            1080,
+        );
+        let (u, v) = g.angle_to_uv(20.0, -8.0);
+        let (az, el) = g.uv_to_angle(u, v);
+        assert!((az - 20.0).abs() < 0.01, "az roundtrip with bisector: {az}");
+        assert!(
+            (el - (-8.0)).abs() < 0.01,
+            "el roundtrip with bisector: {el}"
+        );
     }
 
     #[test]

@@ -1,15 +1,28 @@
 //! Tensor-based analysis compute backend.
 //!
-//! Runs on whichever hardware libtorch makes available — CUDA on NVIDIA,
-//! Metal on Apple Silicon, otherwise CPU. There is one implementation of
-//! every analysis operation; hardware dispatch is libtorch's job.
+//! A single tensor substrate: **Burn**. Hardware dispatch is Burn's; the
+//! backend is the single alias [`Backend`] (see `backend.rs`), which
+//! is the one place the backend (ndarray → CUDA → WGPU) is chosen. Every
+//! op is written generically over `Tensor<Backend, D>`, so switching the
+//! backend changes no downstream code.
 //!
-//! See `docs/ANALYSIS_COMPUTE.md`.
+//! The analysis ops (`compute_vfs`, `phase_gradients`, `gaussian_smooth`,
+//! the DFT/SNR/reliability ops, …), the [`Complex2`] complex pair, the
+//! ndarray↔tensor conversions, and the [`CycleAccumulator`] are all
+//! re-exported flat from this module.
 
-mod ops;
-mod conversions;
 mod accumulator;
+mod backend;
+mod complex;
+mod conversions;
+#[cfg(test)]
+mod golden_vfs;
+mod ops;
+pub mod projection;
+pub mod responsiveness;
 
-pub use ops::*;
-pub use conversions::*;
 pub use accumulator::{CycleAccumulator, Direction};
+pub use backend::{backend_info, device, device_tag, Backend};
+pub use complex::Complex2;
+pub use conversions::*;
+pub use ops::*;

@@ -9,6 +9,36 @@ import { errorToString } from '../lib/errors.js';
 let currentFile = null;
 let fileInfo = null;
 
+/**
+ * Run analysis on the given .oisi file, auto-migrating pre-2026 schema
+ * files on the fly. The backend's `run_analysis` refuses pre-2026 files
+ * with a clear error message; we catch that case, call `migrate_oisi`
+ * (which bumps `/analysis_params` to the current Registry-tree schema),
+ * and retry the analysis. Non-migration errors propagate.
+ *
+ * If `statusEl` is provided, status updates ("Migrating…") are written
+ * to it so the user sees the migration step.
+ */
+async function runAnalysisWithAutoMigrate(invoke, path, statusEl = null) {
+    try {
+        await invoke("run_analysis", { path });
+    } catch (e) {
+        const msg = errorToString(e);
+        if (msg.includes("pre-2026")) {
+            if (statusEl) {
+                statusEl.textContent = "Migrating /analysis_params to current schema…";
+                statusEl.style.color = "";
+            }
+            console.log(`[analysis] auto-migrating pre-2026 file ${path}`);
+            await invoke("migrate_oisi", { path });
+            if (statusEl) statusEl.textContent = "Migrated — re-running analysis…";
+            await invoke("run_analysis", { path });
+        } else {
+            throw e;
+        }
+    }
+}
+
 export async function render(container) {
     currentFile = window.openISI._analysisFile;
 
@@ -34,9 +64,17 @@ export async function render(container) {
 
 async function renderAnalysisView(container, fileInfo, currentFile) {
 
-    // Load analysis params (via descriptor registry) and ring config.
-    const retinotopyDescs = await fetchGroupDescriptors(invoke, "retinotopy");
-    const segmentationDescs = await fetchGroupDescriptors(invoke, "segmentation");
+    // Load analysis params (via descriptor registry) and ring config. Per
+    // analysis stage we fetch the stage's own GroupId so the UI shows ONE
+    // section per pipeline stage (method picker + active tunables together),
+    // not one giant flat "all analysis params" list. The stage list is the
+    // backend's single source of truth (derived from PARAM_DEFS), fetched via
+    // `get_analysis_stages` — NOT hardcoded here, so adding a stage in Rust
+    // surfaces it automatically with no frontend edit.
+    const STAGES = await invoke("get_analysis_stages");
+    const stageDescs = await Promise.all(
+        STAGES.map(s => fetchGroupDescriptors(invoke, s.key))
+    );
     const ring = await invoke("get_ring_overlay");
 
     // Compute backend label — auto-detected at startup. Display-only
@@ -44,68 +82,6 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
     let analysisBackend = "—";
     try { analysisBackend = await invoke("get_analysis_backend"); }
     catch (e) { console.warn("get_analysis_backend failed:", errorToString(e)); }
-
-    // Method tunables — one card per pipeline stage with editable
-    // const-default overrides. The SSoT principle: every code-side
-    // tunable (Option<T> + const FOO_DEFAULT) is editable here; no
-    // hidden values that bypass the UI. Fetched after set_active_oisi
-    // so the active .oisi's /analysis_params drives current values.
-    let methodTunablesHtml = "";
-    let analysisParamsSourceBadge = "";
-    try {
-        const resp = await invoke("get_method_tunables");
-        const stages = resp.stages || [];
-        // Provenance badge: when source is bootstrap_default, the user
-        // is editing pristine code defaults — NOT the file's stored
-        // state. Show this explicitly so they don't mistake defaults
-        // for "what's in the file."
-        if (resp.source && resp.source.source === "bootstrap_default") {
-            analysisParamsSourceBadge = `
-                <div class="card" style="border-left:3px solid var(--warning, #c80);">
-                    <div class="form-row">
-                        <strong>Analysis params: bootstrap defaults</strong>
-                    </div>
-                    <div class="form-row" style="font-size:11px; opacity:0.85;">
-                        This .oisi has no <code>/analysis_params</code> attribute
-                        yet — you're editing pristine code defaults. The first
-                        analysis run (or first Tunable edit) will persist the
-                        canonical record into the file.
-                    </div>
-                </div>
-            `;
-        }
-        methodTunablesHtml = stages.map(stage => `
-            <div class="card">
-                <h3>Tunables: ${stage.stage}</h3>
-                ${stage.tunables.map(t => {
-                    const current = t.current !== undefined && t.current !== null ? t.current : "";
-                    const def = t.default;
-                    const min = t.kind && t.kind.min !== undefined ? `min="${t.kind.min}"` : "";
-                    const max = t.kind && t.kind.max !== undefined ? `max="${t.kind.max}"` : "";
-                    const step = t.kind && t.kind.kind === "f64" ? 'step="any"' : 'step="1"';
-                    return `
-                        <div class="form-row">
-                            <label>${t.label}${t.units ? ` (${t.units})` : ""}</label>
-                            <input type="number"
-                                   data-stage="${stage.stage}"
-                                   data-name="${t.name}"
-                                   class="method-tunable"
-                                   placeholder="${def}"
-                                   value="${current}"
-                                   ${min} ${max} ${step}
-                                   style="width:90px">
-                            <button class="btn-tunable-reset"
-                                    data-stage="${stage.stage}"
-                                    data-name="${t.name}"
-                                    style="font-size:11px">Reset</button>
-                        </div>
-                    `;
-                }).join("")}
-            </div>
-        `).join("");
-    } catch (e) {
-        console.warn("get_method_tunables failed:", errorToString(e));
-    }
 
     // Set up the layered preview.
     window.openISI.showPreviewPanel();
@@ -121,7 +97,7 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
         // Auto-run analysis if the file has data but no results yet.
         if (!fileInfo.has_results && (fileInfo.has_acquisition || fileInfo.has_complex_maps)) {
             try {
-                await invoke("run_analysis", { path: currentFile });
+                await runAnalysisWithAutoMigrate(invoke, currentFile);
                 fileInfo = await invoke("inspect_oisi", { path: currentFile });
             } catch (e) {
                 console.error("Auto-analysis failed:", e);
@@ -169,13 +145,7 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
             </div>
         </div>
 
-        ${buildParamGroup(retinotopyDescs, "Retinotopy")}
-
-        ${buildParamGroup(segmentationDescs, "Segmentation")}
-
-        ${analysisParamsSourceBadge}
-
-        ${methodTunablesHtml}
+        ${STAGES.map((s, i) => buildParamGroup(stageDescs[i], s.title)).join("")}
 
         <div class="card">
             <h3>Head Ring</h3>
@@ -216,113 +186,96 @@ async function renderAnalysisView(container, fileInfo, currentFile) {
     `;
 
     // ── Auto re-analyze on param change ─────────────────────────────
+    //
+    // The backend's run_analysis just enqueues a request and returns
+    // immediately. The actual heavy work happens on a dedicated worker
+    // thread, and lifecycle updates arrive as Tauri events:
+    //   analysis:started   — worker began processing this request
+    //   analysis:complete  — results written, reload them
+    //   analysis:failed    — show error, no reload
+    //   analysis:cancelled — preempted by a newer request, ignore
+    //
+    // This keeps the UI responsive during long analyses and lets a
+    // newer request preempt an in-flight one (no queue pileup).
     let analyzeTimeout;
     function scheduleReanalyze() {
         clearTimeout(analyzeTimeout);
-        analyzeTimeout = setTimeout(reanalyze, 800);
+        analyzeTimeout = setTimeout(triggerReanalyze, 800);
     }
 
-    async function reanalyze() {
+    async function triggerReanalyze() {
         const statusEl = document.getElementById("analysis-status");
-        if (!statusEl) return;
-
-        statusEl.textContent = "Re-analyzing...";
-        statusEl.style.color = "";
-
+        if (statusEl) {
+            statusEl.textContent = "Re-analyzing...";
+            statusEl.style.color = "";
+        }
         try {
-            await invoke("run_analysis", { path: currentFile });
+            await runAnalysisWithAutoMigrate(invoke, currentFile, statusEl);
+            // No await on "complete" — the analysis:complete event handler
+            // below reloads results when the worker finishes.
+        } catch (e) {
+            if (statusEl) {
+                statusEl.textContent = `Error: ${errorToString(e)}`;
+                statusEl.style.color = "var(--error)";
+            }
+        }
+    }
+
+    // Subscribe to analysis lifecycle events from the worker thread.
+    // Tauri's event API delivers these on the UI thread; the handlers
+    // never block.
+    const { listen } = window.__TAURI__.event;
+    const unlistenStarted = await listen("analysis:started", () => {
+        const statusEl = document.getElementById("analysis-status");
+        if (statusEl) {
+            statusEl.textContent = "Analyzing…";
+            statusEl.style.color = "";
+        }
+    });
+    const unlistenComplete = await listen("analysis:complete", async (event) => {
+        const statusEl = document.getElementById("analysis-status");
+        if (statusEl) {
             statusEl.textContent = "Analysis complete";
+            statusEl.style.color = "";
+        }
+        try {
             fileInfo = await invoke("inspect_oisi", { path: currentFile });
-
-            // Reload all results (re-inspect + rebuild popup + reload borders).
             await window.openISI.setAnalysisFile(currentFile);
-
             const currentMap = viz.mapName;
             if (currentMap && currentMap !== "none") {
                 await window.openISI.setMapName(currentMap);
             }
         } catch (e) {
-            statusEl.textContent = `Error: ${errorToString(e)}`;
+            console.error("Failed to reload after analysis:complete:", e);
+        }
+    });
+    const unlistenFailed = await listen("analysis:failed", (event) => {
+        const statusEl = document.getElementById("analysis-status");
+        if (statusEl) {
+            statusEl.textContent = `Error: ${event.payload?.message ?? "analysis failed"}`;
             statusEl.style.color = "var(--error)";
         }
-    }
+    });
+    const unlistenCancelled = await listen("analysis:cancelled", () => {
+        // Preempted by a newer Run — keep status as "Analyzing…" (the
+        // next started/complete event will overwrite). No-op intentionally.
+    });
+    // Tear down listeners when the view re-renders (best-effort —
+    // analysis.js re-renders fully on each navigation).
+    window.__openisi_analysis_unlisten?.();
+    window.__openisi_analysis_unlisten = () => {
+        unlistenStarted();
+        unlistenComplete();
+        unlistenFailed();
+        unlistenCancelled();
+    };
 
     // Wire descriptor-driven param inputs: set_params on change, then trigger reanalysis.
+    // Param edits (method pickers + tunables) are wired uniformly here via
+    // the descriptor-driven path: `wireParamListeners` → `set_params` →
+    // reanalysis. There is no separate "method tunable" path — every analysis
+    // knob is a registry param rendered by `buildParamGroup`.
     wireParamListeners(container, invoke, () => scheduleReanalyze());
-
-    // Wire method-tunable inputs. On `change`, parse the value, call
-    // set_method_tunable, then trigger reanalysis. The empty-string
-    // case clears the override (sends a default-reset).
-    container.querySelectorAll(".method-tunable").forEach(input => {
-        input.addEventListener("change", async () => {
-            const stage = input.dataset.stage;
-            const name = input.dataset.name;
-            const raw = input.value.trim();
-            if (raw === "") {
-                // Empty input → user wants to reset to default. Same path
-                // as the Reset button.
-                await resetTunable(stage, name, input);
-                return;
-            }
-            const value = Number(raw);
-            if (!Number.isFinite(value)) {
-                alert(`Invalid value for ${stage}.${name}: must be a number`);
-                return;
-            }
-            try {
-                await invoke("set_method_tunable", { stage, name, value });
-                scheduleReanalyze();
-            } catch (e) {
-                alert(`Failed to set ${stage}.${name}: ${errorToString(e)}`);
-            }
-        });
-    });
-
-    container.querySelectorAll(".btn-tunable-reset").forEach(btn => {
-        btn.addEventListener("click", async () => {
-            const stage = btn.dataset.stage;
-            const name = btn.dataset.name;
-            const input = container.querySelector(
-                `.method-tunable[data-stage="${stage}"][data-name="${name}"]`
-            );
-            await resetTunable(stage, name, input);
-        });
-    });
-
-    // Reset is "set to JSON null" — backend interprets as "clear
-    // override, fall back to const default". We rebuild the AnalysisParams
-    // from scratch via set_analysis_params with the default for the
-    // active method variant. Simplest: re-fetch tunables (which read
-    // from the .oisi); the user can re-edit if they want a different
-    // explicit value. Reset clears the input + relies on get_method_tunables
-    // to re-render the placeholder.
-    async function resetTunable(stage, name, input) {
-        // We don't yet have a dedicated `clear_method_tunable` command;
-        // for now, signal intent by reading current params, mutating
-        // the field to its default, and re-writing. The simplest UI
-        // signal: clear the input box and let set_method_tunable handle
-        // the explicit default value.
-        try {
-            // Fetch current tunables to find this descriptor's default.
-            // Response shape: { stages: [...], source: {...} }.
-            const resp = await invoke("get_method_tunables");
-            const stages = resp.stages || [];
-            const s = stages.find(s => s.stage === stage);
-            const t = s && s.tunables.find(t => t.name === name);
-            if (!t) { alert(`Tunable ${stage}.${name} not found`); return; }
-            // Set the explicit default value (this writes default back
-            // as an explicit override — semantically equivalent for the
-            // analysis pipeline, though it shows up as `current` in
-            // future renders. A true "clear override" path would
-            // require a backend command that writes Option::None;
-            // future work.)
-            await invoke("set_method_tunable", { stage, name, value: t.default });
-            if (input) { input.value = ""; }
-            scheduleReanalyze();
-        } catch (e) {
-            alert(`Failed to reset ${stage}.${name}: ${errorToString(e)}`);
-        }
-    }
 
     // Ring controls in analysis view.
     function updateAnalysisRing() {

@@ -1,27 +1,30 @@
-//! On-device per-direction sweep accumulator.
+//! Per-direction sweep accumulator.
 //!
-//! Single source of truth for "combine per-cycle complex maps into a
-//! direction-averaged complex map." Owns the `Direction` enum and the
-//! phase-locked averaging algorithm; the I/O layer feeds cycles in and
-//! calls `finalize()` to get the final `RawProcessingResult`.
+//! Combines per-cycle complex maps into a direction-averaged complex map
+//! via the selected [`CycleAverageMethod`] (the faithful simple complex
+//! average by default; phase-locked averaging as an OpenISI option), and
+//! carries the frame-domain running sum used for spectral SNR. Owns the
+//! backend-agnostic [`Direction`] enum (a plain enum, no tensor state).
 //!
-//! Per `docs/ANALYSIS_COMPUTE.md` Principles 4 and 7, the accumulator
-//! keeps cycle complex maps on the active device as native
-//! `Kind::ComplexFloat` tensors and the frame-domain cycle-averaged movie
-//! as `Kind::Float`. `finalize()` is the single device→CPU boundary for
-//! the sweep-processing stage.
+//! Validated end-to-end against a raw-frames file (the small fixtures use
+//! cached complex_maps and never run the DFT path) via the `#[ignore]`
+//! regression test.
 
 use ndarray::Array2;
 use std::collections::BTreeMap;
-use tch::Tensor;
 
-use crate::{AnalysisError, ComplexMaps, RawProcessingResult, ReliabilityMaps, SnrMaps};
+use burn_tensor::Tensor;
+
+use super::backend::Backend;
+use super::complex::Complex2;
 use super::conversions;
+use crate::methods::CycleAverageMethod;
+use crate::{AnalysisError, ComplexMaps, RawProcessingResult, ReliabilityMaps, ResponsivenessMaps};
 
 /// Stimulus direction. Replaces the `(is_azi, is_fwd)` tuple that used to
-/// be encoded in four different places in the codebase. `BTreeMap` keys
-/// here also depend on the `Ord` derive (alphabetical: AltFwd < AltRev <
-/// AziFwd < AziRev) — the order is incidental, not semantic.
+/// be encoded in several places. `BTreeMap` keys here also depend on the
+/// `Ord` derive (alphabetical: AltFwd < AltRev < AziFwd < AziRev) — the
+/// order is incidental, not semantic.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Direction {
     /// Azimuth forward (LR — left-to-right bar sweep).
@@ -57,225 +60,204 @@ impl Direction {
     }
 }
 
-/// Per-direction accumulation state: collects each cycle's complex map and
-/// its per-cycle global phase, plus the frame-domain running sum used for
-/// the spectral SNR computation. `finalize_direction` consumes these to
-/// produce the direction's averaged complex map.
+/// Per-direction accumulation state — Burn types.
 struct DirectionAcc {
-    /// Per-cycle complex maps `[H, W]` `Kind::ComplexFloat` on device.
-    cycles: Vec<Tensor>,
-    /// Per-cycle global phase `arg(Σ_pixels cm_k)` — used to align cycles
-    /// to a consensus phase before summing (phase-locked averaging).
+    /// Per-cycle complex maps `[H, W]`.
+    cycles: Vec<Complex2>,
+    /// Per-cycle global phase `arg(Σ_pixels cm_k)`, for phase-locked averaging.
     phases: Vec<f64>,
-    /// Frame-domain running sum `[N, H, W]` f32 on device, used for SNR.
-    frame_sum: Option<Tensor>,
-    /// Number of frames per cycle (frame_sum / n_used yields the averaged
-    /// movie shape `[chunk_frame_dur, H, W]`).
+    /// Frame-domain running sum `[N, H, W]` f32, used for SNR.
+    frame_sum: Option<Tensor<Backend, 3>>,
     n_used: u32,
 }
 
 impl DirectionAcc {
     fn new() -> Self {
-        Self { cycles: Vec::new(), phases: Vec::new(), frame_sum: None, n_used: 0 }
+        Self {
+            cycles: Vec::new(),
+            phases: Vec::new(),
+            frame_sum: None,
+            n_used: 0,
+        }
     }
 
-    fn add_cycle(
-        &mut self,
-        complex_map: Tensor,
-        phase: f64,
-        cycle_frames: Tensor,
-    ) -> Result<(), AnalysisError> {
+    fn add_cycle(&mut self, complex_map: Complex2, phase: f64, cycle_frames: Tensor<Backend, 3>) {
         self.cycles.push(complex_map);
         self.phases.push(phase);
-        match self.frame_sum.take() {
-            Some(mut s) => {
-                let _ = s.f_add_(&cycle_frames)
-                    .map_err(|e| AnalysisError::Hdf5(
-                        format!("cycle-average in-place add failed: {e}")
-                    ))?;
-                self.frame_sum = Some(s);
-            }
-            None => {
-                self.frame_sum = Some(cycle_frames);
-            }
-        }
+        self.frame_sum = Some(match self.frame_sum.take() {
+            Some(s) => s + cycle_frames,
+            None => cycle_frames,
+        });
         self.n_used += 1;
-        Ok(())
     }
 
-    /// Phase-lock each cycle's complex map to the consensus phase, sum, and
-    /// divide by the cycle count. Reduces destructive interference from
-    /// cycle-to-cycle camera-sampling phase jitter. Returns the
-    /// direction-averaged complex map plus the per-pixel cross-cycle
-    /// reliability map (amp-weighted vector coherence — Allen / Engel).
-    ///
-    /// Reliability is computed on the raw per-cycle complex projections
-    /// before phase-locking. Phase-locking applies the same global
-    /// rotation to every pixel in a cycle, so it doesn't change the
-    /// per-pixel phase-consistency across cycles — reliability is
-    /// invariant to phase-lock alignment.
-    ///
-    /// `K = 1` is rejected as `MissingData`: reliability is undefined
-    /// with a single sample (it's trivially `1.0`), so we fail loudly
-    /// rather than silently emit a meaningless map.
+    /// Combine the per-cycle complex maps via the selected [`CycleAverageMethod`]
+    /// and divide by the cycle count. Returns the direction-averaged complex map
+    /// plus the per-pixel cross-cycle reliability (`None` when `K < 2`).
     fn finalize_direction(
         self,
         label: &str,
-    ) -> Result<(Array2<num_complex::Complex64>, Array2<f64>), AnalysisError> {
+        method: &CycleAverageMethod,
+    ) -> Result<(Array2<num_complex::Complex64>, Option<Array2<f64>>), AnalysisError> {
         if self.n_used == 0 {
             return Err(AnalysisError::MissingData(format!(
                 "{label}: no cycles fit within the recorded camera window"
             )));
         }
-        if self.n_used < 2 {
-            return Err(AnalysisError::MissingData(format!(
-                "{label}: cross-cycle reliability requires ≥ 2 cycles, got {} \
-                 (acquire more cycles or run a longer session)",
-                self.n_used,
-            )));
-        }
 
-        // Stack [K, H, W] complex once; serves both reliability and the
-        // phase-locked averaging loop.
-        let cycle_refs: Vec<&Tensor> = self.cycles.iter().collect();
-        let stack = Tensor::stack(&cycle_refs, 0);
-        let reliability_t = super::ops::compute_reliability(&stack);
-        let reliability = conversions::tensor_to_array2_f64(&reliability_t)?;
+        // Reliability is computed from the per-cycle maps before they are
+        // consumed by the averaging method.
+        let reliability = if self.n_used >= 2 {
+            let rel_t = super::responsiveness::reliability(&self.cycles);
+            Some(conversions::tensor_to_array2_f64(rel_t)?)
+        } else {
+            None
+        };
 
-        // Consensus phase φ̄ = arg(Σ_k exp(i·φ_k)).
-        let (mut sr, mut si) = (0.0_f64, 0.0_f64);
-        for &p in &self.phases {
-            sr += p.cos();
-            si += p.sin();
-        }
-        let phi_bar = si.atan2(sr);
-
-        let mut summed: Option<Tensor> = None;
-        for (k_idx, cm_k) in self.cycles.into_iter().enumerate() {
-            let delta = self.phases[k_idx] - phi_bar;
-            let aligned = super::complex_phase_shift(&cm_k, -delta);
-            summed = match summed {
-                Some(mut s) => {
-                    let _ = s.f_add_(&aligned).map_err(|e| AnalysisError::Hdf5(
-                        format!("phase-locked complex add failed: {e}")
-                    ))?;
-                    Some(s)
-                }
-                None => Some(aligned),
-            };
-        }
-        let summed = summed.ok_or_else(|| AnalysisError::MissingData(
-            format!("{label}: phase-lock sum produced no result"),
-        ))?;
-        let averaged = summed * (1.0 / self.n_used as f64);
-        Ok((conversions::complex_tensor_to_array2(&averaged)?, reliability))
+        let averaged = method.apply(self.cycles, &self.phases).ok_or_else(|| {
+            AnalysisError::MissingData(format!("{label}: cycle average produced no result"))
+        })?;
+        Ok((conversions::complex2_to_array2(&averaged)?, reliability))
     }
 
-    /// Frame-domain cycle-averaged movie `[N, H, W]` f32 on device.
-    /// Returns `None` if no cycles were added. Caller uses this for SNR
-    /// computation on the first fwd sweep of each orientation.
-    fn averaged_movie(&self) -> Option<Tensor> {
-        self.frame_sum.as_ref()
-            .map(|s| s * (1.0 / self.n_used as f64))
+    /// Frame-domain cycle-averaged movie `[N, H, W]` f32. `None` if empty.
+    fn averaged_movie(&self) -> Option<Tensor<Backend, 3>> {
+        self.frame_sum
+            .as_ref()
+            .map(|s| s.clone().mul_scalar(1.0 / self.n_used as f32))
     }
 }
 
-/// On-device sweep accumulator. Cycles for each `Direction` are pushed in
-/// via `add_cycle`; SNR tensors are recorded once per orientation via
-/// `record_snr`. `finalize` consumes the accumulator and returns the
-/// pipeline's `RawProcessingResult`.
+/// On-device sweep accumulator.
 #[derive(Default)]
 pub struct CycleAccumulator {
-    /// Per-direction state. `BTreeMap` so iteration order is deterministic.
     slots: BTreeMap<Direction, DirectionAcc>,
-    /// Spectral SNR for the azimuth orientation (f32 `[H, W]`) if computed.
-    snr_azi: Option<Tensor>,
-    /// Spectral SNR for the altitude orientation (f32 `[H, W]`) if computed.
-    snr_alt: Option<Tensor>,
+    spectral_snr_azi: Option<Tensor<Backend, 2>>,
+    spectral_snr_alt: Option<Tensor<Backend, 2>>,
+    allen_power_snr_azi: Option<Tensor<Backend, 2>>,
+    allen_power_snr_alt: Option<Tensor<Backend, 2>>,
 }
 
 impl CycleAccumulator {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    /// Push one cycle: its complex map, global phase, and the raw frame
-    /// stack (kept on device, used by SNR computation on the first fwd
-    /// cycle of each orientation).
-    ///
-    /// `complex_map` is a `Kind::ComplexFloat` `[H, W]` tensor.
-    /// `cycle_frames` is `[chunk_frame_dur, H, W]` f32.
+    /// Push one cycle: complex map, global phase, raw frame stack.
     pub fn add_cycle(
         &mut self,
         direction: Direction,
-        complex_map: Tensor,
+        complex_map: Complex2,
         phase: f64,
-        cycle_frames: Tensor,
-    ) -> Result<(), AnalysisError> {
-        self.slots.entry(direction)
+        cycle_frames: Tensor<Backend, 3>,
+    ) {
+        self.slots
+            .entry(direction)
             .or_insert_with(DirectionAcc::new)
-            .add_cycle(complex_map, phase, cycle_frames)
+            .add_cycle(complex_map, phase, cycle_frames);
     }
 
-    /// Borrow the frame-domain averaged movie for the given direction, if
-    /// at least one cycle has been added. Used by the SNR computation
-    /// path: we compute SNR once per orientation on the first fwd cycle's
-    /// averaged movie.
-    pub fn averaged_movie(&self, direction: Direction) -> Option<Tensor> {
-        self.slots.get(&direction).and_then(DirectionAcc::averaged_movie)
+    /// Frame-domain averaged movie for a direction, if any cycle exists.
+    pub fn averaged_movie(&self, direction: Direction) -> Option<Tensor<Backend, 3>> {
+        self.slots
+            .get(&direction)
+            .and_then(DirectionAcc::averaged_movie)
     }
 
-    /// Record SNR for an orientation (azimuth or altitude). Once-per-
-    /// orientation: subsequent calls for the same orientation are
-    /// rejected as a programmer error rather than silently overwriting.
-    pub fn record_snr(&mut self, direction: Direction, snr: Tensor) -> Result<(), AnalysisError> {
-        let slot = if direction.is_azi() { &mut self.snr_azi } else { &mut self.snr_alt };
-        if slot.is_some() {
+    /// Record the spectral responsiveness metrics (spectral SNR + Allen
+    /// power-SNR) for an orientation. Once-per-orientation: a second call for the
+    /// same orientation is a programmer error, not a silent overwrite.
+    pub fn record_responsiveness(
+        &mut self,
+        direction: Direction,
+        spectral_snr: Tensor<Backend, 2>,
+        allen_power_snr: Tensor<Backend, 2>,
+    ) -> Result<(), AnalysisError> {
+        let (spectral_slot, allen_slot) = if direction.is_azi() {
+            (&mut self.spectral_snr_azi, &mut self.allen_power_snr_azi)
+        } else {
+            (&mut self.spectral_snr_alt, &mut self.allen_power_snr_alt)
+        };
+        if spectral_slot.is_some() || allen_slot.is_some() {
             return Err(AnalysisError::InvalidPackage(format!(
-                "record_snr called twice for {} orientation",
-                if direction.is_azi() { "azimuth" } else { "altitude" },
+                "record_responsiveness called twice for {} orientation",
+                if direction.is_azi() {
+                    "azimuth"
+                } else {
+                    "altitude"
+                },
             )));
         }
-        *slot = Some(snr);
+        *spectral_slot = Some(spectral_snr);
+        *allen_slot = Some(allen_power_snr);
         Ok(())
     }
 
-    /// Consume the accumulator. Every one of the four directions must have
-    /// produced ≥ 2 cycles (reliability requirement); otherwise the result
-    /// is malformed and we fail loudly. SNR is paired: both azimuth and
-    /// altitude must be present or both absent.
-    pub fn finalize(mut self) -> Result<RawProcessingResult, AnalysisError> {
-        let (azi_fwd, rel_azi_fwd) = self.take_direction(Direction::AziFwd)?;
-        let (azi_rev, rel_azi_rev) = self.take_direction(Direction::AziRev)?;
-        let (alt_fwd, rel_alt_fwd) = self.take_direction(Direction::AltFwd)?;
-        let (alt_rev, rel_alt_rev) = self.take_direction(Direction::AltRev)?;
+    /// Consume the accumulator → `RawProcessingResult`. Pairing rules:
+    /// every direction needs ≥ 1 cycle; reliability is present only if all
+    /// four directions had K ≥ 2; SNR is both-or-neither.
+    pub fn finalize(
+        mut self,
+        cycle_average: &CycleAverageMethod,
+    ) -> Result<RawProcessingResult, AnalysisError> {
+        let (azi_fwd, rel_azi_fwd) = self.take_direction(Direction::AziFwd, cycle_average)?;
+        let (azi_rev, rel_azi_rev) = self.take_direction(Direction::AziRev, cycle_average)?;
+        let (alt_fwd, rel_alt_fwd) = self.take_direction(Direction::AltFwd, cycle_average)?;
+        let (alt_rev, rel_alt_rev) = self.take_direction(Direction::AltRev, cycle_average)?;
 
-        let complex_maps = ComplexMaps { azi_fwd, azi_rev, alt_fwd, alt_rev };
-        let reliability = Some(ReliabilityMaps {
-            rel_azi_fwd, rel_azi_rev, rel_alt_fwd, rel_alt_rev,
-        });
+        let complex_maps = ComplexMaps {
+            azi_fwd,
+            azi_rev,
+            alt_fwd,
+            alt_rev,
+        };
+        let reliability = match (rel_azi_fwd, rel_azi_rev, rel_alt_fwd, rel_alt_rev) {
+            (Some(rel_azi_fwd), Some(rel_azi_rev), Some(rel_alt_fwd), Some(rel_alt_rev)) => {
+                Some(ReliabilityMaps {
+                    rel_azi_fwd,
+                    rel_azi_rev,
+                    rel_alt_fwd,
+                    rel_alt_rev,
+                })
+            }
+            _ => None,
+        };
 
-        let snr = match (self.snr_azi.take(), self.snr_alt.take()) {
-            (Some(azi), Some(alt)) => Some(SnrMaps {
-                snr_azi: conversions::tensor_to_array2_f64(&azi)?,
-                snr_alt: conversions::tensor_to_array2_f64(&alt)?,
+        let responsiveness = match (
+            self.spectral_snr_azi.take(),
+            self.spectral_snr_alt.take(),
+            self.allen_power_snr_azi.take(),
+            self.allen_power_snr_alt.take(),
+        ) {
+            (Some(s_azi), Some(s_alt), Some(a_azi), Some(a_alt)) => Some(ResponsivenessMaps {
+                spectral_snr_azi: conversions::tensor_to_array2_f64(s_azi)?,
+                spectral_snr_alt: conversions::tensor_to_array2_f64(s_alt)?,
+                allen_power_snr_azi: conversions::tensor_to_array2_f64(a_azi)?,
+                allen_power_snr_alt: conversions::tensor_to_array2_f64(a_alt)?,
             }),
-            (None, None) => None,
-            (Some(_), None) | (None, Some(_)) => {
+            (None, None, None, None) => None,
+            _ => {
                 return Err(AnalysisError::InvalidPackage(
-                    "SNR computed for one orientation but not the other".into(),
+                    "responsiveness computed for one orientation but not the other".into(),
                 ));
             }
         };
 
-        Ok(RawProcessingResult { complex_maps, snr, reliability })
+        Ok(RawProcessingResult {
+            complex_maps,
+            responsiveness,
+            reliability,
+        })
     }
 
     fn take_direction(
         &mut self,
         direction: Direction,
-    ) -> Result<(Array2<num_complex::Complex64>, Array2<f64>), AnalysisError> {
-        let acc = self.slots.remove(&direction).ok_or_else(|| AnalysisError::MissingData(
-            format!("no cycles found for {}", direction.label()),
-        ))?;
-        acc.finalize_direction(direction.label())
+        method: &CycleAverageMethod,
+    ) -> Result<(Array2<num_complex::Complex64>, Option<Array2<f64>>), AnalysisError> {
+        let acc = self.slots.remove(&direction).ok_or_else(|| {
+            AnalysisError::MissingData(format!("no cycles found for {}", direction.label()))
+        })?;
+        acc.finalize_direction(direction.label(), method)
     }
 }

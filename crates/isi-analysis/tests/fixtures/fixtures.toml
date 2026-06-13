@@ -1,0 +1,44 @@
+# Fixture manifest for the OpenISI verification harness.
+#
+# Two categories:
+#   - `smoke` : small in-tree fixtures committed directly under `oisi/`.
+#               Always available; covered by `cargo test` with no env setup.
+#   - `regression` : large path-referenced fixtures. Not in git. Tests that
+#                    consume these are `#[ignore]` by default and gated on
+#                    the path's existence at runtime, so the suite degrades
+#                    gracefully when a fixture is missing instead of failing.
+#
+# The verification harness uses these fixtures for:
+#   - Capturing per-stage baseline outputs from the pipeline.
+#   - Cross-implementation equivalence: each pipeline run's output ≤
+#     tolerance vs the committed baseline, on every fixture.
+#   - Cross-backend equivalence: the same fixture run on the ndarray-CPU
+#     backend (default build) and the CUDA backend (`--features cuda`)
+#     must agree within tolerance.
+#
+# Per-stage tolerances are committed separately in `tolerances.toml`,
+# measured from real drift on these fixtures (not theoretical worst-case).
+
+[fixtures.smoke.R43_smoke]
+# Source: OpenISI-godot-archive/test_data/snlc_sample_data/R43.oisi (SNLC).
+# Real mouse V1 acquisition; ~6 MB; raw_frames present, no cached results.
+path = "oisi/R43_smoke.oisi"
+sha256 = "TODO: capture on first `just capture-baseline` run"
+description = "SNLC R43 sample — smoke-test fixture, in-tree."
+has_raw_frames = true
+has_complex_maps = false
+has_results = false
+
+# Large path-referenced fixtures. Edit per-rig.
+# Use `OPENISI_FIXTURE_DIR` env var to override the base directory if your
+# data lives elsewhere; tests will look up paths relative to that.
+
+[fixtures.regression."5_14_2026_test5"]
+# The current regression file referenced by tests/regression_oisi.rs.
+# Has cached `/results/*` written by the f32 pipeline as of 2026-05-23.
+path = "C:/Users/ISI User/Documents/ISI Data/5_14_2026_test5_1778801597.oisi"
+sha256 = "TODO: capture on first `just capture-baseline` run"
+description = "Full retinotopy fixture with cached results; cross-device stability target."
+has_raw_frames = true
+has_complex_maps = true
+has_results = true

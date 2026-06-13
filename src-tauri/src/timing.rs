@@ -105,14 +105,18 @@ pub fn characterize_timing(
     let t_stim = stim_mean_us / 1_000_000.0;
 
     // Jitter (std dev).
-    let cam_variance = cam_deltas_us.iter()
+    let cam_variance = cam_deltas_us
+        .iter()
         .map(|d| (d - cam_mean_us).powi(2))
-        .sum::<f64>() / cam_n;
+        .sum::<f64>()
+        / cam_n;
     let cam_jitter_sec = cam_variance.sqrt() / 1_000_000.0;
 
-    let stim_variance = stim_deltas_us.iter()
+    let stim_variance = stim_deltas_us
+        .iter()
         .map(|d| (d - stim_mean_us).powi(2))
-        .sum::<f64>() / stim_n;
+        .sum::<f64>()
+        / stim_n;
     let stim_jitter_sec = stim_variance.sqrt() / 1_000_000.0;
 
     // Rate ratio.
@@ -145,12 +149,12 @@ pub fn characterize_timing(
     // Number of distinct phase values = session_duration / beat_period (capped at 1 full cycle).
     let phase_cycles = params.session_duration_sec / beat_period_sec;
     let phase_coverage = phase_cycles.min(1.0);
-    let expected_phase_samples = (params.n_trials as f64 * phase_coverage).min(params.n_trials as f64);
+    let expected_phase_samples =
+        (params.n_trials as f64 * phase_coverage).min(params.n_trials as f64);
 
     // Onset uncertainty from clock offset measurement + vsync jitter.
-    let onset_uncertainty_sec = ((clock_offset_uncertainty_us / 1_000_000.0).powi(2)
-        + stim_jitter_sec.powi(2))
-        .sqrt();
+    let onset_uncertainty_sec =
+        ((clock_offset_uncertainty_us / 1_000_000.0).powi(2) + stim_jitter_sec.powi(2)).sqrt();
     let onset_uncertainty_fraction = onset_uncertainty_sec / t_cam;
 
     // Warnings.
@@ -175,7 +179,8 @@ pub fn characterize_timing(
         warnings.push(format!(
             "HIGH ONSET UNCERTAINTY: Onset position uncertainty ({:.1}µs) exceeds \
              50% of camera frame interval ({:.1}µs). Per-trial phase assignment is unreliable.",
-            onset_uncertainty_sec * 1_000_000.0, t_cam * 1_000_000.0
+            onset_uncertainty_sec * 1_000_000.0,
+            t_cam * 1_000_000.0
         ));
     }
 
@@ -212,17 +217,36 @@ impl std::fmt::Display for TimingRegime {
 
 impl std::fmt::Display for TimingCharacterization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Camera:    {:.3} Hz (jitter {:.1}µs, {} samples)",
-            self.f_cam_hz, self.cam_jitter_sec * 1e6, self.cam_sample_count)?;
-        writeln!(f, "Stimulus:  {:.3} Hz (jitter {:.1}µs, {} samples)",
-            self.f_stim_hz, self.stim_jitter_sec * 1e6, self.stim_sample_count)?;
+        writeln!(
+            f,
+            "Camera:    {:.3} Hz (jitter {:.1}µs, {} samples)",
+            self.f_cam_hz,
+            self.cam_jitter_sec * 1e6,
+            self.cam_sample_count
+        )?;
+        writeln!(
+            f,
+            "Stimulus:  {:.3} Hz (jitter {:.1}µs, {} samples)",
+            self.f_stim_hz,
+            self.stim_jitter_sec * 1e6,
+            self.stim_sample_count
+        )?;
         writeln!(f, "Ratio:     {:.6} (f_stim / f_cam)", self.rate_ratio)?;
         writeln!(f, "Beat:      {:.3}s", self.beat_period_sec)?;
         writeln!(f, "Regime:    {}", self.regime)?;
-        writeln!(f, "Phase:     increment={:.6}, coverage={:.1}%, samples={:.0}",
-            self.phase_increment, self.phase_coverage * 100.0, self.expected_phase_samples)?;
-        writeln!(f, "Onset:     ±{:.1}µs ({:.1}% of frame interval)",
-            self.onset_uncertainty_sec * 1e6, self.onset_uncertainty_fraction * 100.0)?;
+        writeln!(
+            f,
+            "Phase:     increment={:.6}, coverage={:.1}%, samples={:.0}",
+            self.phase_increment,
+            self.phase_coverage * 100.0,
+            self.expected_phase_samples
+        )?;
+        writeln!(
+            f,
+            "Onset:     ±{:.1}µs ({:.1}% of frame interval)",
+            self.onset_uncertainty_sec * 1e6,
+            self.onset_uncertainty_fraction * 100.0
+        )?;
         for w in &self.warnings {
             writeln!(f, "WARNING:   {w}")?;
         }

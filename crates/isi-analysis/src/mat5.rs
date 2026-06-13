@@ -59,8 +59,7 @@ pub struct MatComplex2D {
 /// Read the variable `f1m` from an SNLC .mat file.
 /// Returns a Vec of complex matrices (expected to be 2 — forward and reverse).
 pub fn read_snlc_f1m(path: &Path) -> Result<Vec<MatComplex2D>, AnalysisError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| AnalysisError::Io(e))?;
+    let bytes = std::fs::read(path).map_err(AnalysisError::Io)?;
 
     if bytes.len() < 128 {
         return Err(mat_err("file too small for MAT v5 header"));
@@ -133,8 +132,7 @@ pub fn read_snlc_f1m(path: &Path) -> Result<Vec<MatComplex2D>, AnalysisError> {
 /// The grab file typically contains a struct with a numeric 2D array field (the image).
 /// This function searches recursively through all variables and struct fields.
 pub fn read_snlc_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| AnalysisError::Io(e))?;
+    let bytes = std::fs::read(path).map_err(AnalysisError::Io)?;
 
     if bytes.len() < 128 || !bytes.starts_with(b"MATLAB") {
         return Err(mat_err("not a MATLAB file"));
@@ -193,8 +191,12 @@ fn extract_2d_image(data: &MatrixData) -> Option<Array2<u8>> {
                     let mut max_val = f64::NEG_INFINITY;
                     for &v in real {
                         if v.is_finite() {
-                            if v < min_val { min_val = v; }
-                            if v > max_val { max_val = v; }
+                            if v < min_val {
+                                min_val = v;
+                            }
+                            if v > max_val {
+                                max_val = v;
+                            }
                         }
                     }
                     let range = (max_val - min_val).max(1e-10);
@@ -218,7 +220,7 @@ fn extract_2d_image(data: &MatrixData) -> Option<Array2<u8>> {
             for field in fields {
                 if let Some(img) = extract_2d_image(field) {
                     let size = img.len();
-                    if best.as_ref().map_or(true, |b| size > b.len()) {
+                    if best.as_ref().is_none_or(|b| size > b.len()) {
                         best = Some(img);
                     }
                 }
@@ -319,7 +321,9 @@ fn read_tag_data<R: Read + Seek>(r: &mut R) -> Result<(u32, Vec<u8>), AnalysisEr
 
 /// Try to read a top-level element as miMATRIX named "f1m".
 /// Returns Some(cells) if found, None if this isn't "f1m".
-fn try_read_f1m_matrix<R: Read + Seek>(r: &mut R) -> Result<Option<Vec<MatComplex2D>>, AnalysisError> {
+fn try_read_f1m_matrix<R: Read + Seek>(
+    r: &mut R,
+) -> Result<Option<Vec<MatComplex2D>>, AnalysisError> {
     let (dtype, size) = read_tag(r)?;
     if dtype != MI_MATRIX {
         return Ok(None);
@@ -342,7 +346,10 @@ fn try_read_f1m_matrix<R: Read + Seek>(r: &mut R) -> Result<Option<Vec<MatComple
 }
 
 /// Parse the contents of an miMATRIX element (after the tag).
-fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result<(String, MatrixData), AnalysisError> {
+fn parse_matrix_contents<R: Read + Seek>(
+    r: &mut R,
+    total_size: usize,
+) -> Result<(String, MatrixData), AnalysisError> {
     let end_pos = r.stream_position()? as usize + total_size;
 
     // Sub-element 1: Array Flags (miUINT32, 8 bytes of data)
@@ -361,15 +368,19 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
         .map(|i| {
             let off = i * 4;
             i32::from_le_bytes([
-                dims_data[off], dims_data[off + 1],
-                dims_data[off + 2], dims_data[off + 3],
+                dims_data[off],
+                dims_data[off + 1],
+                dims_data[off + 2],
+                dims_data[off + 3],
             ]) as usize
         })
         .collect();
 
     // Sub-element 3: Array Name (miINT8)
     let (_, name_data) = read_tag_data(r)?;
-    let name = String::from_utf8_lossy(&name_data).trim_end_matches('\0').to_string();
+    let name = String::from_utf8_lossy(&name_data)
+        .trim_end_matches('\0')
+        .to_string();
 
     match array_class {
         MX_CELL_CLASS => {
@@ -403,7 +414,11 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
 
             // Sub-element: concatenated field names (miINT8), each `field_name_len` bytes
             let (_, fn_data) = read_tag_data(r)?;
-            let num_fields = if field_name_len > 0 { fn_data.len() / field_name_len } else { 0 };
+            let num_fields = if field_name_len > 0 {
+                fn_data.len() / field_name_len
+            } else {
+                0
+            };
 
             // Read field values (for each struct element × each field)
             let n_elements: usize = dims.iter().product();
@@ -425,11 +440,8 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
 
             Ok((name, MatrixData::Struct { fields }))
         }
-        MX_DOUBLE_CLASS | MX_SINGLE_CLASS |
-        MX_INT8_CLASS | MX_UINT8_CLASS |
-        MX_INT16_CLASS | MX_UINT16_CLASS |
-        MX_INT32_CLASS | MX_UINT32_CLASS |
-        MX_INT64_CLASS | MX_UINT64_CLASS => {
+        MX_DOUBLE_CLASS | MX_SINGLE_CLASS | MX_INT8_CLASS | MX_UINT8_CLASS | MX_INT16_CLASS
+        | MX_UINT16_CLASS | MX_INT32_CLASS | MX_UINT32_CLASS | MX_INT64_CLASS | MX_UINT64_CLASS => {
             // Numeric array: next sub-element(s) are real data, optionally imaginary
             let real = read_numeric_subelement(r)?;
             let imag = if is_complex && (r.stream_position()? as usize) < end_pos {
@@ -451,7 +463,10 @@ fn parse_matrix_contents<R: Read + Seek>(r: &mut R, total_size: usize) -> Result
 }
 
 /// Parse for the `parse_matrix_with_name` path (used when we've already read a tag).
-fn parse_matrix_with_name<R: Read + Seek>(r: &mut R, size: usize) -> Result<(String, MatrixData), AnalysisError> {
+fn parse_matrix_with_name<R: Read + Seek>(
+    r: &mut R,
+    size: usize,
+) -> Result<(String, MatrixData), AnalysisError> {
     parse_matrix_contents(r, size)
 }
 
@@ -470,8 +485,14 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 8;
                 out.push(f64::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
-                    data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
+                    data[off + 4],
+                    data[off + 5],
+                    data[off + 6],
+                    data[off + 7],
                 ]));
             }
             Ok(out)
@@ -482,14 +503,15 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 4;
                 out.push(f32::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
                 ]) as f64);
             }
             Ok(out)
         }
-        MI_INT8 | MI_UINT8 => {
-            Ok(data.iter().map(|&b| b as f64).collect())
-        }
+        MI_INT8 | MI_UINT8 => Ok(data.iter().map(|&b| b as f64).collect()),
         MI_INT16 => {
             let n = data.len() / 2;
             let mut out = Vec::with_capacity(n);
@@ -514,7 +536,10 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 4;
                 out.push(i32::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
                 ]) as f64);
             }
             Ok(out)
@@ -525,7 +550,10 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 4;
                 out.push(u32::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
                 ]) as f64);
             }
             Ok(out)
@@ -536,8 +564,14 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 8;
                 out.push(i64::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
-                    data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
+                    data[off + 4],
+                    data[off + 5],
+                    data[off + 6],
+                    data[off + 7],
                 ]) as f64);
             }
             Ok(out)
@@ -548,13 +582,21 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
             for i in 0..n {
                 let off = i * 8;
                 out.push(u64::from_le_bytes([
-                    data[off], data[off + 1], data[off + 2], data[off + 3],
-                    data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+                    data[off],
+                    data[off + 1],
+                    data[off + 2],
+                    data[off + 3],
+                    data[off + 4],
+                    data[off + 5],
+                    data[off + 6],
+                    data[off + 7],
                 ]) as f64);
             }
             Ok(out)
         }
-        _ => Err(mat_err(&format!("unsupported numeric data type tag: {dtype}"))),
+        _ => Err(mat_err(&format!(
+            "unsupported numeric data type tag: {dtype}"
+        ))),
     }
 }
 
@@ -568,7 +610,10 @@ fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>
         match cell {
             MatrixData::Double { dims, real, imag } => {
                 if dims.len() != 2 {
-                    return Err(mat_err(&format!("f1m cell {i}: expected 2D, got {}D", dims.len())));
+                    return Err(mat_err(&format!(
+                        "f1m cell {i}: expected 2D, got {}D",
+                        dims.len()
+                    )));
                 }
                 let (h, w) = (dims[0], dims[1]);
                 let expected = h * w;
@@ -580,7 +625,9 @@ fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>
                 }
 
                 let imag_data = imag.ok_or_else(|| {
-                    mat_err(&format!("f1m cell {i}: expected complex data but no imaginary part"))
+                    mat_err(&format!(
+                        "f1m cell {i}: expected complex data but no imaginary part"
+                    ))
                 })?;
                 if imag_data.len() != expected {
                     return Err(mat_err(&format!(
@@ -600,7 +647,9 @@ fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>
                 result.push(MatComplex2D { data });
             }
             _ => {
-                return Err(mat_err(&format!("f1m cell {i}: not a numeric double array")));
+                return Err(mat_err(&format!(
+                    "f1m cell {i}: not a numeric double array"
+                )));
             }
         }
     }
@@ -631,9 +680,12 @@ fn pad8(n: usize) -> usize {
 fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, AnalysisError> {
     let mut decoder = ZlibDecoder::new(data);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out)
-        .map_err(|e| AnalysisError::Io(io::Error::new(io::ErrorKind::InvalidData,
-            format!("zlib decompression failed: {e}"))))?;
+    decoder.read_to_end(&mut out).map_err(|e| {
+        AnalysisError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zlib decompression failed: {e}"),
+        ))
+    })?;
     Ok(out)
 }
 
@@ -660,11 +712,11 @@ mod tests {
 
     #[test]
     fn test_bytes_to_f64_double() {
-        let val: f64 = 3.14;
+        let val: f64 = std::f64::consts::PI;
         let bytes = val.to_le_bytes();
         let result = bytes_to_f64(&bytes, MI_DOUBLE).unwrap();
         assert_eq!(result.len(), 1);
-        assert!((result[0] - 3.14).abs() < 1e-15);
+        assert!((result[0] - std::f64::consts::PI).abs() < 1e-15);
     }
 
     #[test]
@@ -705,14 +757,21 @@ mod tests {
 
         let (h0, w0) = cells[0].data.dim();
         let (h1, w1) = cells[1].data.dim();
-        assert_eq!((h0, w0), (h1, w1), "both matrices should have same dimensions");
+        assert_eq!(
+            (h0, w0),
+            (h1, w1),
+            "both matrices should have same dimensions"
+        );
         assert!(h0 > 0 && w0 > 0, "matrices should be non-empty");
 
         eprintln!("R43_000_004.mat: 2 complex matrices of size ({h0}, {w0})");
 
         // Verify data is actually complex (not all zeros)
         let has_nonzero_imag = cells[0].data.iter().any(|z| z.im.abs() > 1e-20);
-        assert!(has_nonzero_imag, "expected complex data with nonzero imaginary parts");
+        assert!(
+            has_nonzero_imag,
+            "expected complex data with nonzero imaginary parts"
+        );
     }
 
     #[test]
@@ -735,13 +794,22 @@ mod tests {
         let mut cursor = Cursor::new(&bytes[..]);
         cursor.seek(SeekFrom::Start(128)).unwrap();
         while (cursor.position() as usize) < bytes.len() {
-            if cursor.position() as usize + 8 > bytes.len() { break; }
+            if cursor.position() as usize + 8 > bytes.len() {
+                break;
+            }
             let (dtype, size) = read_tag(&mut cursor).unwrap();
-            eprintln!("Top-level element: type={dtype}, size={size}, pos={}", cursor.position());
+            eprintln!(
+                "Top-level element: type={dtype}, size={size}, pos={}",
+                cursor.position()
+            );
             if dtype == MI_COMPRESSED {
                 let compressed = read_n_bytes(&mut cursor, size as usize).unwrap();
                 let decompressed = zlib_decompress(&compressed).unwrap();
-                eprintln!("  Decompressed {} bytes → {} bytes", size, decompressed.len());
+                eprintln!(
+                    "  Decompressed {} bytes → {} bytes",
+                    size,
+                    decompressed.len()
+                );
                 let mut inner = Cursor::new(&decompressed[..]);
                 let (inner_type, inner_size) = read_tag(&mut inner).unwrap();
                 eprintln!("  Inner element: type={inner_type}, size={inner_size}");
@@ -749,15 +817,27 @@ mod tests {
                     // Peek at flags to get the class code
                     let flag_pos = inner.position();
                     let (_, flag_bytes) = read_tag_data(&mut inner).unwrap();
-                    let flag_val = u32::from_le_bytes([flag_bytes[0], flag_bytes[1], flag_bytes[2], flag_bytes[3]]);
+                    let flag_val = u32::from_le_bytes([
+                        flag_bytes[0],
+                        flag_bytes[1],
+                        flag_bytes[2],
+                        flag_bytes[3],
+                    ]);
                     let class_code = (flag_val & 0xFF) as u8;
                     eprintln!("  Array class code: {class_code}, flags: 0x{flag_val:08x}");
                     inner.seek(SeekFrom::Start(flag_pos)).unwrap();
 
-                    let (name, data) = parse_matrix_contents(&mut inner, inner_size as usize).unwrap();
+                    let (name, data) =
+                        parse_matrix_contents(&mut inner, inner_size as usize).unwrap();
                     match &data {
                         MatrixData::Double { dims, real, imag } => {
-                            eprintln!("  Matrix '{}': dims={:?}, real_len={}, has_imag={}", name, dims, real.len(), imag.is_some());
+                            eprintln!(
+                                "  Matrix '{}': dims={:?}, real_len={}, has_imag={}",
+                                name,
+                                dims,
+                                real.len(),
+                                imag.is_some()
+                            );
                         }
                         MatrixData::Cell(cells) => {
                             eprintln!("  Cell '{}': {} cells", name, cells.len());

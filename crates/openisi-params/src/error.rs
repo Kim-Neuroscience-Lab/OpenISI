@@ -26,12 +26,6 @@ pub enum ParamsError {
     /// Filesystem I/O failure surfaced verbatim.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
-    /// A `Mutex` was poisoned by a panic in another thread. The
-    /// `context` field names the lock so the user sees which subsystem
-    /// died. Recovery requires restarting the affected subsystem.
-    #[error("Lock poisoned: {context}")]
-    LockPoisoned { context: &'static str },
 }
 
 pub type ParamsResult<T> = std::result::Result<T, ParamsError>;

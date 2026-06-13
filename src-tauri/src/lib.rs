@@ -1,23 +1,57 @@
+pub mod analysis_thread;
+pub mod camera_quality;
 pub mod camera_thread;
 pub mod commands;
 pub mod config_paths;
 pub mod error;
 pub mod events;
 pub mod export;
+pub mod logging;
 pub mod messages;
 pub mod monitor;
 pub mod params;
+pub mod render;
 pub mod sample_data;
 pub mod session;
 pub mod state;
 pub mod stimulus_thread;
 pub mod timing;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use error::{AppError, AppResult};
 use params::Registry;
 use state::AppState;
+
+/// Raise the Windows multimedia timer resolution to 1 ms for the process so
+/// `std::thread::sleep` and scheduler-quantum waits aren't silently rounded up
+/// to the default ~15.6 ms — which would coarsen the camera poll interval and
+/// the idle sleeps below what their millisecond config values claim. No-op off
+/// Windows; paired with [`end_realtime_timer`] (the OS also resets it on exit).
+pub fn begin_realtime_timer() {
+    #[cfg(windows)]
+    {
+        // SAFETY: a valid timer period; matched by `end_realtime_timer`.
+        let r = unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+        if r == 0 {
+            tracing::debug!("process timer resolution raised to 1 ms");
+        } else {
+            tracing::warn!(
+                code = r,
+                "timeBeginPeriod(1) failed — timer resolution not raised"
+            );
+        }
+    }
+}
+
+/// Release the 1 ms timer resolution requested by [`begin_realtime_timer`].
+pub fn end_realtime_timer() {
+    #[cfg(windows)]
+    {
+        // SAFETY: matches the earlier `timeBeginPeriod(1)`.
+        let _ = unsafe { windows::Win32::Media::timeEndPeriod(1) };
+    }
+}
 
 /// Public entry point. Thin wrapper around `try_run()` that prints any
 /// startup error in a single readable line and exits non-zero. No panic,
@@ -47,6 +81,11 @@ fn start_tauri() -> AppResult<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            // Install the tracing subscriber before any diagnostics fire.
+            crate::logging::init();
+            // Fine-grained timer for the camera poll + idle sleeps (see fn docs).
+            crate::begin_realtime_timer();
+
             // ── Resolve config directories properly via Tauri's path API ──
             // The registry is constructed HERE (not before the app) because
             // `app.path()` — the platform-standard resolver for the bundle
@@ -74,74 +113,163 @@ fn start_tauri() -> AppResult<()> {
                 app_config.as_deref(),
             )
             .map_err(|e| Box::<dyn std::error::Error>::from(format!("resolve config dirs: {e}")))?;
-            eprintln!(
-                "[openisi] config profile={} shipped={} user={}",
-                profile.as_str(),
-                layout.shipped_dir.display(),
-                layout.user_dir.display()
+            tracing::info!(
+                profile = profile.as_str(),
+                shipped = %layout.shipped_dir.display(),
+                user = %layout.user_dir.display(),
+                "config resolved",
             );
 
             // ── Build + load the registry ──
             let mut registry = Registry::new(&layout.shipped_dir, &layout.user_dir);
-            registry.load_rig().map_err(|e| Box::<dyn std::error::Error>::from(
-                format!("load rig params from {}: {e}", layout.shipped_dir.display())))?;
-            registry.load_experiment().map_err(|e| Box::<dyn std::error::Error>::from(
-                format!("load experiment params from {}: {e}", layout.shipped_dir.display())))?;
+            registry.load_rig().map_err(|e| {
+                Box::<dyn std::error::Error>::from(format!(
+                    "load rig params from {}: {e}",
+                    layout.shipped_dir.display()
+                ))
+            })?;
+            registry.load_experiment().map_err(|e| {
+                Box::<dyn std::error::Error>::from(format!(
+                    "load experiment params from {}: {e}",
+                    layout.shipped_dir.display()
+                ))
+            })?;
 
             // ── First-run default data directory ──
             // A deliberate, visible default (<Documents>/OpenISI) persisted
             // explicitly into the user layer and surfaced in the UI — not an
             // ongoing silent fallback.
-            if registry.data_directory().is_empty() {
-                if let Some(default_dir) =
+            if registry.data_directory().is_empty()
+                && let Some(default_dir) =
                     config_paths::default_data_dir(app.path().document_dir().ok().as_deref())
-                {
-                    std::fs::create_dir_all(&default_dir).map_err(|e| {
-                        Box::<dyn std::error::Error>::from(format!(
-                            "create default data dir {}: {e}", default_dir.display()))
+            {
+                std::fs::create_dir_all(&default_dir).map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!(
+                        "create default data dir {}: {e}",
+                        default_dir.display()
+                    ))
+                })?;
+                registry
+                    .set(
+                        crate::params::ParamId::DataDirectory,
+                        crate::params::ParamValue::String(
+                            default_dir.to_string_lossy().into_owned(),
+                        ),
+                    )
+                    .map_err(|e| {
+                        Box::<dyn std::error::Error>::from(format!("set default data dir: {e}"))
                     })?;
-                    registry
-                        .set(
-                            crate::params::ParamId::DataDirectory,
-                            crate::params::ParamValue::String(default_dir.to_string_lossy().into_owned()),
-                        )
-                        .map_err(|e| Box::<dyn std::error::Error>::from(
-                            format!("set default data dir: {e}")))?;
-                    registry.save_rig().map_err(|e| Box::<dyn std::error::Error>::from(
-                        format!("persist default data dir to {}: {e}", layout.user_dir.display())))?;
-                    eprintln!("[openisi] data directory defaulted to {}", default_dir.display());
-                }
+                registry.save_rig().map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!(
+                        "persist default data dir to {}: {e}",
+                        layout.user_dir.display()
+                    ))
+                })?;
+                tracing::info!(dir = %default_dir.display(), "data directory defaulted");
             }
 
             // ── Param-change observer for IPC ──
-            registry.set_observer(Box::new(
-                crate::params::observer::TauriParamObserver::new(app.handle().clone()),
-            ));
+            registry.set_observer(Box::new(crate::params::observer::TauriParamObserver::new(
+                app.handle().clone(),
+            )));
 
             // ── Channels ──
             let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
             let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
             let (cam_cmd_tx, cam_cmd_rx) = crossbeam_channel::unbounded();
             let (cam_evt_tx, cam_evt_rx) = crossbeam_channel::unbounded();
+            let (analysis_cmd_tx, analysis_cmd_rx) = crossbeam_channel::unbounded();
+            let (analysis_evt_tx, analysis_evt_rx) = crossbeam_channel::unbounded();
 
-            // ── App state ──
-            let mut app_state = AppState::new(registry);
-            app_state.threads.stimulus_tx = Some(stim_cmd_tx);
-            app_state.threads.stimulus_rx = Some(stim_evt_rx);
-            app_state.threads.camera_tx = Some(cam_cmd_tx);
-            app_state.threads.camera_rx = Some(cam_evt_rx);
-
-            // Detect monitors at startup.
+            // ── Detect monitors at startup ──
             let monitors = monitor::detect_monitors();
-            eprintln!("[openisi] Detected {} monitors", monitors.len());
+            tracing::info!(count = monitors.len(), "detected monitors");
             for m in &monitors {
-                eprintln!(
-                    "  [{}] {} {}x{} @{}Hz ({:.1}x{:.1}cm) at ({},{})",
-                    m.index, m.name, m.width_px, m.height_px, m.refresh_hz,
-                    m.width_cm, m.height_cm, m.position.0, m.position.1
+                tracing::debug!(
+                    index = m.index, name = %m.name,
+                    width_px = m.width_px, height_px = m.height_px, refresh_hz = m.refresh_hz,
+                    width_cm = m.width_cm, height_cm = m.height_cm,
+                    x = m.position.0, y = m.position.1,
+                    "monitor",
                 );
             }
-            app_state.monitors = monitors;
+
+            // ── Thread handles (immutable after startup) ──
+            // Senders/receivers are stored directly; the one-time stimulus
+            // spawn handles live behind their own small mutex.
+            let threads = crate::state::ThreadHandles {
+                stimulus_tx: stim_cmd_tx,
+                stimulus_rx: stim_evt_rx,
+                camera_tx: cam_cmd_tx,
+                camera_rx: cam_evt_rx,
+                analysis_tx: analysis_cmd_tx,
+                analysis_rx: analysis_evt_rx,
+                stimulus_spawn: parking_lot::Mutex::new(crate::state::StimulusSpawn {
+                    cmd_rx: Some(stim_cmd_rx),
+                    evt_tx: Some(stim_evt_tx),
+                    spawned: false,
+                }),
+            };
+
+            // ── App state ──
+            let app_state = AppState::new(registry, threads, monitors);
+
+            // ── Spawn analysis worker thread ──
+            // Runs `isi_analysis::analyze` off the IPC command thread,
+            // with preemptive cancellation between Run requests. UI
+            // listens to `analysis-*` Tauri events for completion.
+            let _analysis_handle = std::thread::Builder::new()
+                .name("analysis_worker".into())
+                .spawn(move || {
+                    crate::analysis_thread::run(analysis_cmd_rx, analysis_evt_tx);
+                })
+                .map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!("spawn analysis worker: {e}"))
+                })?;
+
+            // Push the EDID-detected stimulus monitor into the registry's
+            // HardwareContext so `effective_monitor_width_cm()` etc. resolve
+            // to the live panel dims (auto-detected). The user can still
+            // override via the Rig Calibration UI; user overrides win over
+            // hardware per `Registry::effective_monitor_width_cm`.
+            //
+            // The "stimulus monitor" is whichever was previously selected,
+            // else the highest-refresh-rate one (typical convention for a
+            // dedicated stimulus display).
+            let stimulus_monitor = {
+                let prev_name = app_state
+                    .session
+                    .lock()
+                    .selected_display
+                    .as_ref()
+                    .map(|d| d.name.clone());
+                let by_prev = prev_name
+                    .as_ref()
+                    .and_then(|n| app_state.monitors.iter().find(|m| &m.name == n).cloned());
+                by_prev.or_else(|| {
+                    app_state
+                        .monitors
+                        .iter()
+                        .max_by_key(|m| m.refresh_hz)
+                        .cloned()
+                })
+            };
+            if let Some(m) = &stimulus_monitor {
+                let mut reg = app_state.registry.lock();
+                let mut hw = reg.hardware().clone();
+                hw.monitor_width_cm = Some(m.width_cm);
+                hw.monitor_height_cm = Some(m.height_cm);
+                hw.monitor_width_px = Some(m.width_px);
+                hw.monitor_height_px = Some(m.height_px);
+                hw.monitor_refresh_hz = Some(m.refresh_hz);
+                reg.inject_hardware(hw);
+                tracing::info!(
+                    monitor = %m.name,
+                    width_px = m.width_px, height_px = m.height_px,
+                    width_cm = m.width_cm, height_cm = m.height_cm, refresh_hz = m.refresh_hz,
+                    "hardware context",
+                );
+            }
 
             // ── Restore the last session (best-effort, from user_dir) ──
             // Durable user intent only: animal_id/notes always; the selected
@@ -151,42 +279,47 @@ fn start_tauri() -> AppResult<()> {
             // missing/corrupt session file simply starts fresh (UI state, not
             // provenance), so this is best-effort with transparent logging.
             if let Some(saved) = crate::session::PersistedSession::load(&layout.user_dir) {
-                app_state.session.animal_id = saved.animal_id;
-                app_state.session.notes = saved.notes;
-                if let Some(disp) = saved.selected_display {
-                    if crate::session::PersistedSession::display_still_present(
-                        &disp,
-                        &app_state.monitors,
-                    ) {
-                        app_state.session.selected_display = Some(disp);
-                        // display_validation intentionally left None — re-validate.
-                    } else {
-                        eprintln!(
-                            "[openisi] saved display '{}' no longer present — not restored",
-                            disp.name
-                        );
+                {
+                    let mut session = app_state.session.lock();
+                    session.animal_id = saved.animal_id;
+                    session.notes = saved.notes;
+                    if let Some(disp) = saved.selected_display {
+                        if crate::session::PersistedSession::display_still_present(
+                            &disp,
+                            &app_state.monitors,
+                        ) {
+                            session.selected_display = Some(disp);
+                            // display_validation intentionally left None — re-validate.
+                        } else {
+                            tracing::warn!(
+                                display = %disp.name,
+                                "saved display no longer present — not restored",
+                            );
+                        }
                     }
                 }
                 if let Some(p) = saved.active_oisi_path {
                     if p.exists() {
-                        app_state.active_oisi_path = Some(p);
+                        *app_state.active_oisi.lock() = Some(p);
                     } else {
-                        eprintln!(
-                            "[openisi] last active file {} no longer exists — not restored",
-                            p.display()
+                        tracing::warn!(
+                            path = %p.display(),
+                            "last active file no longer exists — not restored",
                         );
                     }
                 }
-                eprintln!("[openisi] restored previous session");
+                tracing::info!("restored previous session");
             }
 
             // Spawn camera thread (direct PCO SDK via FFI). System-tuning
             // snapshots are read once; no runtime command mutates them.
-            let (cam_first_frame_timeout_ms, cam_first_frame_poll_ms,
-                 cam_frame_send_interval_ms, cam_poll_interval_ms) = {
-                let reg = app_state.registry.lock().map_err(|_| {
-                    Box::<dyn std::error::Error>::from("registry lock poisoned at camera init")
-                })?;
+            let (
+                cam_first_frame_timeout_ms,
+                cam_first_frame_poll_ms,
+                cam_frame_send_interval_ms,
+                cam_poll_interval_ms,
+            ) = {
+                let reg = app_state.registry.lock();
                 (
                     reg.camera_first_frame_timeout_ms(),
                     reg.camera_first_frame_poll_ms(),
@@ -198,22 +331,23 @@ fn start_tauri() -> AppResult<()> {
                 .name("camera".into())
                 .spawn(move || {
                     camera_thread::run(
-                        cam_cmd_rx, cam_evt_tx,
+                        cam_cmd_rx,
+                        cam_evt_tx,
                         cam_first_frame_timeout_ms,
                         cam_first_frame_poll_ms,
                         cam_frame_send_interval_ms,
                         cam_poll_interval_ms,
                     );
                 })
-                .map_err(|e| Box::<dyn std::error::Error>::from(
-                    format!("spawn camera thread: {e}")))?;
+                .map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!("spawn camera thread: {e}"))
+                })?;
 
-            // Stimulus thread is spawned on-demand when a display is selected.
-            app_state.threads.stim_cmd_rx = Some(stim_cmd_rx);
-            app_state.threads.stim_evt_tx = Some(stim_evt_tx);
+            // Stimulus thread is spawned on-demand when a display is selected;
+            // its spawn handles are held in `threads.stimulus_spawn`.
 
             // ── Manage state ──
-            let shared_state = Arc::new(Mutex::new(app_state));
+            let shared_state = Arc::new(app_state);
             app.manage(shared_state.clone());
 
             // ── Event forwarder: bridges crossbeam channels to Tauri events ──
@@ -223,8 +357,9 @@ fn start_tauri() -> AppResult<()> {
                 .spawn(move || {
                     events::run_event_forwarder(handle, shared_state);
                 })
-                .map_err(|e| Box::<dyn std::error::Error>::from(
-                    format!("spawn event forwarder thread: {e}")))?;
+                .map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!("spawn event forwarder thread: {e}"))
+                })?;
 
             Ok(())
         })
@@ -284,6 +419,7 @@ fn start_tauri() -> AppResult<()> {
             commands::acquire::get_workspace_status,
             // Parameter registry
             crate::params::commands::get_param_descriptors,
+            crate::params::commands::get_analysis_stages,
             crate::params::commands::set_params,
         ])
         .build(tauri::generate_context!())
@@ -294,35 +430,64 @@ fn start_tauri() -> AppResult<()> {
                 // hardware. State is managed inside setup(), so fetch it from the
                 // app handle. Lock/send failures during shutdown are expected
                 // (threads may have already exited) and intentionally ignored.
-                eprintln!("[openisi] shutting down...");
+                tracing::info!("shutting down");
+                crate::end_realtime_timer();
                 if let Some(state) = app_handle.try_state::<crate::commands::SharedState>() {
-                    if let Ok(s) = state.lock() {
-                        // Persist the durable session for next-launch resume.
-                        // user_dir comes from the registry; lock briefly and release.
-                        let user_dir = s.registry.lock().ok().map(|r| r.user_dir().to_path_buf());
-                        if let Some(dir) = user_dir {
-                            let persisted = crate::session::PersistedSession::capture(
-                                &s.session,
-                                s.active_oisi_path.as_deref(),
-                            );
-                            if let Err(e) = persisted.save(&dir) {
-                                eprintln!("[openisi] failed to save session: {e}");
-                            } else {
-                                eprintln!("[openisi] session saved to {}", dir.display());
+                    let s = state.inner();
+                    // Persist the durable session for next-launch resume.
+                    // user_dir comes from the registry; lock briefly and release.
+                    let user_dir = s.registry.lock().user_dir().to_path_buf();
+                    {
+                        let dir = user_dir;
+                        // Capture the durable session snapshot. Copy the active
+                        // path out first, then lock session — one group at a time.
+                        let active = s.active_oisi.lock().clone();
+                        let persisted = {
+                            let session = s.session.lock();
+                            crate::session::PersistedSession::capture(&session, active.as_deref())
+                        };
+                        if let Err(e) = persisted.save(&dir) {
+                            tracing::error!(error = %e, "failed to save session");
+                        } else {
+                            tracing::info!(dir = %dir.display(), "session saved");
+                        }
+
+                        // Persist the param-registry user-overlay TOMLs (only
+                        // fields marked as user_overrides). Without this, UI
+                        // edits to rig/experiment/analysis params would not
+                        // survive a restart. At shutdown there is no contention,
+                        // so holding the registry lock across the writes is fine.
+                        {
+                            let reg = s.registry.lock();
+                            use openisi_params::toml_io::{
+                                save_user_analysis, save_user_experiment, save_user_rig,
+                            };
+                            if let Err(e) = save_user_rig(&reg, &dir.join("rig.toml")) {
+                                tracing::error!(error = %e, "failed to save rig overlay");
                             }
-                        }
-                        if let Some(ref tx) = s.threads.camera_tx {
-                            let _ = tx.send(crate::messages::CameraCmd::Shutdown);
-                        }
-                        if let Some(ref tx) = s.threads.stimulus_tx {
-                            let _ = tx.send(crate::messages::StimulusCmd::Shutdown);
+                            if let Err(e) = save_user_experiment(&reg, &dir.join("experiment.toml"))
+                            {
+                                tracing::error!(error = %e, "failed to save experiment overlay");
+                            }
+                            if let Err(e) = save_user_analysis(&reg, &dir.join("analysis.toml")) {
+                                tracing::error!(error = %e, "failed to save analysis overlay");
+                            }
+                            tracing::info!(dir = %dir.display(), "param overlays saved");
                         }
                     }
+                    let _ = s
+                        .threads
+                        .camera_tx
+                        .send(crate::messages::CameraCmd::Shutdown);
+                    let _ = s
+                        .threads
+                        .stimulus_tx
+                        .send(crate::messages::StimulusCmd::Shutdown);
                 }
                 // Give threads time to close hardware handles.
                 // Camera needs to stop recording, disarm, and call PCO_CloseCamera.
                 std::thread::sleep(std::time::Duration::from_millis(1000));
-                eprintln!("[openisi] shutdown complete");
+                tracing::info!("shutdown complete");
             }
         });
     Ok(())

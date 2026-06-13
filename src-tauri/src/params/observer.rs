@@ -20,7 +20,7 @@ impl TauriParamObserver {
 impl ParamChangeObserver for TauriParamObserver {
     fn notify(&self, payload: serde_json::Value) {
         if let Err(e) = self.handle.emit("params:changed", payload) {
-            eprintln!("[params] failed to emit params:changed event: {e}");
+            tracing::error!(error = %e, "failed to emit params:changed event");
         }
     }
 }

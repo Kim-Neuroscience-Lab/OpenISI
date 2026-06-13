@@ -2,16 +2,15 @@
 
 use tauri::State;
 
-use crate::error::{lock_state, AppError, AppResult};
+use crate::error::{AppError, AppResult};
 
 use super::SharedState;
 
 /// Return a human-readable label for the device the analysis pipeline
-/// is using — `"CUDA device 0"`, `"Apple Metal (MPS)"`, or
-/// `"CPU (libtorch)"`. Read-only; the device is auto-detected at
-/// startup and there's no override toggle. Used by the analysis
-/// sidebar to surface compute backend without the user having to read
-/// stderr.
+/// is using — e.g. `"CPU (Burn ndarray)"`. Read-only; the backend is
+/// fixed at compile time (the single `Backend` alias) and there's no
+/// override toggle. Used by the analysis sidebar to surface the compute
+/// backend without the user having to read stderr.
 #[tauri::command]
 pub fn get_analysis_backend() -> AppResult<String> {
     Ok(isi_analysis::compute::backend_info())
@@ -37,7 +36,7 @@ pub fn inspect_oisi(path: String) -> AppResult<serde_json::Value> {
         "has_complex_maps": caps.has_complex_maps,
         "has_results": caps.has_results,
         "dimensions": caps.dimensions,
-        "acquisition_cycles": caps.acquisition_cycles,
+        "acquisition_schedule": caps.acquisition_schedule,
         "results": caps.results,
         "provenance": acq.provenance,
         "provenance_warning": acq.provenance.warning_summary(),
@@ -54,21 +53,17 @@ pub fn inspect_oisi(path: String) -> AppResult<serde_json::Value> {
 /// `AnalysisParams::bootstrap()`, no inline defaults.
 ///
 /// **Concurrency invariant:** `path` is taken as an explicit argument
-/// (not read from `AppState.active_oisi_path` mid-run).
+/// (not read from the `active_oisi` lock mid-run).
 #[tauri::command]
 pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<String> {
-    let app = lock_state(&state, "run_analysis")?;
-    let snapshot = {
-        let reg = app.registry.lock().map_err(|_| AppError::LockPoisoned {
-            context: "registry".into(),
-        })?;
-        reg.snapshot()
-    };
-    drop(app); // Release AppState lock during analysis.
+    let snapshot = state.registry.lock().snapshot();
+    let analysis_tx = state.threads.analysis_tx.clone();
 
     let path_buf = std::path::PathBuf::from(&path);
 
     // Refuse pre-2026 schema files — the user must migrate explicitly.
+    // Done up front (before send) so the caller sees the error
+    // synchronously rather than as a delayed `analysis:failed` event.
     if isi_analysis::io::is_pre_2026_analysis_params(&path_buf)? {
         return Err(AppError::Validation(format!(
             "{} has pre-2026 /analysis_params schema. Run `oisi migrate {}` first.",
@@ -77,18 +72,22 @@ pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<St
         )));
     }
 
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
+    // The heavy work runs on the analysis worker thread; this command
+    // returns immediately so the IPC thread stays responsive and rapid
+    // param edits don't queue up synchronously. Listen to the
+    // `analysis:started` / `analysis:complete` / `analysis:failed` /
+    // `analysis:cancelled` Tauri events for status.
     let params_tree = snapshot.to_json_for_target(openisi_params::PersistTarget::Analysis);
-
-    let progress = isi_analysis::SilentProgress;
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-
-    isi_analysis::analyze(&path_buf, &params, &progress, &cancel)?;
-
-    // Stamp the registry tree into /analysis_params for provenance.
-    isi_analysis::io::write_analysis_params_attr(&path_buf, &params_tree)?;
-
-    Ok("Analysis complete".into())
+    analysis_tx
+        .send(crate::messages::AnalysisCmd::Run(Box::new(
+            crate::messages::AnalysisRequest {
+                path: path_buf,
+                snapshot,
+                params_tree,
+            },
+        )))
+        .map_err(|e| AppError::Validation(format!("send to analysis worker: {e}")))?;
+    Ok("queued".into())
 }
 
 /// Set the active `.oisi` file — the one the UI currently has open.
@@ -134,19 +133,19 @@ pub fn migrate_oisi(path: String) -> AppResult<String> {
 
 /// Inner implementation of `set_active_oisi` that takes `&SharedState`
 /// directly. Public for integration testing — callers can construct
-/// an `Arc<Mutex<AppState>>` and invoke without a Tauri runtime.
+/// an `Arc<AppState>` and invoke without a Tauri runtime.
 pub fn set_active_oisi_impl(state: &SharedState, path: String) -> AppResult<()> {
-    let mut app = lock_state(state, "set_active_oisi")?;
     if path.is_empty() {
-        app.active_oisi_path = None;
+        *state.active_oisi.lock() = None;
     } else {
         let p = std::path::PathBuf::from(&path);
         if !p.exists() {
             return Err(AppError::NotAvailable(format!(
-                "set_active_oisi: file does not exist: {}", p.display()
+                "set_active_oisi: file does not exist: {}",
+                p.display()
             )));
         }
-        app.active_oisi_path = Some(p);
+        *state.active_oisi.lock() = Some(p);
     }
     Ok(())
 }
@@ -165,22 +164,15 @@ pub fn get_analysis_params(state: State<'_, SharedState>) -> AppResult<serde_jso
 }
 
 pub fn get_analysis_params_impl(state: &SharedState) -> AppResult<serde_json::Value> {
-    let app = lock_state(state, "get_analysis_params")?;
-    let path = app.active_oisi_path.clone();
-    // Take a registry snapshot while we hold the AppState lock; release
+    // Capture the active path and a registry snapshot, dropping each guard
     // before any I/O.
-    let snapshot = {
-        let reg = app.registry.lock().map_err(|_| AppError::LockPoisoned {
-            context: "registry".into(),
-        })?;
-        reg.snapshot()
-    };
-    drop(app);
+    let path = state.active_oisi.lock().clone();
+    let snapshot = state.registry.lock().snapshot();
 
-    if let Some(p) = path {
-        if let Some(tree) = isi_analysis::io::read_analysis_params_attr(&p)? {
-            return Ok(tree);
-        }
+    if let Some(p) = path
+        && let Some(tree) = isi_analysis::io::read_analysis_params_attr(&p)?
+    {
+        return Ok(tree);
     }
     // No file or no stored tree → return the current Registry tree.
     Ok(snapshot.to_json_for_target(openisi_params::PersistTarget::Analysis))
@@ -191,25 +183,27 @@ pub fn get_analysis_params_impl(state: &SharedState) -> AppResult<serde_json::Va
 /// type-tag rules live in one place; UI and reader stay in sync.
 #[tauri::command]
 pub fn read_result(path: String, name: String) -> AppResult<serde_json::Value> {
-    let file = hdf5::File::open(&path)
-        .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Hdf5(
-            format!("Failed to open {path}: {e}"),
-        )))?;
-    let ds = file.dataset(&format!("results/{name}"))
-        .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Hdf5(
-            format!("Failed to open results/{name}: {e}"),
-        )))?;
+    let file = hdf5::File::open(&path).map_err(|e| {
+        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
+            "Failed to open {path}: {e}"
+        )))
+    })?;
+    let ds = file.dataset(&format!("results/{name}")).map_err(|e| {
+        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
+            "Failed to open results/{name}: {e}"
+        )))
+    })?;
     let shape = ds.shape();
     let result_type = isi_analysis::io::classify_result_type(&name, &shape, None);
-    let hdf5_err = |e: hdf5::Error, ctx: &str| AppError::Analysis(
-        isi_analysis::AnalysisError::Hdf5(format!("reading {ctx} {name}: {e}")),
-    );
+    let hdf5_err = |e: hdf5::Error, ctx: &str| {
+        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
+            "reading {ctx} {name}: {e}"
+        )))
+    };
 
     match result_type.as_str() {
         "sign_array" => {
-            let data: Vec<i32> = ds.read_1d()
-                .map_err(|e| hdf5_err(e, "1D"))?
-                .to_vec();
+            let data: Vec<i32> = ds.read_1d().map_err(|e| hdf5_err(e, "1D"))?.to_vec();
             Ok(serde_json::json!({ "type": "sign_array", "data": data }))
         }
         "label_map" => {
@@ -255,66 +249,56 @@ pub fn read_anatomical(path: String) -> AppResult<serde_json::Value> {
     }))
 }
 
-/// Export a result map as a PNG file.
+/// Export a result map as a PNG file. Uses the shared [`crate::render`]
+/// renderer driven by the dataset's `MapMeta` (palette, display range, wrap
+/// period, sentinel semantics) — the SAME logic the headless figure exporter
+/// and the interactive GUI use, so the exported PNG matches what's on screen.
+/// Legacy files lacking `MapMeta` attrs fall back to an auto-fit jet map.
 #[tauri::command]
 pub fn export_map_png(path: String, map_name: String, output_path: String) -> AppResult<()> {
-    let data = isi_analysis::io::read_result_map(std::path::Path::new(&path), &map_name)?;
+    let src = std::path::Path::new(&path);
+    let data = isi_analysis::io::read_result_map(src, &map_name)?;
     let (h, w) = data.dim();
 
-    // Normalize to 0-255 for PNG.
-    let mut min_val = f64::INFINITY;
-    let mut max_val = f64::NEG_INFINITY;
-    for &v in data.iter() {
-        if v.is_finite() {
-            if v < min_val { min_val = v; }
-            if v > max_val { max_val = v; }
+    let meta = isi_analysis::io::read_result_meta(src, &map_name).unwrap_or_else(|| {
+        // Pre-2026 files written before the self-describing MapMeta attrs:
+        // auto-fit a jet map over the finite range (the old behavior).
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &v in data.iter() {
+            if v.is_finite() {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
         }
-    }
-    let range = (max_val - min_val).max(1e-10);
+        if !lo.is_finite() {
+            (lo, hi) = (0.0, 1.0);
+        }
+        isi_analysis::MapMeta {
+            palette: "jet".into(),
+            units: "".into(),
+            display_min: lo,
+            display_max: hi,
+            wrap_period: 0.0,
+            nan_means: "".into(),
+            zero_means: "".into(),
+        }
+    });
 
-    // Encode as RGB PNG with jet colormap.
-    let mut rgb = Vec::with_capacity(h * w * 3);
-    for &v in data.iter() {
-        let t = ((v - min_val) / range).clamp(0.0, 1.0);
-        let (r, g, b) = jet_colormap(t);
-        rgb.push(r);
-        rgb.push(g);
-        rgb.push(b);
-    }
+    let (rgba, _label) = crate::render::render_map(&data, &meta, None);
 
     let mut png_data = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png_data, w as u32, h as u32);
-        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()
-            .map_err(|e| AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PNG header: {e}"),
-            )))?;
-        writer.write_image_data(&rgb)
-            .map_err(|e| AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PNG write: {e}"),
-            )))?;
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| AppError::Io(std::io::Error::other(format!("PNG header: {e}"))))?;
+        writer
+            .write_image_data(&rgba)
+            .map_err(|e| AppError::Io(std::io::Error::other(format!("PNG write: {e}"))))?;
     }
 
     std::fs::write(&output_path, &png_data)?;
     Ok(())
-}
-
-fn jet_colormap(t: f64) -> (u8, u8, u8) {
-    let t = t.clamp(0.0, 1.0);
-    let (r, g, b) = if t < 0.125 {
-        (0.0, 0.0, 0.5 + t / 0.125 * 0.5)
-    } else if t < 0.375 {
-        (0.0, (t - 0.125) / 0.25, 1.0)
-    } else if t < 0.625 {
-        ((t - 0.375) / 0.25, 1.0, 1.0 - (t - 0.375) / 0.25)
-    } else if t < 0.875 {
-        (1.0, 1.0 - (t - 0.625) / 0.25, 0.0)
-    } else {
-        (1.0 - (t - 0.875) / 0.125 * 0.5, 0.0, 0.0)
-    };
-    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }

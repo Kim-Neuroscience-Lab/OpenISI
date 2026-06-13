@@ -20,8 +20,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-const SNLC_SAMPLE_DATA_URL: &str =
-    "https://github.com/SNLC/ISI/raw/master/Sample%20Data.zip";
+const SNLC_SAMPLE_DATA_URL: &str = "https://github.com/SNLC/ISI/raw/master/Sample%20Data.zip";
 
 /// Download the SNLC sample zip, extract it, discover subject directories,
 /// and import each into `out_dir`. Returns one `.oisi` per discovered
@@ -60,11 +59,12 @@ pub fn import_snlc_sample_bundle(out_dir: &Path) -> Result<Vec<PathBuf>, AppErro
             extract_dir.display(),
         )));
     }
-    eprintln!("[sample_data] found {} subject directories", subject_dirs.len());
+    tracing::info!(count = subject_dirs.len(), "found subject directories");
 
     let mut imported = Vec::with_capacity(subject_dirs.len());
     for dir in &subject_dirs {
-        let name = dir.file_name()
+        let name = dir
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "<unnamed>".into());
         let output_path = out_dir.join(format!("{name}.oisi"));
@@ -76,43 +76,48 @@ pub fn import_snlc_sample_bundle(out_dir: &Path) -> Result<Vec<PathBuf>, AppErro
         // top-level error.
         isi_analysis::io::import_snlc_directory(dir, &output_path)
             .map_err(|source| AppError::Analysis(annotate_subject_error(&name, dir, source)))?;
-        eprintln!("[sample_data] imported {name} → {}", output_path.display());
+        tracing::info!(name = %name, path = %output_path.display(), "imported subject");
         imported.push(output_path);
     }
-    eprintln!("[sample_data] complete: {} imported", imported.len());
+    tracing::info!(imported = imported.len(), "sample data import complete");
     Ok(imported)
 }
 
 fn create_dir(path: &Path) -> Result<(), AppError> {
-    std::fs::create_dir_all(path).map_err(|e| io_with_context(format!(
-        "create directory {}", path.display(),
-    ), e))
+    std::fs::create_dir_all(path)
+        .map_err(|e| io_with_context(format!("create directory {}", path.display(),), e))
 }
 
 fn download_zip(url: &str, zip_path: &Path) -> Result<(), AppError> {
-    eprintln!("[sample_data] downloading {url}");
-    let response = ureq::get(url).call().map_err(|e| io_with_context(
-        format!("download {url}"), other_io(e.to_string()),
-    ))?;
+    tracing::info!(url = %url, "downloading sample data");
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| io_with_context(format!("download {url}"), other_io(e.to_string())))?;
     let mut zip_file = std::fs::File::create(zip_path)
         .map_err(|e| io_with_context(format!("create {}", zip_path.display()), e))?;
     std::io::copy(&mut response.into_body().as_reader(), &mut zip_file)
         .map_err(|e| io_with_context(format!("write {}", zip_path.display()), e))?;
-    eprintln!("[sample_data] download complete");
+    tracing::info!("download complete");
     Ok(())
 }
 
 fn extract_zip(zip_path: &Path, extract_dir: &Path) -> Result<(), AppError> {
-    eprintln!("[sample_data] extracting to {}", extract_dir.display());
+    tracing::info!(dir = %extract_dir.display(), "extracting sample data");
     let file = std::fs::File::open(zip_path)
         .map_err(|e| io_with_context(format!("open {}", zip_path.display()), e))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| io_with_context(
-        format!("read zip {}", zip_path.display()), other_io(e.to_string()),
-    ))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        io_with_context(
+            format!("read zip {}", zip_path.display()),
+            other_io(e.to_string()),
+        )
+    })?;
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| io_with_context(
-            format!("zip entry #{i} in {}", zip_path.display()), other_io(e.to_string()),
-        ))?;
+        let mut entry = archive.by_index(i).map_err(|e| {
+            io_with_context(
+                format!("zip entry #{i} in {}", zip_path.display()),
+                other_io(e.to_string()),
+            )
+        })?;
         let entry_path = match entry.enclosed_name() {
             Some(p) => extract_dir.join(p),
             None => continue,
@@ -123,12 +128,10 @@ fn extract_zip(zip_path: &Path, extract_dir: &Path) -> Result<(), AppError> {
             if let Some(parent) = entry_path.parent() {
                 create_dir(parent)?;
             }
-            let mut out = std::fs::File::create(&entry_path).map_err(|e| io_with_context(
-                format!("create {}", entry_path.display()), e,
-            ))?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| io_with_context(
-                format!("write {}", entry_path.display()), e,
-            ))?;
+            let mut out = std::fs::File::create(&entry_path)
+                .map_err(|e| io_with_context(format!("create {}", entry_path.display()), e))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| io_with_context(format!("write {}", entry_path.display()), e))?;
         }
     }
     Ok(())
@@ -143,12 +146,16 @@ fn annotate_subject_error(
     source: isi_analysis::AnalysisError,
 ) -> isi_analysis::AnalysisError {
     isi_analysis::AnalysisError::MissingData(format!(
-        "subject '{name}' at {}: {source}", dir.display(),
+        "subject '{name}' at {}: {source}",
+        dir.display(),
     ))
 }
 
 fn io_with_context(context: String, source: io::Error) -> AppError {
-    AppError::Io(io::Error::new(source.kind(), format!("{context}: {source}")))
+    AppError::Io(io::Error::new(
+        source.kind(),
+        format!("{context}: {source}"),
+    ))
 }
 
 fn other_io(message: String) -> io::Error {
@@ -182,7 +189,9 @@ fn find_subject_dirs(root: &Path) -> Vec<PathBuf> {
                 Some(n) => n,
                 None => continue,
             };
-            if is_excluded(name) { continue; }
+            if is_excluded(name) {
+                continue;
+            }
             if path.is_dir() {
                 subdirs.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("mat") {
@@ -200,10 +209,16 @@ fn find_subject_dirs(root: &Path) -> Vec<PathBuf> {
     /// Names that never belong to a real SNLC subject directory or data file.
     fn is_excluded(name: &str) -> bool {
         // macOS resource fork tree and AppleDouble shadow files
-        if name == "__MACOSX" { return true; }
-        if name.starts_with("._") { return true; }
+        if name == "__MACOSX" {
+            return true;
+        }
+        if name.starts_with("._") {
+            return true;
+        }
         // Hidden files / dotdirs (`.DS_Store`, `.git`, etc.)
-        if name.starts_with('.') { return true; }
+        if name.starts_with('.') {
+            return true;
+        }
         false
     }
 }

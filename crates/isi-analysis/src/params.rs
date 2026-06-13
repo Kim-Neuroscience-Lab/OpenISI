@@ -16,8 +16,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::methods::{
-    CortexSource, CycleCombineMethod, EccentricityMethod, PatchExtractionMethod,
-    PatchRefinementMethod, PatchThresholdMethod, PhaseSmoothingMethod, QualityGateMethod,
+    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod, EccentricityMethod,
+    PatchExtractionMethod, PatchRefinementMethod, PatchThresholdMethod, PhaseSmoothingMethod,
     SignMapSmoothingMethod, VfsComputationMethod,
 };
 
@@ -59,7 +59,8 @@ impl ProvenanceLevel {
             Self::Defaulted => Some(
                 "acquisition properties: no /rig_params or /experiment_params \
                  in the .oisi file — analysis ran with pristine defaults \
-                 (typical for pre-2026-05-23 captures or hand-built files)".into()
+                 (typical for pre-2026-05-23 captures or hand-built files)"
+                    .into(),
             ),
             Self::Partial { missing } => Some(format!(
                 "acquisition properties: {} field(s) defaulted because they were \
@@ -115,7 +116,9 @@ pub struct AcquisitionProperties {
 impl ProvenanceLevel {
     // Serde default helper — values constructed via deserialize (e.g.
     // for test fixtures) get `Defaulted` unless explicitly set.
-    fn defaulted_for_serde() -> Self { Self::Defaulted }
+    fn defaulted_for_serde() -> Self {
+        Self::Defaulted
+    }
 }
 
 impl Default for AcquisitionProperties {
@@ -161,7 +164,10 @@ impl AcquisitionProperties {
                       default: f64,
                       name: &str,
                       missing: &mut Vec<String>| {
-            match root.and_then(|v| navigate(v, path)).and_then(|v| v.as_f64()) {
+            match root
+                .and_then(|v| navigate(v, path))
+                .and_then(|v| v.as_f64())
+            {
                 Some(v) => v,
                 None => {
                     missing.push(name.to_string());
@@ -174,7 +180,11 @@ impl AcquisitionProperties {
                       default: i32,
                       name: &str,
                       missing: &mut Vec<String>| {
-            match root.and_then(|v| navigate(v, path)).and_then(|v| v.as_i64()).map(|n| n as i32) {
+            match root
+                .and_then(|v| navigate(v, path))
+                .and_then(|v| v.as_i64())
+                .map(|n| n as i32)
+            {
                 Some(v) => v,
                 None => {
                     missing.push(name.to_string());
@@ -183,12 +193,48 @@ impl AcquisitionProperties {
             }
         };
 
-        let azi_angular_range = f64_at(experiment, &["stimulus_geometry", "azi_angular_range"], d.azi_angular_range, "azi_angular_range", &mut missing);
-        let alt_angular_range = f64_at(experiment, &["stimulus_geometry", "alt_angular_range"], d.alt_angular_range, "alt_angular_range", &mut missing);
-        let offset_azi        = f64_at(experiment, &["stimulus_geometry", "offset_azi"], d.offset_azi, "offset_azi", &mut missing);
-        let offset_alt        = f64_at(experiment, &["stimulus_geometry", "offset_alt"], d.offset_alt, "offset_alt", &mut missing);
-        let rotation_k        = i32_at(experiment, &["stimulus_geometry", "rotation_k"], d.rotation_k, "rotation_k", &mut missing);
-        let um_per_pixel      = f64_at(rig, &["camera", "um_per_pixel"], d.um_per_pixel, "um_per_pixel", &mut missing);
+        let azi_angular_range = f64_at(
+            experiment,
+            &["stimulus_geometry", "azi_angular_range"],
+            d.azi_angular_range,
+            "azi_angular_range",
+            &mut missing,
+        );
+        let alt_angular_range = f64_at(
+            experiment,
+            &["stimulus_geometry", "alt_angular_range"],
+            d.alt_angular_range,
+            "alt_angular_range",
+            &mut missing,
+        );
+        let offset_azi = f64_at(
+            experiment,
+            &["stimulus_geometry", "offset_azi"],
+            d.offset_azi,
+            "offset_azi",
+            &mut missing,
+        );
+        let offset_alt = f64_at(
+            experiment,
+            &["stimulus_geometry", "offset_alt"],
+            d.offset_alt,
+            "offset_alt",
+            &mut missing,
+        );
+        let rotation_k = i32_at(
+            experiment,
+            &["stimulus_geometry", "rotation_k"],
+            d.rotation_k,
+            "rotation_k",
+            &mut missing,
+        );
+        let um_per_pixel = f64_at(
+            rig,
+            &["camera", "um_per_pixel"],
+            d.um_per_pixel,
+            "um_per_pixel",
+            &mut missing,
+        );
 
         // Classify provenance. If BOTH attrs are wholly absent, every
         // field went missing → Defaulted. If at least one attr was
@@ -256,6 +302,10 @@ fn navigate<'a>(root: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct AnalysisParams {
+    /// Stage 0: ΔF/F baseline (`F0` denominator for the bin-1 DFT).
+    pub baseline: BaselineMethod,
+    /// Projection: cycle averaging (combine the K per-cycle complex maps).
+    pub cycle_average: CycleAverageMethod,
     /// Stage 1: cycle combination (fwd+rev → position phasor).
     pub cycle_combine: CycleCombineMethod,
     /// Stage 2: position phasor smoothing.
@@ -265,15 +315,13 @@ pub struct AnalysisParams {
     /// Stage 4: sign map smoothing.
     pub sign_map_smoothing: SignMapSmoothingMethod,
     /// Stage 5: cortex / ROI source.
-    pub cortex_source: CortexSource,
+    pub cortex_source: CortexSourceMethod,
     /// Stage 6: patch threshold (which pixels become patch candidates).
     pub patch_threshold: PatchThresholdMethod,
     /// Stage 7: patch extraction (label → smooth → assign signs).
     pub patch_extraction: PatchExtractionMethod,
     /// Stage 8: patch refinement (split + merge).
     pub patch_refinement: PatchRefinementMethod,
-    /// Stage 9: optional per-pixel quality gate.
-    pub quality_gate: QualityGateMethod,
     /// Stage 10: eccentricity map computation.
     pub eccentricity: EccentricityMethod,
 }
@@ -284,20 +332,27 @@ impl AnalysisParams {
     /// only production caller; it constructs each method enum via
     /// its registry-typed constructor, so every value in the result
     /// provably came from the canonical SSoT.
+    // Justified `#[allow]`, not a parameter object: the 11 arguments ARE the
+    // struct's fields (no smaller cohesive concept to extract), and each is a
+    // distinct method-enum type, so a positional swap is a compile error — the
+    // exact mistake the lint guards against can't occur here.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        baseline: BaselineMethod,
+        cycle_average: CycleAverageMethod,
         cycle_combine: CycleCombineMethod,
         phase_smoothing: PhaseSmoothingMethod,
         vfs_computation: VfsComputationMethod,
         sign_map_smoothing: SignMapSmoothingMethod,
-        cortex_source: CortexSource,
+        cortex_source: CortexSourceMethod,
         patch_threshold: PatchThresholdMethod,
         patch_extraction: PatchExtractionMethod,
         patch_refinement: PatchRefinementMethod,
-        quality_gate: QualityGateMethod,
         eccentricity: EccentricityMethod,
     ) -> Self {
         Self {
+            baseline,
+            cycle_average,
             cycle_combine,
             phase_smoothing,
             vfs_computation,
@@ -306,7 +361,6 @@ impl AnalysisParams {
             patch_threshold,
             patch_extraction,
             patch_refinement,
-            quality_gate,
             eccentricity,
         }
     }
@@ -373,15 +427,20 @@ mod tests {
         let p = AcquisitionProperties::from_oisi_attrs(None, Some(&exp));
         match &p.provenance {
             ProvenanceLevel::Partial { missing } => {
-                assert!(missing.iter().any(|f| f == "um_per_pixel"),
-                    "expected um_per_pixel in missing, got: {missing:?}");
+                assert!(
+                    missing.iter().any(|f| f == "um_per_pixel"),
+                    "expected um_per_pixel in missing, got: {missing:?}"
+                );
                 // Experiment-side fields should NOT be missing.
                 assert!(!missing.iter().any(|f| f == "azi_angular_range"));
             }
             other => panic!("expected Partial, got {other:?}"),
         }
         // um_per_pixel is at its default; experiment fields from JSON.
-        assert_eq!(p.um_per_pixel, AcquisitionProperties::default().um_per_pixel);
+        assert_eq!(
+            p.um_per_pixel,
+            AcquisitionProperties::default().um_per_pixel
+        );
         assert_eq!(p.azi_angular_range, 120.0);
     }
 
@@ -392,9 +451,17 @@ mod tests {
         match &p.provenance {
             ProvenanceLevel::Partial { missing } => {
                 // All 5 stimulus-geometry fields should be missing.
-                for f in ["azi_angular_range", "alt_angular_range", "offset_azi", "offset_alt", "rotation_k"] {
-                    assert!(missing.iter().any(|m| m == f),
-                        "expected {f} in missing, got: {missing:?}");
+                for f in [
+                    "azi_angular_range",
+                    "alt_angular_range",
+                    "offset_azi",
+                    "offset_alt",
+                    "rotation_k",
+                ] {
+                    assert!(
+                        missing.iter().any(|m| m == f),
+                        "expected {f} in missing, got: {missing:?}"
+                    );
                 }
                 assert!(!missing.iter().any(|f| f == "um_per_pixel"));
             }
@@ -469,11 +536,13 @@ mod tests {
         assert!(ProvenanceLevel::Full.warning_summary().is_none());
         let defaulted = ProvenanceLevel::Defaulted.warning_summary().unwrap();
         assert!(defaulted.contains("no /rig_params or /experiment_params"));
-        let partial = ProvenanceLevel::Partial { missing: vec!["foo".into(), "bar".into()] }
-            .warning_summary().unwrap();
+        let partial = ProvenanceLevel::Partial {
+            missing: vec!["foo".into(), "bar".into()],
+        }
+        .warning_summary()
+        .unwrap();
         assert!(partial.contains("2 field"));
         assert!(partial.contains("foo"));
         assert!(partial.contains("bar"));
     }
-
 }

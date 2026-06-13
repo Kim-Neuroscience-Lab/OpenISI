@@ -43,7 +43,7 @@ fn hdf5_err(msg: String) -> AppError {
 /// surface as `category: "Io", code: "E_IO"` in the frontend instead
 /// of being miscategorized as analysis errors.
 fn fs_err(msg: String) -> AppError {
-    AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg))
+    AppError::Io(std::io::Error::other(msg))
 }
 
 /// Accumulates ALL camera frames in acquisition order.
@@ -64,6 +64,12 @@ pub struct AcquisitionAccumulator {
     pub height: u32,
     /// Whether acquisition is active.
     active: bool,
+}
+
+impl Default for AcquisitionAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AcquisitionAccumulator {
@@ -126,7 +132,12 @@ impl AcquisitionAccumulator {
 
     /// Get stats for logging.
     pub fn stats(&self) -> String {
-        format!("{} frames, {}x{}", self.frames.len(), self.width, self.height)
+        format!(
+            "{} frames, {}x{}",
+            self.frames.len(),
+            self.width,
+            self.height
+        )
     }
 }
 
@@ -157,6 +168,7 @@ impl AccumulatedData {
 /// - /acquisition/stimulus/ — per-frame stimulus arrays
 /// - /hardware — group with monitor/camera attributes
 /// - /protocol — full protocol JSON (if provided)
+///
 /// Sweep schedule — when each sweep started and ended.
 pub struct SweepSchedule {
     pub sweep_sequence: Vec<String>,
@@ -170,19 +182,40 @@ pub struct SessionMetadata {
     pub notes: String,
 }
 
-pub fn write_oisi(
-    path: &Path,
-    stimulus_dataset: &StimulusDataset,
-    camera_data: AccumulatedData,
-    snapshot: &RegistrySnapshot,
-    hardware: Option<&HardwareSnapshot>,
-    schedule: &SweepSchedule,
-    timing: Option<&crate::timing::TimingCharacterization>,
-    session_meta: Option<&SessionMetadata>,
-    anatomical: Option<&ndarray::Array2<u8>>,
-    acquisition_complete: bool,
-) -> AppResult<String> {
+/// Everything that goes into an `.oisi` file — the parameter object for
+/// [`write_oisi`] (the destination `path` stays a separate argument, since it's
+/// the "where", not the "what"). The two boolean fields are orthogonal
+/// provenance flags, named here so they can't be transposed at the call site.
+pub struct OisiBundle<'a> {
+    pub stimulus_dataset: &'a StimulusDataset,
+    pub camera_data: AccumulatedData,
+    pub snapshot: &'a RegistrySnapshot,
+    pub hardware: Option<&'a HardwareSnapshot>,
+    pub schedule: &'a SweepSchedule,
+    pub timing: Option<&'a crate::timing::TimingCharacterization>,
+    pub session_meta: Option<&'a SessionMetadata>,
+    pub anatomical: Option<&'a ndarray::Array2<u8>>,
+    pub acquisition_complete: bool,
+    pub stimulus_timing_validatable: bool,
+}
+
+pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     use isi_analysis::io;
+
+    // Bind every field as a local so the body below — written against these
+    // names — stays unchanged.
+    let OisiBundle {
+        stimulus_dataset,
+        camera_data,
+        snapshot,
+        hardware,
+        schedule,
+        timing,
+        session_meta,
+        anatomical,
+        acquisition_complete,
+        stimulus_timing_validatable,
+    } = bundle;
 
     // Atomic write protocol: write to `<path>.partial`, finalize, then
     // `fs::rename` to the final `path`. The canonical `.oisi` file at
@@ -223,12 +256,14 @@ pub fn write_oisi(
     {
         let rig_str = serde_json::to_string_pretty(
             &snapshot.to_json_for_target(crate::params::PersistTarget::Rig),
-        ).map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
+        )
+        .map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
         write_str_attr(&file, "rig_params", &rig_str)?;
 
         let exp_str = serde_json::to_string_pretty(
             &snapshot.to_json_for_target(crate::params::PersistTarget::Experiment),
-        ).map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
+        )
+        .map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
         write_str_attr(&file, "experiment_params", &exp_str)?;
     }
 
@@ -256,7 +291,8 @@ pub fn write_oisi(
     }
 
     // Create acquisition group.
-    let acq_group = file.create_group("acquisition")
+    let acq_group = file
+        .create_group("acquisition")
         .map_err(|e| hdf5_err(format!("Failed to create acquisition group: {e}")))?;
 
     // ── Compute unified timeline ─────────────────────────────────
@@ -264,23 +300,35 @@ pub fn write_oisi(
     // All timestamps converted to seconds from t=0 as f64.
     // Camera system timestamps and stimulus QPC timestamps are in the same clock domain.
 
-    let t0_us: i64 = camera_data.system_timestamps_us.first().copied().unwrap_or(0);
+    let t0_us: i64 = camera_data
+        .system_timestamps_us
+        .first()
+        .copied()
+        .unwrap_or(0);
 
     // Camera timestamps in unified seconds.
-    let camera_sec: Vec<f64> = camera_data.system_timestamps_us.iter()
+    let camera_sec: Vec<f64> = camera_data
+        .system_timestamps_us
+        .iter()
         .map(|&ts| (ts - t0_us) as f64 / 1_000_000.0)
         .collect();
 
     // Stimulus timestamps in unified seconds (same QPC clock as camera system timestamps).
-    let stimulus_sec: Vec<f64> = stimulus_dataset.timestamps_us.iter()
+    let stimulus_sec: Vec<f64> = stimulus_dataset
+        .timestamps_us
+        .iter()
         .map(|&ts| (ts - t0_us) as f64 / 1_000_000.0)
         .collect();
 
     // Sweep schedule in unified seconds.
-    let sweep_start_sec: Vec<f64> = schedule.sweep_start_us.iter()
+    let sweep_start_sec: Vec<f64> = schedule
+        .sweep_start_us
+        .iter()
         .map(|&ts| (ts - t0_us) as f64 / 1_000_000.0)
         .collect();
-    let sweep_end_sec: Vec<f64> = schedule.sweep_end_us.iter()
+    let sweep_end_sec: Vec<f64> = schedule
+        .sweep_end_us
+        .iter()
         .map(|&ts| (ts - t0_us) as f64 / 1_000_000.0)
         .collect();
 
@@ -289,9 +337,11 @@ pub fn write_oisi(
     let clock_sync = if camera_data.system_timestamps_us.len() >= 2
         && camera_data.hardware_timestamps_us.len() >= 2
     {
-        let start_offset = camera_data.system_timestamps_us[0] - camera_data.hardware_timestamps_us[0];
+        let start_offset =
+            camera_data.system_timestamps_us[0] - camera_data.hardware_timestamps_us[0];
         let n = camera_data.system_timestamps_us.len();
-        let end_offset = camera_data.system_timestamps_us[n - 1] - camera_data.hardware_timestamps_us[n - 1];
+        let end_offset =
+            camera_data.system_timestamps_us[n - 1] - camera_data.hardware_timestamps_us[n - 1];
         Some((start_offset, end_offset))
     } else {
         None
@@ -301,7 +351,8 @@ pub fn write_oisi(
     write_stimulus_arrays(&acq_group, stimulus_dataset)?;
 
     // Write unified stimulus timestamps.
-    let stim_group = acq_group.group("stimulus")
+    let stim_group = acq_group
+        .group("stimulus")
         .map_err(|e| hdf5_err(format!("Failed to open stimulus group: {e}")))?;
     write_checked_1d(&stim_group, "timestamps_sec", stimulus_sec)?;
 
@@ -309,10 +360,17 @@ pub fn write_oisi(
     write_sweep_schedule_sec(&acq_group, schedule, &sweep_start_sec, &sweep_end_sec)?;
 
     // Write quality metrics (before camera data writing, which consumes vecs).
-    write_quality_metrics(&acq_group, &camera_data, stimulus_dataset, acquisition_complete)?;
+    write_quality_metrics(
+        &acq_group,
+        &camera_data,
+        stimulus_dataset,
+        acquisition_complete,
+        stimulus_timing_validatable,
+    )?;
 
     // ── Write clock sync ─────────────────────────────────────────
-    let sync_group = acq_group.create_group("clock_sync")
+    let sync_group = acq_group
+        .create_group("clock_sync")
         .map_err(|e| hdf5_err(format!("Failed to create clock_sync group: {e}")))?;
     write_group_f64_attr(&sync_group, "t0_system_us", t0_us as f64)?;
     if let Some((start_off, end_off)) = clock_sync {
@@ -323,7 +381,8 @@ pub fn write_oisi(
 
     // ── Write timing characterization ───────────────────────────
     if let Some(tc) = timing {
-        let timing_group = acq_group.create_group("timing")
+        let timing_group = acq_group
+            .create_group("timing")
             .map_err(|e| hdf5_err(format!("Failed to create timing group: {e}")))?;
         write_group_f64_attr(&timing_group, "f_cam_hz", tc.f_cam_hz)?;
         write_group_f64_attr(&timing_group, "f_stim_hz", tc.f_stim_hz)?;
@@ -333,10 +392,22 @@ pub fn write_oisi(
         write_group_f64_attr(&timing_group, "beat_period_sec", tc.beat_period_sec)?;
         write_group_f64_attr(&timing_group, "phase_increment", tc.phase_increment)?;
         write_group_str_attr(&timing_group, "regime", &tc.regime.to_string())?;
-        write_group_f64_attr(&timing_group, "expected_phase_samples", tc.expected_phase_samples)?;
+        write_group_f64_attr(
+            &timing_group,
+            "expected_phase_samples",
+            tc.expected_phase_samples,
+        )?;
         write_group_f64_attr(&timing_group, "phase_coverage", tc.phase_coverage)?;
-        write_group_f64_attr(&timing_group, "onset_uncertainty_sec", tc.onset_uncertainty_sec)?;
-        write_group_f64_attr(&timing_group, "onset_uncertainty_fraction", tc.onset_uncertainty_fraction)?;
+        write_group_f64_attr(
+            &timing_group,
+            "onset_uncertainty_sec",
+            tc.onset_uncertainty_sec,
+        )?;
+        write_group_f64_attr(
+            &timing_group,
+            "onset_uncertainty_fraction",
+            tc.onset_uncertainty_fraction,
+        )?;
         write_group_u32_attr(&timing_group, "cam_sample_count", tc.cam_sample_count)?;
         write_group_u32_attr(&timing_group, "stim_sample_count", tc.stim_sample_count)?;
         write_group_f64_attr(&timing_group, "cam_jitter_sec", tc.cam_jitter_sec)?;
@@ -349,7 +420,8 @@ pub fn write_oisi(
     }
 
     // ── Write camera data ────────────────────────────────────────
-    let camera_group = acq_group.create_group("camera")
+    let camera_group = acq_group
+        .create_group("camera")
         .map_err(|e| hdf5_err(format!("Failed to create camera group: {e}")))?;
 
     let n_frames = camera_data.frames.len();
@@ -365,13 +437,14 @@ pub fn write_oisi(
             frame_data[offset..offset + src_len].copy_from_slice(&pixels[..src_len]);
         }
 
-        camera_group.new_dataset_builder()
+        camera_group
+            .new_dataset_builder()
             .deflate(4)
             .fletcher32()
             .chunk((1, h, w))
             .with_data(
                 &ndarray::Array3::from_shape_vec((n_frames, h, w), frame_data)
-                    .map_err(|e| hdf5_err(format!("Shape error: {e}")))?
+                    .map_err(|e| hdf5_err(format!("Shape error: {e}")))?,
             )
             .create("frames")
             .map_err(|e| hdf5_err(format!("Failed to write camera/frames: {e}")))?;
@@ -380,11 +453,23 @@ pub fn write_oisi(
         write_checked_1d(&camera_group, "timestamps_sec", camera_sec)?;
 
         // Raw hardware timestamps (provenance — camera's internal clock).
-        write_checked_1d(&camera_group, "hardware_timestamps_us", camera_data.hardware_timestamps_us)?;
+        write_checked_1d(
+            &camera_group,
+            "hardware_timestamps_us",
+            camera_data.hardware_timestamps_us,
+        )?;
         // Raw system timestamps (provenance — QPC at frame read time).
-        write_checked_1d(&camera_group, "system_timestamps_us", camera_data.system_timestamps_us)?;
+        write_checked_1d(
+            &camera_group,
+            "system_timestamps_us",
+            camera_data.system_timestamps_us,
+        )?;
 
-        let seq_i64: Vec<i64> = camera_data.sequence_numbers.iter().map(|&s| s as i64).collect();
+        let seq_i64: Vec<i64> = camera_data
+            .sequence_numbers
+            .iter()
+            .map(|&s| s as i64)
+            .collect();
         write_checked_1d(&camera_group, "sequence_numbers", seq_i64)?;
     }
 
@@ -400,7 +485,8 @@ pub fn write_oisi(
     drop(sync_group);
     drop(stim_group);
     drop(acq_group);
-    file.flush().map_err(|e| fs_err(format!("Failed to flush .oisi.partial: {e}")))?;
+    file.flush()
+        .map_err(|e| fs_err(format!("Failed to flush .oisi.partial: {e}")))?;
     drop(file);
 
     // Atomic rename: partial → final. POSIX `rename(2)` is atomic;
@@ -412,9 +498,12 @@ pub fn write_oisi(
 
     let summary = format!(
         "Wrote {} camera frames ({}x{}, u16) to {}",
-        n_frames, w, h, path.display()
+        n_frames,
+        w,
+        h,
+        path.display()
     );
-    eprintln!("[export] {summary}");
+    tracing::info!("{summary}");
     Ok(summary)
 }
 
@@ -424,7 +513,8 @@ fn write_hardware_group(
     hw: &HardwareSnapshot,
     snapshot: &RegistrySnapshot,
 ) -> AppResult<()> {
-    let group = file.create_group("hardware")
+    let group = file
+        .create_group("hardware")
         .map_err(|e| hdf5_err(format!("Failed to create hardware group: {e}")))?;
 
     write_group_str_attr(&group, "monitor_name", &hw.monitor_name)?;
@@ -440,46 +530,70 @@ fn write_hardware_group(
 
     // Gamma correction flag.
     let gamma_val: u8 = if hw.gamma_corrected { 1 } else { 0 };
-    let attr = group.new_attr::<u8>()
+    let attr = group
+        .new_attr::<u8>()
         .create("gamma_corrected")
         .map_err(|e| hdf5_err(format!("creating gamma_corrected attr: {e}")))?;
     attr.write_scalar(&gamma_val)
         .map_err(|e| hdf5_err(format!("writing gamma_corrected attr: {e}")))?;
 
     // Rig geometry — viewing distance for stimulus geometry reproduction.
-    write_group_f64_attr(&group, "viewing_distance_cm", snapshot.viewing_distance_cm())?;
+    write_group_f64_attr(
+        &group,
+        "viewing_distance_cm",
+        snapshot.viewing_distance_cm(),
+    )?;
 
     // Camera acquisition config — exposure and binning at acquisition time.
     write_group_u32_attr(&group, "camera_exposure_us", snapshot.camera_exposure_us())?;
     let binning_val = snapshot.camera_binning();
-    let attr = group.new_attr::<u16>()
+    let attr = group
+        .new_attr::<u16>()
         .create("camera_binning")
         .map_err(|e| hdf5_err(format!("creating camera_binning attr: {e}")))?;
     attr.write_scalar(&binning_val)
         .map_err(|e| hdf5_err(format!("writing camera_binning attr: {e}")))?;
 
     // Display settings — rotation and target FPS at acquisition time.
-    write_group_f64_attr(&group, "monitor_rotation_deg", snapshot.monitor_rotation_deg())?;
-    write_group_u32_attr(&group, "target_stimulus_fps", snapshot.target_stimulus_fps())?;
+    write_group_f64_attr(
+        &group,
+        "monitor_rotation_deg",
+        snapshot.monitor_rotation_deg(),
+    )?;
+    write_group_u32_attr(
+        &group,
+        "target_stimulus_fps",
+        snapshot.target_stimulus_fps(),
+    )?;
 
     Ok(())
 }
 
 /// Write per-frame stimulus arrays under `/acquisition/stimulus/`.
-fn write_stimulus_arrays(
-    acq_group: &hdf5::Group,
-    dataset: &StimulusDataset,
-) -> AppResult<()> {
-    let stim_group = acq_group.create_group("stimulus")
+fn write_stimulus_arrays(acq_group: &hdf5::Group, dataset: &StimulusDataset) -> AppResult<()> {
+    let stim_group = acq_group
+        .create_group("stimulus")
         .map_err(|e| hdf5_err(format!("Failed to create acquisition/stimulus group: {e}")))?;
 
     write_checked_1d(&stim_group, "timestamps_us", dataset.timestamps_us.clone())?;
     write_checked_1d(&stim_group, "state_ids", dataset.state_ids.clone())?;
-    write_checked_1d(&stim_group, "condition_indices", dataset.condition_indices.clone())?;
+    write_checked_1d(
+        &stim_group,
+        "condition_indices",
+        dataset.condition_indices.clone(),
+    )?;
     write_checked_1d(&stim_group, "sweep_indices", dataset.sweep_indices.clone())?;
     write_checked_1d(&stim_group, "progress", dataset.progress.clone())?;
-    write_checked_1d(&stim_group, "frame_deltas_us", dataset.frame_deltas_us.clone())?;
-    write_checked_1d(&stim_group, "dropped_frame_indices", dataset.dropped_frame_indices.clone())?;
+    write_checked_1d(
+        &stim_group,
+        "frame_deltas_us",
+        dataset.frame_deltas_us.clone(),
+    )?;
+    write_checked_1d(
+        &stim_group,
+        "dropped_frame_indices",
+        dataset.dropped_frame_indices.clone(),
+    )?;
 
     Ok(())
 }
@@ -492,22 +606,29 @@ fn write_sweep_schedule_sec(
     sweep_start_sec: &[f64],
     sweep_end_sec: &[f64],
 ) -> AppResult<()> {
-    let sched_group = acq_group.create_group("schedule")
+    let sched_group = acq_group
+        .create_group("schedule")
         .map_err(|e| hdf5_err(format!("Failed to create schedule group: {e}")))?;
 
     // Sweep sequence as JSON array attribute (HDF5 doesn't have native string arrays easily).
     let seq_json = serde_json::to_string(&schedule.sweep_sequence)
         .map_err(|e| hdf5_err(format!("Failed to serialize sweep_sequence: {e}")))?;
-    let attr = sched_group.new_attr::<hdf5::types::VarLenUnicode>()
+    let attr = sched_group
+        .new_attr::<hdf5::types::VarLenUnicode>()
         .create("sweep_sequence")
         .map_err(|e| hdf5_err(format!("creating sweep_sequence attr: {e}")))?;
-    let val: hdf5::types::VarLenUnicode = seq_json.parse()
+    let val: hdf5::types::VarLenUnicode = seq_json
+        .parse()
         .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
         .map_err(|e| hdf5_err(format!("writing sweep_sequence attr: {e}")))?;
 
     // Raw microsecond timestamps (provenance).
-    write_checked_1d(&sched_group, "sweep_start_us", schedule.sweep_start_us.clone())?;
+    write_checked_1d(
+        &sched_group,
+        "sweep_start_us",
+        schedule.sweep_start_us.clone(),
+    )?;
     write_checked_1d(&sched_group, "sweep_end_us", schedule.sweep_end_us.clone())?;
 
     // Unified seconds from t=0.
@@ -523,8 +644,10 @@ fn write_quality_metrics(
     camera_data: &AccumulatedData,
     stimulus_dataset: &StimulusDataset,
     acquisition_complete: bool,
+    stimulus_timing_validatable: bool,
 ) -> AppResult<()> {
-    let quality = acq_group.create_group("quality")
+    let quality = acq_group
+        .create_group("quality")
         .map_err(|e| hdf5_err(format!("Failed to create quality group: {e}")))?;
 
     // Camera frame deltas (computed from hardware timestamps).
@@ -534,7 +657,8 @@ fn write_quality_metrics(
 
     // Camera sequence number gaps (indices where sequence is non-consecutive).
     let seq = &camera_data.sequence_numbers;
-    let cam_seq_gaps: Vec<u32> = seq.windows(2)
+    let cam_seq_gaps: Vec<u32> = seq
+        .windows(2)
         .enumerate()
         .filter(|(_, w)| w[1] != w[0] + 1)
         .map(|(i, _)| (i + 1) as u32)
@@ -542,17 +666,29 @@ fn write_quality_metrics(
     write_checked_1d(&quality, "camera_sequence_gaps", cam_seq_gaps.clone())?;
 
     // Stimulus frame deltas and drops.
-    write_checked_1d(&quality, "stimulus_frame_deltas_us", stimulus_dataset.frame_deltas_us.clone())?;
-    write_checked_1d(&quality, "stimulus_dropped_indices", stimulus_dataset.dropped_frame_indices.clone())?;
+    write_checked_1d(
+        &quality,
+        "stimulus_frame_deltas_us",
+        stimulus_dataset.frame_deltas_us.clone(),
+    )?;
+    write_checked_1d(
+        &quality,
+        "stimulus_dropped_indices",
+        stimulus_dataset.dropped_frame_indices.clone(),
+    )?;
 
     // Mean pixel intensity per camera frame (reveals illumination drift).
-    let mean_intensities: Vec<f32> = camera_data.frames.iter().map(|pixels| {
-        if pixels.is_empty() {
-            return 0.0;
-        }
-        let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
-        sum as f32 / pixels.len() as f32
-    }).collect();
+    let mean_intensities: Vec<f32> = camera_data
+        .frames
+        .iter()
+        .map(|pixels| {
+            if pixels.is_empty() {
+                return 0.0;
+            }
+            let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
+            sum as f32 / pixels.len() as f32
+        })
+        .collect();
     write_checked_1d(&quality, "mean_frame_intensity", mean_intensities)?;
 
     // Summary attributes.
@@ -562,19 +698,50 @@ fn write_quality_metrics(
     write_group_u32_attr(&quality, "camera_drops_total", cam_drops)?;
     write_group_u32_attr(&quality, "stimulus_drops_total", stim_drops)?;
 
+    // Provenance: was the stimulus presented on a real hardware scanout? On a
+    // remote (RDP) virtual display there is no hardware vblank, so `stim_drops`
+    // above is NOT a physically meaningful measurement. Record this so the count
+    // is never later mistaken for a real defect, and so analysis/QA can require
+    // a validatable run before trusting stimulus timing.
+    let stim_timing_flag: u8 = if stimulus_timing_validatable { 1 } else { 0 };
+    write_group_u32_attr(&quality, "stimulus_timing_validatable", stim_timing_flag as u32)?;
+    write_group_str_attr(
+        &quality,
+        "display_scanout",
+        if stimulus_timing_validatable {
+            "physical"
+        } else {
+            "remote_virtual"
+        },
+    )?;
+
     // Acquisition completeness flag.
     let complete_val: u8 = if acquisition_complete { 1 } else { 0 };
-    let attr = quality.new_attr::<u8>()
+    let attr = quality
+        .new_attr::<u8>()
         .create("acquisition_complete")
         .map_err(|e| hdf5_err(format!("creating acquisition_complete attr: {e}")))?;
     attr.write_scalar(&complete_val)
         .map_err(|e| hdf5_err(format!("writing acquisition_complete attr: {e}")))?;
 
-    if cam_drops > 0 || stim_drops > 0 {
-        eprintln!(
-            "[export] quality: {} camera sequence gaps, {} stimulus drops",
-            cam_drops, stim_drops
-        );
+    // Camera drops are always real (the camera has its own hardware clock).
+    // Stimulus drops are only a real defect on a hardware scanout; on a remote
+    // virtual display they reflect the absence of vsync, not lost frames — so we
+    // report them at INFO with the caveat rather than warning.
+    if cam_drops > 0 {
+        tracing::warn!(camera_gaps = cam_drops, "quality: camera frames dropped");
+    }
+    if stim_drops > 0 {
+        if stimulus_timing_validatable {
+            tracing::warn!(stimulus_drops = stim_drops, "quality: stimulus frames dropped");
+        } else {
+            tracing::info!(
+                stimulus_drops = stim_drops,
+                "quality: stimulus present-timing not validatable on a remote virtual display \
+                 (no hardware vsync) — this count is not a real drop measurement; validate at \
+                 the physical console",
+            );
+        }
     }
 
     Ok(())
@@ -585,7 +752,8 @@ fn write_str_attr(file: &hdf5::File, name: &str, value: &str) -> AppResult<()> {
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| hdf5_err(format!("creating attr {name}: {e}")))?;
-    let val: hdf5::types::VarLenUnicode = value.parse()
+    let val: hdf5::types::VarLenUnicode = value
+        .parse()
         .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
         .map_err(|e| hdf5_err(format!("writing attr {name}: {e}")))?;
@@ -600,13 +768,15 @@ fn write_checked_1d<T: hdf5::H5Type + Clone>(
 ) -> AppResult<()> {
     if data.is_empty() {
         // Write empty dataset — no chunking needed for empty
-        group.new_dataset_builder()
+        group
+            .new_dataset_builder()
             .with_data(&ndarray::Array1::<T>::from(data))
             .create(name)
             .map_err(|e| hdf5_err(format!("Failed to write {name}: {e}")))?;
     } else {
         let len = data.len();
-        group.new_dataset_builder()
+        group
+            .new_dataset_builder()
             .fletcher32()
             .chunk((len,))
             .with_data(&ndarray::Array1::from(data))
@@ -659,7 +829,8 @@ fn write_group_str_attr(group: &hdf5::Group, name: &str, value: &str) -> AppResu
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
         .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
-    let val: hdf5::types::VarLenUnicode = value.parse()
+    let val: hdf5::types::VarLenUnicode = value
+        .parse()
         .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
     attr.write_scalar(&val)
         .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
@@ -713,9 +884,15 @@ mod tests {
             sweep_duration_sec: 3.0,
             geometry: DisplayGeometry::new(
                 ProjectionType::Cartesian,
-                25.0, 0.0, 0.0,
-                53.0, 30.0,
-                1920, 1080,
+                25.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                53.0,
+                30.0,
+                1920,
+                1080,
             ),
             display_physical_source: "test".into(),
             reported_refresh_hz: 60.0,
@@ -810,39 +987,102 @@ mod tests {
             sweep_end_us: Vec::new(),
         };
         // Create a default registry snapshot for the test.
-        let snapshot = crate::params::Registry::new(std::path::Path::new("."), std::path::Path::new(".")).snapshot();
-        let result = write_oisi(&tmp, &ds, data, &snapshot, None, &schedule, None, None, None, true);
+        let snapshot =
+            crate::params::Registry::new(std::path::Path::new("."), std::path::Path::new("."))
+                .snapshot();
+        let result = write_oisi(
+            &tmp,
+            OisiBundle {
+                stimulus_dataset: &ds,
+                camera_data: data,
+                snapshot: &snapshot,
+                hardware: None,
+                schedule: &schedule,
+                timing: None,
+                session_meta: None,
+                anatomical: None,
+                acquisition_complete: true,
+                stimulus_timing_validatable: true,
+            },
+        );
         assert!(result.is_ok(), "write_oisi failed: {:?}", result.err());
 
         let file = hdf5::File::open(&tmp).expect("Should open .oisi file");
         assert!(file.group("acquisition").is_ok());
         assert!(file.group("acquisition/camera").is_ok());
         assert!(file.dataset("acquisition/camera/frames").is_ok());
-        assert!(file.dataset("acquisition/camera/hardware_timestamps_us").is_ok());
-        assert!(file.dataset("acquisition/camera/system_timestamps_us").is_ok());
+        assert!(
+            file.dataset("acquisition/camera/hardware_timestamps_us")
+                .is_ok()
+        );
+        assert!(
+            file.dataset("acquisition/camera/system_timestamps_us")
+                .is_ok()
+        );
         assert!(file.dataset("acquisition/camera/sequence_numbers").is_ok());
 
         // Unified timestamps (seconds from t=0).
-        assert!(file.dataset("acquisition/camera/timestamps_sec").is_ok(),
-            "camera/timestamps_sec missing");
-        assert!(file.dataset("acquisition/stimulus/timestamps_sec").is_ok(),
-            "stimulus/timestamps_sec missing");
+        assert!(
+            file.dataset("acquisition/camera/timestamps_sec").is_ok(),
+            "camera/timestamps_sec missing"
+        );
+        assert!(
+            file.dataset("acquisition/stimulus/timestamps_sec").is_ok(),
+            "stimulus/timestamps_sec missing"
+        );
 
         // Clock sync group.
-        assert!(file.group("acquisition/clock_sync").is_ok(),
-            "clock_sync group missing");
+        assert!(
+            file.group("acquisition/clock_sync").is_ok(),
+            "clock_sync group missing"
+        );
 
         // Schedule group.
-        assert!(file.group("acquisition/schedule").is_ok(),
-            "schedule group missing");
+        assert!(
+            file.group("acquisition/schedule").is_ok(),
+            "schedule group missing"
+        );
+
+        // Stimulus-timing provenance: this fixture passed `true`, so the file
+        // must record the scanout as physical / timing validatable. This guards
+        // the honesty contract — a remote (RDP) run records "remote_virtual" so
+        // the stimulus-drop count is never later mistaken for a real defect.
+        let quality = file
+            .group("acquisition/quality")
+            .expect("quality group missing");
+        let timing_flag: u32 = quality
+            .attr("stimulus_timing_validatable")
+            .expect("stimulus_timing_validatable attr missing")
+            .read_scalar()
+            .expect("read stimulus_timing_validatable");
+        assert_eq!(timing_flag, 1, "fixture is a physical scanout");
+        let scanout: hdf5::types::VarLenUnicode = quality
+            .attr("display_scanout")
+            .expect("display_scanout attr missing")
+            .read_scalar()
+            .expect("read display_scanout");
+        assert_eq!(scanout.as_str(), "physical");
 
         // Verify unified camera timestamps are correct (seconds from t=0).
-        let cam_sec: Vec<f64> = file.dataset("acquisition/camera/timestamps_sec").unwrap()
-            .read_1d().unwrap().to_vec();
+        let cam_sec: Vec<f64> = file
+            .dataset("acquisition/camera/timestamps_sec")
+            .unwrap()
+            .read_1d()
+            .unwrap()
+            .to_vec();
         assert_eq!(cam_sec.len(), 3);
-        assert!((cam_sec[0] - 0.0).abs() < 1e-10, "first camera timestamp should be 0.0");
-        assert!((cam_sec[1] - 0.001).abs() < 1e-10, "second camera timestamp should be 0.001s");
-        assert!((cam_sec[2] - 0.002).abs() < 1e-10, "third camera timestamp should be 0.002s");
+        assert!(
+            (cam_sec[0] - 0.0).abs() < 1e-10,
+            "first camera timestamp should be 0.0"
+        );
+        assert!(
+            (cam_sec[1] - 0.001).abs() < 1e-10,
+            "second camera timestamp should be 0.001s"
+        );
+        assert!(
+            (cam_sec[2] - 0.002).abs() < 1e-10,
+            "third camera timestamp should be 0.002s"
+        );
 
         let frames_ds = file.dataset("acquisition/camera/frames").unwrap();
         let shape = frames_ds.shape();

@@ -1,4 +1,4 @@
-//! Stimulus thread — raw win32 window + wgpu + DXGI WaitForVBlank.
+//! Stimulus thread â€” raw win32 window + wgpu + DXGI WaitForVBlank.
 //!
 //! Runs on its own thread, communicates via crossbeam channels.
 //! Owns a fullscreen window on the stimulus monitor and renders at vsync rate.
@@ -7,9 +7,9 @@
 //! display is not available and waits for shutdown.
 
 #[cfg(not(windows))]
-use crossbeam_channel::{Receiver, Sender};
-#[cfg(not(windows))]
 use crate::messages::{StimulusCmd, StimulusEvt};
+#[cfg(not(windows))]
+use crossbeam_channel::{Receiver, Sender};
 
 #[cfg(windows)]
 use std::num::NonZeroIsize;
@@ -25,9 +25,9 @@ use raw_window_handle::{
 #[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(windows)]
-use windows::Win32::Graphics::Dxgi::IDXGIOutput;
+use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
 #[cfg(windows)]
-use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DWM_TIMING_INFO};
+use windows::Win32::Graphics::Dxgi::IDXGIOutput;
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
@@ -40,43 +40,51 @@ use openisi_stimulus::dataset::{DatasetConfig, FrameRecord, FrameState, Stimulus
 #[cfg(windows)]
 use openisi_stimulus::geometry::DisplayGeometry;
 #[cfg(windows)]
-use openisi_stimulus::renderer::{direction_to_int, RendererConfig, StimulusRenderer};
+use openisi_stimulus::renderer::{RendererConfig, StimulusRenderer, direction_to_int};
 #[cfg(windows)]
 use openisi_stimulus::sequencer::{Sequencer, SequencerConfig};
 
 #[cfg(windows)]
-use crate::params::{Envelope, RegistrySnapshot};
+use crate::error::AcquisitionError;
 #[cfg(windows)]
 use crate::messages::{
-    AcquisitionCommand, AcquisitionResult, PreviewCommand, StimulusCmd, StimulusEvt,
-    StimulusFrameRecord, StimulusPreviewFrame,
+    AcquisitionCommand, AcquisitionResult, StimulusCmd, StimulusEvt, StimulusFrameRecord,
+    StimulusPreviewFrame,
 };
 #[cfg(windows)]
 use crate::monitor::find_dxgi_output;
 #[cfg(windows)]
-use crate::error::AcquisitionError;
+use crate::params::{Envelope, RegistrySnapshot};
+
+// =============================================================================
+// Shared configuration
+// =============================================================================
+
+/// Monitor geometry + preview/timing configuration for the stimulus thread.
+/// These values travel together from the spawn site (`AppState`) through `run`
+/// into `run_inner`; bundling them is the parameter-object that removes the long
+/// argument list the two functions previously duplicated.
+#[derive(Debug, Clone, Copy)]
+pub struct StimulusConfig {
+    pub monitor_index: usize,
+    pub monitor_width_px: u32,
+    pub monitor_height_px: u32,
+    pub monitor_position: (i32, i32),
+    pub preview_width_px: u32,
+    pub preview_interval_ms: u32,
+    pub preview_cycle_sec: f64,
+    pub idle_sleep_ms: u32,
+    pub drop_detection_warmup_frames: usize,
+    pub initial_bg_luminance: f64,
+}
 
 // =============================================================================
 // Non-Windows stub
 // =============================================================================
 
 #[cfg(not(windows))]
-pub fn run(
-    cmd_rx: Receiver<StimulusCmd>,
-    evt_tx: Sender<StimulusEvt>,
-    _monitor_index: usize,
-    _monitor_width_px: u32,
-    _monitor_height_px: u32,
-    _monitor_position: (i32, i32),
-    _preview_width_px: u32,
-    _preview_interval_ms: u32,
-    _preview_cycle_sec: f64,
-    _idle_sleep_ms: u32,
-    _fps_window_frames: usize,
-    _drop_detection_warmup_frames: usize,
-    _initial_bg_luminance: f64,
-) {
-    eprintln!("[stimulus_thread] Stimulus display is not available on this platform (requires Windows)");
+pub fn run(cmd_rx: Receiver<StimulusCmd>, evt_tx: Sender<StimulusEvt>, _config: StimulusConfig) {
+    tracing::warn!("stimulus display is not available on this platform (requires Windows)");
     let _ = evt_tx.send(StimulusEvt::Error(
         "Stimulus display requires Windows (Win32 + DXGI)".into(),
     ));
@@ -165,7 +173,7 @@ fn create_fullscreen_window(
             ..Default::default()
         };
 
-        // Returns 0 if already registered — that's fine
+        // Returns 0 if already registered â€” that's fine
         RegisterClassW(&wc);
 
         let title: Vec<u16> = "OpenISI Stimulus\0".encode_utf16().collect();
@@ -247,7 +255,9 @@ fn render_clear(
     let frame = surface
         .get_current_texture()
         .map_err(|e| AcquisitionError::Stimulus(format!("get_current_texture: {e}")))?;
-    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let view = frame
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
     render_clear_view(device, queue, &view, color);
     frame.present();
     Ok(())
@@ -286,25 +296,51 @@ fn render_clear_view(
 // Preview frame capture
 // =============================================================================
 
+/// The GPU resources + dimensions of the preview render target — the parameter
+/// object for [`capture_preview_frame`]. Naming the three `u32` dimensions
+/// removes the width/height/bytes-per-row swap hazard; the wgpu handles travel
+/// together as one "where the preview renders" concept.
+#[cfg(windows)]
+struct PreviewTarget<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    view: &'a wgpu::TextureView,
+    texture: &'a wgpu::Texture,
+    staging_buffer: &'a wgpu::Buffer,
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+}
+
 #[cfg(windows)]
 /// Render the current stimulus to the small preview texture (without monitor rotation),
 /// copy to staging buffer, read back pixels, and send as PreviewFrame event.
 fn capture_preview_frame(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    target: &PreviewTarget,
     renderer: &mut StimulusRenderer,
-    preview_view: &wgpu::TextureView,
-    preview_texture: &wgpu::Texture,
-    staging_buffer: &wgpu::Buffer,
-    preview_w: u32,
-    preview_h: u32,
-    bytes_per_row: u32,
     is_baseline: bool,
     bg_luminance: f32,
     evt_tx: &Sender<StimulusEvt>,
 ) {
+    // Bind the target fields to the names the body already uses.
+    let &PreviewTarget {
+        device,
+        queue,
+        view: preview_view,
+        texture: preview_texture,
+        staging_buffer,
+        width: preview_w,
+        height: preview_h,
+        bytes_per_row,
+    } = target;
+
     if is_baseline {
-        let bg = wgpu::Color { r: bg_luminance as f64, g: bg_luminance as f64, b: bg_luminance as f64, a: 1.0 };
+        let bg = wgpu::Color {
+            r: bg_luminance as f64,
+            g: bg_luminance as f64,
+            b: bg_luminance as f64,
+            a: 1.0,
+        };
         render_clear_view(device, queue, preview_view, bg);
     } else {
         // Temporarily disable monitor rotation for preview (show mouse's perspective)
@@ -337,7 +373,11 @@ fn capture_preview_frame(
                 rows_per_image: Some(preview_h),
             },
         },
-        wgpu::Extent3d { width: preview_w, height: preview_h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: preview_w,
+            height: preview_h,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit(std::iter::once(encoder.finish()));
 
@@ -379,7 +419,10 @@ fn capture_preview_frame(
 // =============================================================================
 
 #[cfg(windows)]
-fn build_sequencer_config(snap: &RegistrySnapshot, monitor: &crate::session::MonitorInfo) -> SequencerConfig {
+fn build_sequencer_config(
+    snap: &RegistrySnapshot,
+    monitor: &crate::session::MonitorInfo,
+) -> SequencerConfig {
     let sweep_duration_sec = compute_sweep_duration(snap, monitor);
 
     SequencerConfig {
@@ -403,8 +446,19 @@ fn compute_sweep_duration(snap: &RegistrySnapshot, monitor: &crate::session::Mon
         snap.viewing_distance_cm(),
         snap.horizontal_offset_deg(),
         snap.vertical_offset_deg(),
-        monitor.width_cm,
-        monitor.height_cm,
+        snap.bisector_x_cm(),
+        snap.bisector_y_cm(),
+        // EDID (`monitor.width_cm`/`height_cm`) is the auto-detected ground
+        // truth. The registry's MonitorWidthCm/HeightCm params are reserved
+        // for explicit user calibration â€” wired through `effective_monitor_cm`
+        // so they win only when the user has set them.
+        // Effective panel cm: user-calibrated MonitorWidthCm/HeightCm if
+        // explicitly set in the UI/overlay, else the EDID hardware value
+        // already injected into the registry's HardwareContext at startup.
+        snap.effective_monitor_width_cm()
+            .unwrap_or(monitor.width_cm),
+        snap.effective_monitor_height_cm()
+            .unwrap_or(monitor.height_cm),
         monitor.width_px,
         monitor.height_px,
     );
@@ -416,9 +470,7 @@ fn compute_sweep_duration(snap: &RegistrySnapshot, monitor: &crate::session::Mon
             let total_travel = vf_width + snap.stimulus_width_deg();
             total_travel / snap.sweep_speed_deg_per_sec()
         }
-        Envelope::Wedge => {
-            360.0 / snap.rotation_speed_deg_per_sec()
-        }
+        Envelope::Wedge => 360.0 / snap.rotation_speed_deg_per_sec(),
         Envelope::Ring => {
             let max_ecc = geometry.get_max_eccentricity_deg();
             let total_travel = max_ecc + snap.stimulus_width_deg();
@@ -439,8 +491,12 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
         snap.viewing_distance_cm(),
         snap.horizontal_offset_deg(),
         snap.vertical_offset_deg(),
-        cfg.monitor.width_cm,
-        cfg.monitor.height_cm,
+        snap.bisector_x_cm(),
+        snap.bisector_y_cm(),
+        snap.effective_monitor_width_cm()
+            .unwrap_or(cfg.monitor.width_cm),
+        snap.effective_monitor_height_cm()
+            .unwrap_or(cfg.monitor.height_cm),
         cfg.monitor.width_px,
         cfg.monitor.height_px,
     );
@@ -448,16 +504,46 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
     // Build stimulus params map from snapshot values.
     let mut stimulus_params: HashMap<String, serde_json::Value> = HashMap::new();
     stimulus_params.insert("contrast".into(), serde_json::json!(snap.contrast()));
-    stimulus_params.insert("mean_luminance".into(), serde_json::json!(snap.mean_luminance()));
-    stimulus_params.insert("background_luminance".into(), serde_json::json!(snap.background_luminance()));
-    stimulus_params.insert("check_size_deg".into(), serde_json::json!(snap.check_size_deg()));
-    stimulus_params.insert("check_size_cm".into(), serde_json::json!(snap.check_size_cm()));
-    stimulus_params.insert("strobe_frequency_hz".into(), serde_json::json!(snap.strobe_frequency_hz()));
-    stimulus_params.insert("stimulus_width_deg".into(), serde_json::json!(snap.stimulus_width_deg()));
-    stimulus_params.insert("sweep_speed_deg_per_sec".into(), serde_json::json!(snap.sweep_speed_deg_per_sec()));
-    stimulus_params.insert("rotation_speed_deg_per_sec".into(), serde_json::json!(snap.rotation_speed_deg_per_sec()));
-    stimulus_params.insert("expansion_speed_deg_per_sec".into(), serde_json::json!(snap.expansion_speed_deg_per_sec()));
-    stimulus_params.insert("rotation_deg".into(), serde_json::json!(snap.rotation_deg()));
+    stimulus_params.insert(
+        "mean_luminance".into(),
+        serde_json::json!(snap.mean_luminance()),
+    );
+    stimulus_params.insert(
+        "background_luminance".into(),
+        serde_json::json!(snap.background_luminance()),
+    );
+    stimulus_params.insert(
+        "check_size_deg".into(),
+        serde_json::json!(snap.check_size_deg()),
+    );
+    stimulus_params.insert(
+        "check_size_cm".into(),
+        serde_json::json!(snap.check_size_cm()),
+    );
+    stimulus_params.insert(
+        "strobe_frequency_hz".into(),
+        serde_json::json!(snap.strobe_frequency_hz()),
+    );
+    stimulus_params.insert(
+        "stimulus_width_deg".into(),
+        serde_json::json!(snap.stimulus_width_deg()),
+    );
+    stimulus_params.insert(
+        "sweep_speed_deg_per_sec".into(),
+        serde_json::json!(snap.sweep_speed_deg_per_sec()),
+    );
+    stimulus_params.insert(
+        "rotation_speed_deg_per_sec".into(),
+        serde_json::json!(snap.rotation_speed_deg_per_sec()),
+    );
+    stimulus_params.insert(
+        "expansion_speed_deg_per_sec".into(),
+        serde_json::json!(snap.expansion_speed_deg_per_sec()),
+    );
+    stimulus_params.insert(
+        "rotation_deg".into(),
+        serde_json::json!(snap.rotation_deg()),
+    );
 
     DatasetConfig {
         envelope,
@@ -489,13 +575,53 @@ fn build_renderer_config_from_snapshot(
     monitor: &crate::session::MonitorInfo,
     apply_rotation: bool,
 ) -> RendererConfig {
-    let (w_cm, h_cm, w_px, h_px) = (monitor.width_cm, monitor.height_cm, monitor.width_px, monitor.height_px);
+    // EDID gives reliable pixel dimensions and a usable auto-detected
+    // cm size. The registry's MonitorWidthCm/MonitorHeightCm only override
+    // the EDID value when the user has explicitly calibrated them via UI.
+    //
+    // Monitor yaw/pitch: the projection currently assumes the monitor normal
+    // is the eye-perpendicular axis (yaw = pitch = 0). `MonitorYawDeg` /
+    // `MonitorPitchDeg` are registry params, so a configured non-zero value
+    // would otherwise be *silently ignored* — a no-op setting with real
+    // scientific consequences (the presented visual angles would be wrong for
+    // a physically-tilted monitor). We refuse to be silent about it: a
+    // non-zero value is surfaced as a loud warning here. Actually applying the
+    // tilt means rotating the monitor plane in the spherical projection (CPU
+    // geometry + the WGSL shader) and validating the rendered angles *on the
+    // physical display* — that on-hardware validation can't be faked, so the
+    // feature is deferred with cause rather than shipped unvalidated.
+    let yaw_deg = snap.monitor_yaw_deg();
+    let pitch_deg = snap.monitor_pitch_deg();
+    if yaw_deg.abs() > f64::EPSILON || pitch_deg.abs() > f64::EPSILON {
+        tracing::warn!(
+            yaw_deg,
+            pitch_deg,
+            "monitor yaw/pitch are configured but NOT yet applied to the \
+             stimulus projection — presented visual angles assume a \
+             perpendicular monitor. Treat retinotopy from a tilted monitor as \
+             uncalibrated until yaw/pitch projection lands."
+        );
+    }
+
+    let (w_cm, h_cm, w_px, h_px) = (
+        // Effective panel cm: user-calibrated MonitorWidthCm/HeightCm if
+        // explicitly set in the UI/overlay, else the EDID hardware value
+        // already injected into the registry's HardwareContext at startup.
+        snap.effective_monitor_width_cm()
+            .unwrap_or(monitor.width_cm),
+        snap.effective_monitor_height_cm()
+            .unwrap_or(monitor.height_cm),
+        monitor.width_px,
+        monitor.height_px,
+    );
 
     let geometry = DisplayGeometry::new(
         snap.experiment_projection(),
         snap.viewing_distance_cm(),
         snap.horizontal_offset_deg(),
         snap.vertical_offset_deg(),
+        snap.bisector_x_cm(),
+        snap.bisector_y_cm(),
         w_cm,
         h_cm,
         w_px,
@@ -504,6 +630,7 @@ fn build_renderer_config_from_snapshot(
 
     let max_ecc = geometry.get_max_eccentricity_deg() as f32;
     let strobe_hz = snap.strobe_frequency_hz();
+    let fov_mask = compute_fov_mask_bounds(&geometry, snap);
 
     RendererConfig {
         visual_field_width_deg: geometry.visual_field_width_deg() as f32,
@@ -523,7 +650,11 @@ fn build_renderer_config_from_snapshot(
         luminance_high: snap.luminance_high() as f32,
         luminance_low: snap.luminance_low() as f32,
 
-        strobe_frequency_hz: if strobe_hz > 0.0 { strobe_hz as f32 } else { 0.0 },
+        strobe_frequency_hz: if strobe_hz > 0.0 {
+            strobe_hz as f32
+        } else {
+            0.0
+        },
 
         envelope_type: snap.stimulus_envelope().to_shader_int(),
         stimulus_width_deg: snap.stimulus_width_deg() as f32,
@@ -531,7 +662,90 @@ fn build_renderer_config_from_snapshot(
         background_luminance: snap.background_luminance() as f32,
         max_eccentricity_deg: max_ecc,
 
-        monitor_rotation_deg: if apply_rotation { snap.monitor_rotation_deg() as f32 } else { 0.0 },
+        monitor_rotation_deg: if apply_rotation {
+            snap.monitor_rotation_deg() as f32
+        } else {
+            0.0
+        },
+
+        // Calibration ticks during preview only â€” for rig setup and bisector
+        // alignment. Disabled during acquisition so the recorded stimulus is
+        // unaltered.
+        show_ticks: !apply_rotation,
+
+        // Declared sweep envelope (deg) â€” Zhuang canonical 140Â° az Ã— 110Â° alt.
+        // The shader uses these to bound the bar's sweep and to mask any
+        // bar/wedge/ring pixel outside the declared (az, el) box. Center
+        // comes from `OffsetAzi`/`OffsetAlt` so the masked region tracks
+        // the experimenter-declared visual-field center.
+        swept_range_width_deg: snap.azi_angular_range() as f32,
+        swept_range_height_deg: snap.alt_angular_range() as f32,
+        swept_center_az_deg: snap.offset_azi() as f32,
+        swept_center_el_deg: snap.offset_alt() as f32,
+
+        bisector_x_cm: snap.bisector_x_cm() as f32,
+        bisector_y_cm: snap.bisector_y_cm() as f32,
+
+        // Project the four FOV envelope corners (in visual deg) to
+        // monitor cm via the inverse spherical transform, then take
+        // their axis-aligned bounding box. The shader masks anything
+        // outside this rectangle â€” a flat post-transform mask whose
+        // corners ARE the projected FOV corners.
+        fov_mask_y_min_cm: fov_mask.y_min as f32,
+        fov_mask_y_max_cm: fov_mask.y_max as f32,
+        fov_mask_z_min_cm: fov_mask.z_min as f32,
+        fov_mask_z_max_cm: fov_mask.z_max as f32,
+    }
+}
+
+#[cfg(windows)]
+struct FovMaskBounds {
+    y_min: f64,
+    y_max: f64,
+    z_min: f64,
+    z_max: f64,
+}
+
+#[cfg(windows)]
+fn compute_fov_mask_bounds(geometry: &DisplayGeometry, snap: &RegistrySnapshot) -> FovMaskBounds {
+    let half_az = snap.azi_angular_range() * 0.5;
+    let half_el = snap.alt_angular_range() * 0.5;
+    let cx = snap.offset_azi();
+    let cy = snap.offset_alt();
+    let corners = [
+        (cx - half_az, cy - half_el),
+        (cx + half_az, cy - half_el),
+        (cx - half_az, cy + half_el),
+        (cx + half_az, cy + half_el),
+    ];
+    let dw = geometry.display_width_cm;
+    let dh = geometry.display_height_cm;
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    let mut z_min = f64::INFINITY;
+    let mut z_max = f64::NEG_INFINITY;
+    for (az, el) in corners {
+        let (u, v) = geometry.angle_to_uv(az, el);
+        let y_cm = (u - 0.5) * dw;
+        let z_cm = (0.5 - v) * dh;
+        if y_cm < y_min {
+            y_min = y_cm;
+        }
+        if y_cm > y_max {
+            y_max = y_cm;
+        }
+        if z_cm < z_min {
+            z_min = z_cm;
+        }
+        if z_cm > z_max {
+            z_max = z_cm;
+        }
+    }
+    FovMaskBounds {
+        y_min,
+        y_max,
+        z_min,
+        z_max,
     }
 }
 
@@ -539,25 +753,76 @@ fn build_renderer_config_from_snapshot(
 // Thread entry point
 // =============================================================================
 
+/// Joins the calling thread to the Windows Multimedia Class Scheduler Service
+/// ("Pro Audio" task) for its lifetime, then reverts on drop. This is the
+/// Microsoft-sanctioned mechanism for presentation/audio threads: it schedules
+/// the vsync loop at real-time priority so it is not preempted across a flip by
+/// the analysis worker, the event forwarder, or OS background work — *without*
+/// the system-starvation risk of a raw `THREAD_PRIORITY_TIME_CRITICAL` spin
+/// (and our loop blocks on `WaitForVBlank`, yielding every frame). Best-effort:
+/// if MMCSS is unavailable, we warn and run at normal priority rather than fail.
 #[cfg(windows)]
-pub fn run(
+struct MmcssRealtime(Option<windows::Win32::Foundation::HANDLE>);
+
+#[cfg(windows)]
+impl MmcssRealtime {
+    fn acquire() -> Self {
+        use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+        let task: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
+        let mut task_index: u32 = 0;
+        // SAFETY: `task` is a valid NUL-terminated UTF-16 buffer and
+        // `task_index` a valid out-pointer; the returned handle is reverted on drop.
+        match unsafe {
+            AvSetMmThreadCharacteristicsW(windows::core::PCWSTR(task.as_ptr()), &mut task_index)
+        } {
+            Ok(handle) if !handle.is_invalid() => {
+                tracing::info!("stimulus thread joined MMCSS 'Pro Audio' (real-time scheduling)");
+                MmcssRealtime(Some(handle))
+            }
+            _ => {
+                tracing::warn!(
+                    "could not elevate the stimulus thread to MMCSS real-time priority — \
+                     running at normal priority; vsync timing may be less robust under load"
+                );
+                MmcssRealtime(None)
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MmcssRealtime {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            use windows::Win32::System::Threading::AvRevertMmThreadCharacteristics;
+            // SAFETY: `handle` came from a successful AvSetMmThreadCharacteristicsW.
+            unsafe {
+                let _ = AvRevertMmThreadCharacteristics(handle);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn run(cmd_rx: Receiver<StimulusCmd>, evt_tx: Sender<StimulusEvt>, config: StimulusConfig) {
+    // Real-time scheduling for the whole thread lifetime (preview + acquisition).
+    let _mmcss = MmcssRealtime::acquire();
+
+    if let Err(e) = run_inner(cmd_rx, &evt_tx, &config) {
+        tracing::error!(error = %e, "stimulus thread fatal error");
+        let _ = evt_tx.send(StimulusEvt::Fatal(e));
+    }
+}
+
+#[cfg(windows)]
+fn run_inner(
     cmd_rx: Receiver<StimulusCmd>,
-    evt_tx: Sender<StimulusEvt>,
-    monitor_index: usize,
-    monitor_width_px: u32,
-    monitor_height_px: u32,
-    monitor_position: (i32, i32),
-    preview_width_px: u32,
-    preview_interval_ms: u32,
-    preview_cycle_sec: f64,
-    idle_sleep_ms: u32,
-    _fps_window_frames: usize,
-    drop_detection_warmup_frames: usize,
-    initial_bg_luminance: f64,
-) {
-    if let Err(e) = run_inner(
-        cmd_rx,
-        &evt_tx,
+    evt_tx: &Sender<StimulusEvt>,
+    config: &StimulusConfig,
+) -> Result<(), AcquisitionError> {
+    // Bind every field as a local (all `Copy`) so the rest of the body — which
+    // refers to these by their original names — stays unchanged.
+    let StimulusConfig {
         monitor_index,
         monitor_width_px,
         monitor_height_px,
@@ -568,27 +833,8 @@ pub fn run(
         idle_sleep_ms,
         drop_detection_warmup_frames,
         initial_bg_luminance,
-    ) {
-        eprintln!("[stimulus_thread] fatal error: {e}");
-        let _ = evt_tx.send(StimulusEvt::Fatal(e));
-    }
-}
+    } = *config;
 
-#[cfg(windows)]
-fn run_inner(
-    cmd_rx: Receiver<StimulusCmd>,
-    evt_tx: &Sender<StimulusEvt>,
-    monitor_index: usize,
-    monitor_width_px: u32,
-    monitor_height_px: u32,
-    monitor_position: (i32, i32),
-    preview_width_px: u32,
-    preview_interval_ms: u32,
-    preview_cycle_sec: f64,
-    idle_sleep_ms: u32,
-    drop_detection_warmup_frames: usize,
-    initial_bg_luminance: f64,
-) -> Result<(), AcquisitionError> {
     // --- Create win32 window ---
     let (hwnd, hinstance) = create_fullscreen_window(
         monitor_position.0,
@@ -596,9 +842,12 @@ fn run_inner(
         monitor_width_px,
         monitor_height_px,
     )?;
-    eprintln!(
-        "[stimulus_thread] window created at ({}, {}), {}x{}",
-        monitor_position.0, monitor_position.1, monitor_width_px, monitor_height_px
+    tracing::info!(
+        x = monitor_position.0,
+        y = monitor_position.1,
+        width = monitor_width_px,
+        height = monitor_height_px,
+        "window created",
     );
 
     // --- Create wgpu instance, surface, device, queue ---
@@ -616,7 +865,7 @@ fn run_inner(
     }))
     .ok_or_else(|| AcquisitionError::Stimulus("No suitable GPU adapter found".into()))?;
 
-    eprintln!("[stimulus_thread] adapter: {}", adapter.get_info().name);
+    tracing::info!(adapter = %adapter.get_info().name, "GPU adapter selected");
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -652,15 +901,25 @@ fn run_inner(
     );
 
     // --- Create stimulus renderer ---
-    let mut renderer = StimulusRenderer::new(&device, surface_format);
-    eprintln!("[stimulus_thread] renderer created");
+    let mut renderer = StimulusRenderer::new(
+        &device,
+        &queue,
+        surface_format,
+        monitor_width_px,
+        monitor_height_px,
+    );
+    tracing::debug!("renderer created");
 
     // --- Preview capture: small offscreen texture for scientist's sidebar ---
     let preview_w = preview_width_px;
     let preview_h = (preview_w as f64 * monitor_height_px as f64 / monitor_width_px as f64) as u32;
     let preview_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("preview_capture"),
-        size: wgpu::Extent3d { width: preview_w, height: preview_h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: preview_w,
+            height: preview_h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -670,7 +929,7 @@ fn run_inner(
     });
     let preview_view = preview_texture.create_view(&wgpu::TextureViewDescriptor::default());
     // Staging buffer: 4 bytes per pixel (RGBA), row-aligned to 256 bytes (COPY_BYTES_PER_ROW_ALIGNMENT)
-    let bytes_per_row = ((preview_w * 4 + 255) / 256) * 256;
+    let bytes_per_row = (preview_w * 4).div_ceil(256) * 256;
     let staging_buf_size = (bytes_per_row * preview_h) as u64;
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("preview_staging"),
@@ -680,10 +939,17 @@ fn run_inner(
     });
     let mut last_preview_sent = Instant::now();
     let preview_interval = Duration::from_millis(preview_interval_ms as u64);
+    // The per-vsync UI progress event (`StimulusEvt::Frame`) is throttled to
+    // ~30 fps: a progress bar doesn't need every flip, and building the event's
+    // heap `String`s every frame is avoidable allocation on the real-time
+    // thread. The authoritative per-frame timing is recorded in the dataset,
+    // not this UI event, so throttling loses no scientific data.
+    let mut last_frame_event_sent = Instant::now();
+    let frame_event_interval = Duration::from_millis(33);
 
     // --- Find DXGI output for WaitForVBlank ---
-    let dxgi_output: IDXGIOutput = find_dxgi_output(monitor_index)
-        .map_err(|e| AcquisitionError::Stimulus(e.to_string()))?;
+    let dxgi_output: IDXGIOutput =
+        find_dxgi_output(monitor_index).map_err(|e| AcquisitionError::Stimulus(e.to_string()))?;
 
     // --- QPC frequency ---
     let mut qpc_freq = 0i64;
@@ -699,26 +965,33 @@ fn run_inner(
     // --- Signal ready ---
     evt_tx
         .send(StimulusEvt::Ready)
-        .map_err(|_| AcquisitionError::ChannelClosed { context: "evt_tx closed before Ready" })?;
-    eprintln!("[stimulus_thread] ready");
+        .map_err(|_| AcquisitionError::ChannelClosed {
+            context: "evt_tx closed before Ready",
+        })?;
+    tracing::info!("stimulus thread ready");
 
     // --- State ---
     let mut sequencer = Sequencer::new();
     let mut dataset: Option<StimulusDataset> = None;
     let mut acquiring = false;
     let mut previewing = false;
-    let mut last_qpc_us: i64 = 0;    // QPC clock for sequencer timing (monotonic)
-    let mut last_vsync_us: i64 = 0;  // DWM vsync for dataset frame deltas
+    let mut last_qpc_us: i64 = 0; // QPC clock for sequencer timing (monotonic)
+    let mut last_vsync_us: i64 = 0; // DWM vsync for dataset frame deltas
     let mut start_time_us: i64 = 0;
     let mut preview_start_us: i64 = 0;
+    // Cycle duration for the preview loop. Computed from the live
+    // snapshot's `sweep_speed_deg_per_sec` at StartPreview so changes to
+    // sweep speed in the UI are visible during preview. Falls back to
+    // `preview_cycle_sec` if sweep duration can't be computed.
+    let mut preview_cycle_sec_actual: f32 = preview_cycle_sec as f32;
     let mut last_present_count: u64 = 0;
 
     // Drop detection state.
     //
-    // `drop_detection_warmup_frames` — ignore drops in the first N frames
+    // `drop_detection_warmup_frames` â€” ignore drops in the first N frames
     // (composition warm-up, first-render JIT). The DWM present-count
     // gap is a direct count of missed flips, so we use the gap count
-    // directly; the per-frame Δus-vs-expected ratio test (which would
+    // directly; the per-frame Î”us-vs-expected ratio test (which would
     // consume `drop_detection_threshold`) is post-hoc-only and lives
     // in `crates/openisi-stimulus/src/dataset.rs`.
     //
@@ -727,14 +1000,19 @@ fn run_inner(
     let mut total_frames_observed: u64 = 0;
     let mut total_drops: u64 = 0;
 
-    // Sweep schedule — records when each sweep started and ended.
+    // Sweep schedule â€” records when each sweep started and ended.
     let mut sweep_sequence: Vec<String> = Vec::new();
     let mut sweep_start_us: Vec<i64> = Vec::new();
     let mut sweep_end_us: Vec<i64> = Vec::new();
 
     // Background luminance from experiment config. Updated when acq/preview starts.
     let mut bg_luminance: f64 = initial_bg_luminance;
-    let mut bg_color = wgpu::Color { r: bg_luminance, g: bg_luminance, b: bg_luminance, a: 1.0 };
+    let mut bg_color = wgpu::Color {
+        r: bg_luminance,
+        g: bg_luminance,
+        b: bg_luminance,
+        a: 1.0,
+    };
 
     // --- Main loop ---
     loop {
@@ -742,28 +1020,39 @@ fn run_inner(
         loop {
             match cmd_rx.try_recv() {
                 Ok(StimulusCmd::Shutdown) => {
-                    eprintln!("[stimulus_thread] shutdown requested");
+                    tracing::info!("shutdown requested");
                     if acquiring {
                         sequencer.stop();
                         if let Some(ref mut ds) = dataset {
                             ds.stop_recording();
                         }
                     }
-                    unsafe { let _ = DestroyWindow(hwnd); }
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    }
                     return Ok(());
                 }
                 Ok(StimulusCmd::StartAcquisition(acq_cfg)) => {
-                    eprintln!("[stimulus_thread] starting acquisition");
+                    tracing::info!("starting acquisition");
                     previewing = false;
 
                     // Update background from snapshot.
                     bg_luminance = acq_cfg.snapshot.background_luminance();
-                    bg_color = wgpu::Color { r: bg_luminance, g: bg_luminance, b: bg_luminance, a: 1.0 };
+                    bg_color = wgpu::Color {
+                        r: bg_luminance,
+                        g: bg_luminance,
+                        b: bg_luminance,
+                        a: 1.0,
+                    };
 
                     let seq_cfg = build_sequencer_config(&acq_cfg.snapshot, &acq_cfg.monitor);
                     sequencer.start(&seq_cfg);
 
-                    let render_cfg = build_renderer_config_from_snapshot(&acq_cfg.snapshot, &acq_cfg.monitor, true);
+                    let render_cfg = build_renderer_config_from_snapshot(
+                        &acq_cfg.snapshot,
+                        &acq_cfg.monitor,
+                        true,
+                    );
                     renderer.configure(&render_cfg);
 
                     let ds_cfg = build_dataset_config(&acq_cfg);
@@ -777,52 +1066,84 @@ fn run_inner(
                     acquiring = true;
                 }
                 Ok(StimulusCmd::Stop) => {
-                    eprintln!("[stimulus_thread] stop requested");
+                    tracing::info!("stop requested");
                     if acquiring {
                         sequencer.stop();
                         if let Some(mut ds) = dataset.take() {
                             ds.stop_recording();
-                            let _ = evt_tx.send(StimulusEvt::Complete(AcquisitionResult {
-                                dataset: ds,
-                                sweep_sequence: std::mem::take(&mut sweep_sequence),
-                                sweep_start_us: std::mem::take(&mut sweep_start_us),
-                                sweep_end_us: std::mem::take(&mut sweep_end_us),
-                                completed_normally: false,
-                            }));
+                            let _ =
+                                evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
+                                    dataset: ds,
+                                    sweep_sequence: std::mem::take(&mut sweep_sequence),
+                                    sweep_start_us: std::mem::take(&mut sweep_start_us),
+                                    sweep_end_us: std::mem::take(&mut sweep_end_us),
+                                    completed_normally: false,
+                                })));
                         }
                         acquiring = false;
                         let _ = evt_tx.send(StimulusEvt::Stopped);
                     }
                 }
                 Ok(StimulusCmd::Preview(preview_cfg)) => {
-                    eprintln!("[stimulus_thread] starting preview");
+                    tracing::info!("starting preview");
                     bg_luminance = preview_cfg.snapshot.background_luminance();
-                    bg_color = wgpu::Color { r: bg_luminance, g: bg_luminance, b: bg_luminance, a: 1.0 };
+                    bg_color = wgpu::Color {
+                        r: bg_luminance,
+                        g: bg_luminance,
+                        b: bg_luminance,
+                        a: 1.0,
+                    };
                     let render_cfg = build_renderer_config_from_snapshot(
                         &preview_cfg.snapshot,
                         &preview_cfg.monitor,
-                        false, // Preview shows mouse's perspective — no monitor rotation.
+                        false, // Preview shows mouse's perspective â€” no monitor rotation.
                     );
-                    eprintln!("[stimulus_thread] preview config: vf={:.1}x{:.1} proj={} env={} carrier={} width={:.1} contrast={:.2} lum_hi={:.2} lum_lo={:.2} bg={:.2} ecc={:.1}",
-                        render_cfg.visual_field_width_deg, render_cfg.visual_field_height_deg,
-                        render_cfg.projection_type, render_cfg.envelope_type, render_cfg.carrier_type,
-                        render_cfg.stimulus_width_deg, render_cfg.contrast,
-                        render_cfg.luminance_high, render_cfg.luminance_low,
-                        render_cfg.background_luminance, render_cfg.max_eccentricity_deg);
+                    tracing::debug!(
+                        "preview config: vf={:.1}x{:.1} swept={:.1}x{:.1}@({:.1},{:.1}) proj={} env={} carrier={} width={:.1} contrast={:.2} lum_hi={:.2} lum_lo={:.2} bg={:.2} ecc={:.1}",
+                        render_cfg.visual_field_width_deg,
+                        render_cfg.visual_field_height_deg,
+                        render_cfg.swept_range_width_deg,
+                        render_cfg.swept_range_height_deg,
+                        render_cfg.swept_center_az_deg,
+                        render_cfg.swept_center_el_deg,
+                        render_cfg.projection_type,
+                        render_cfg.envelope_type,
+                        render_cfg.carrier_type,
+                        render_cfg.stimulus_width_deg,
+                        render_cfg.contrast,
+                        render_cfg.luminance_high,
+                        render_cfg.luminance_low,
+                        render_cfg.background_luminance,
+                        render_cfg.max_eccentricity_deg
+                    );
                     renderer.configure(&render_cfg);
                     previewing = true;
                     preview_start_us = qpc_to_us(query_qpc(), qpc_freq);
+                    // Drive the preview at the same cycle duration the
+                    // acquisition would use, so changes to sweep_speed
+                    // (or rotation_speed / expansion_speed for wedge/ring)
+                    // are visible. Clamp to â‰¥ 0.5 s to keep the preview
+                    // useful even at very fast configured speeds.
+                    let sweep_duration =
+                        compute_sweep_duration(&preview_cfg.snapshot, &preview_cfg.monitor);
+                    preview_cycle_sec_actual = (sweep_duration.max(0.5)) as f32;
+                    tracing::debug!(
+                        cycle_sec = preview_cycle_sec_actual,
+                        "preview cycle (from sweep_speed_deg_per_sec)",
+                    );
                 }
                 Ok(StimulusCmd::StopPreview) => {
                     if previewing {
-                        eprintln!("[stimulus_thread] stopping preview");
+                        tracing::info!("stopping preview");
                         previewing = false;
                     }
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    eprintln!("[stimulus_thread] command channel disconnected");
-                    unsafe { let _ = DestroyWindow(hwnd); }
+                    tracing::warn!("command channel disconnected");
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    }
                     return Ok(());
                 }
             }
@@ -830,13 +1151,15 @@ fn run_inner(
 
         // Pump win32 messages
         if !pump_messages() {
-            eprintln!("[stimulus_thread] WM_QUIT received");
-            unsafe { let _ = DestroyWindow(hwnd); }
+            tracing::info!("WM_QUIT received");
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
             return Ok(());
         }
 
         if acquiring {
-            // WaitForVBlank — blocks until vertical blank on target monitor.
+            // WaitForVBlank â€” blocks until vertical blank on target monitor.
             // This provides frame pacing. The actual timestamp comes from DWM below.
             unsafe {
                 dxgi_output
@@ -877,9 +1200,9 @@ fn run_inner(
                 0.0
             };
             let dir_int = direction_to_int(&sequencer.current_direction).unwrap_or_else(|| {
-                eprintln!(
-                    "[stimulus_thread] unrecognized direction '{}' — rendering baseline",
-                    sequencer.current_direction
+                tracing::warn!(
+                    direction = %sequencer.current_direction,
+                    "unrecognized direction — rendering baseline",
                 );
                 0
             });
@@ -892,7 +1215,9 @@ fn run_inner(
 
             match surface.get_current_texture() {
                 Ok(frame) => {
-                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let view = frame
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
                     if sequencer.is_baseline() {
                         render_clear_view(&device, &queue, &view, bg_color);
                     } else {
@@ -901,30 +1226,31 @@ fn run_inner(
                     frame.present();
                 }
                 Err(e) => {
-                    eprintln!("[stimulus_thread] get_current_texture: {e}");
+                    tracing::warn!(error = %e, "get_current_texture failed");
                 }
             }
 
             // Query DWM for the actual hardware vsync timestamp.
             // This is the QPC value AT the vsync interrupt, not after OS scheduling delay.
-            let (vsync_us, _present_count) = if let Some((qpc_vblank, frame_count)) = query_dwm_vsync() {
+            let (vsync_us, _present_count) = if let Some((qpc_vblank, frame_count)) =
+                query_dwm_vsync()
+            {
                 let us = qpc_to_us(qpc_vblank, qpc_freq);
                 total_frames_observed += 1;
                 // Detect GPU-level frame drops from present count gaps,
                 // honoring the warmup window (composition / first-render
                 // JIT can produce a few spurious drops at startup).
                 let past_warmup = total_frames_observed > drop_detection_warmup_frames as u64;
-                if past_warmup
-                    && last_present_count > 0
-                    && frame_count > last_present_count + 1
-                {
+                if past_warmup && last_present_count > 0 && frame_count > last_present_count + 1 {
                     let gap = frame_count - last_present_count - 1;
                     total_drops += gap;
-                    eprintln!(
-                        "[stimulus_thread] DWM present-count gap: {} frame(s) dropped (cumulative {}/{})",
-                        gap, total_drops, total_frames_observed
+                    tracing::warn!(
+                        gap,
+                        cumulative = total_drops,
+                        observed = total_frames_observed,
+                        "DWM present-count gap: frames dropped",
                     );
-                    // Transient drop event — non-fatal, UI logs it.
+                    // Transient drop event â€” non-fatal, UI logs it.
                     let _ = evt_tx.send(StimulusEvt::Error(format!(
                         "Dropped {gap} stimulus frame(s) (cumulative {total_drops})"
                     )));
@@ -948,7 +1274,11 @@ fn run_inner(
                 (qpc_us, 0)
             };
 
-            let frame_delta_us = if last_vsync_us > 0 { vsync_us - last_vsync_us } else { 0 };
+            let frame_delta_us = if last_vsync_us > 0 {
+                vsync_us - last_vsync_us
+            } else {
+                0
+            };
             last_vsync_us = vsync_us;
 
             // Record frame into dataset with hardware vsync timestamp
@@ -957,7 +1287,9 @@ fn run_inner(
                 // Resolve condition index from current direction in sweep sequence.
                 let cond_idx = {
                     let dir = &sequencer.current_direction;
-                    ds.config().conditions.iter()
+                    ds.config()
+                        .conditions
+                        .iter()
                         .position(|c| c == dir)
                         .map(|i| i as u8)
                         .unwrap_or(0)
@@ -975,74 +1307,92 @@ fn run_inner(
                 ds.record_frame(&record);
             }
 
-            // Send frame event to UI
-            let condition = if let Some(ref ds) = dataset {
-                let sweep_idx = sequencer.current_sweep_index;
-                if sweep_idx < ds.sweep_sequence.len() {
-                    ds.sweep_sequence[sweep_idx].clone()
+            // Send frame progress event to the UI — throttled to ~30 fps (see
+            // `frame_event_interval`); building the record's heap Strings every
+            // vsync is avoidable work on the real-time thread.
+            if last_frame_event_sent.elapsed() >= frame_event_interval {
+                last_frame_event_sent = Instant::now();
+                let condition = if let Some(ref ds) = dataset {
+                    let sweep_idx = sequencer.current_sweep_index;
+                    if sweep_idx < ds.sweep_sequence.len() {
+                        ds.sweep_sequence[sweep_idx].clone()
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
-                }
-            } else {
-                String::new()
-            };
-            let record = StimulusFrameRecord {
-                timestamp_us: vsync_us,
-                state: sequencer.state.name().to_string(),
-                sweep_index: sequencer.current_sweep_index,
-                total_sweeps: sequencer.get_total_sweeps(),
-                state_progress: sequencer.get_state_progress(),
-                frame_delta_us,
-                elapsed_sec: sequencer.get_elapsed_time(),
-                remaining_sec: sequencer.get_remaining_time(),
-                condition,
-                condition_occurrence: sequencer.get_current_condition_occurrence(),
-            };
-            let _ = evt_tx.send(StimulusEvt::Frame(record));
+                };
+                let record = StimulusFrameRecord {
+                    timestamp_us: vsync_us,
+                    state: sequencer.state.name().to_string(),
+                    sweep_index: sequencer.current_sweep_index,
+                    total_sweeps: sequencer.get_total_sweeps(),
+                    state_progress: sequencer.get_state_progress(),
+                    frame_delta_us,
+                    elapsed_sec: sequencer.get_elapsed_time(),
+                    remaining_sec: sequencer.get_remaining_time(),
+                    condition,
+                    condition_occurrence: sequencer.get_current_condition_occurrence(),
+                };
+                let _ = evt_tx.send(StimulusEvt::Frame(record));
+            }
 
             // Capture preview frame for scientist's sidebar (~10 fps)
             if last_preview_sent.elapsed() >= preview_interval {
                 last_preview_sent = Instant::now();
                 capture_preview_frame(
-                    &device, &queue, &mut renderer,
-                    &preview_view, &preview_texture, &staging_buffer,
-                    preview_w, preview_h, bytes_per_row,
-                    sequencer.is_baseline(), bg_luminance as f32, evt_tx,
+                    &PreviewTarget {
+                        device: &device,
+                        queue: &queue,
+                        view: &preview_view,
+                        texture: &preview_texture,
+                        staging_buffer: &staging_buffer,
+                        width: preview_w,
+                        height: preview_h,
+                        bytes_per_row,
+                    },
+                    &mut renderer,
+                    sequencer.is_baseline(),
+                    bg_luminance as f32,
+                    evt_tx,
                 );
             }
 
             // Check completion
             if sequencer.is_complete() {
-                eprintln!("[stimulus_thread] acquisition complete");
+                tracing::info!("acquisition complete");
                 if let Some(mut ds) = dataset.take() {
                     ds.stop_recording();
-                    let _ = evt_tx.send(StimulusEvt::Complete(AcquisitionResult {
+                    let _ = evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
                         dataset: ds,
                         sweep_sequence: std::mem::take(&mut sweep_sequence),
                         sweep_start_us: std::mem::take(&mut sweep_start_us),
                         sweep_end_us: std::mem::take(&mut sweep_end_us),
                         completed_normally: true,
-                    }));
+                    })));
                 }
                 acquiring = false;
             }
         } else if previewing {
-            // Preview: render stimulus pattern with cycling progress (no recording).
-            // Use a 10-second cycle so the user sees the full sweep range.
+            // Preview: render stimulus pattern with cycling progress
+            // (no recording). Cycle duration mirrors the configured sweep
+            // speed so the preview reflects the actual acquisition rate.
             let now_us = qpc_to_us(query_qpc(), qpc_freq);
             let elapsed_sec = (now_us - preview_start_us) as f32 / 1_000_000.0;
-            let cycle_sec = preview_cycle_sec as f32;
+            let cycle_sec = preview_cycle_sec_actual;
             let progress = (elapsed_sec % cycle_sec) / cycle_sec;
             renderer.update_frame(&queue, progress, 0, elapsed_sec);
 
             match surface.get_current_texture() {
                 Ok(frame) => {
-                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let view = frame
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
                     renderer.render(&device, &queue, &view);
                     frame.present();
                 }
                 Err(e) => {
-                    eprintln!("[stimulus_thread] preview render error: {e}");
+                    tracing::warn!(error = %e, "preview render error");
                 }
             }
 
@@ -1050,31 +1400,59 @@ fn run_inner(
             if last_preview_sent.elapsed() >= preview_interval {
                 last_preview_sent = Instant::now();
                 capture_preview_frame(
-                    &device, &queue, &mut renderer,
-                    &preview_view, &preview_texture, &staging_buffer,
-                    preview_w, preview_h, bytes_per_row,
-                    false, bg_luminance as f32, evt_tx,
+                    &PreviewTarget {
+                        device: &device,
+                        queue: &queue,
+                        view: &preview_view,
+                        texture: &preview_texture,
+                        staging_buffer: &staging_buffer,
+                        width: preview_w,
+                        height: preview_h,
+                        bytes_per_row,
+                    },
+                    &mut renderer,
+                    false,
+                    bg_luminance as f32,
+                    evt_tx,
                 );
             }
 
             // Wait for vsync to avoid tearing
-            unsafe { let _ = dxgi_output.WaitForVBlank(); }
+            unsafe {
+                let _ = dxgi_output.WaitForVBlank();
+            }
         } else {
-            // Idle — render gray, sleep to avoid busy-waiting
+            // Idle â€” render gray, sleep to avoid busy-waiting.
+            // Errors during idle render (e.g. "surface has changed" when
+            // the OS resizes/reconfigures the swap chain) are throttled
+            // to once-per-second so we don't drown stderr at 60Hz and
+            // back-pressure other prints from the analysis worker.
             if let Err(e) = render_clear(&surface, &device, &queue, bg_color) {
-                eprintln!("[stimulus_thread] idle render error: {e}");
+                static LAST_LOG: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+                    std::sync::OnceLock::new();
+                let cell = LAST_LOG.get_or_init(|| std::sync::Mutex::new(None));
+                if let Ok(mut last) = cell.lock() {
+                    let now = Instant::now();
+                    if last
+                        .map(|t| now.duration_since(t).as_secs() >= 1)
+                        .unwrap_or(true)
+                    {
+                        tracing::warn!(error = %e, "idle render error (throttled)");
+                        *last = Some(now);
+                    }
+                }
             }
             std::thread::sleep(Duration::from_millis(idle_sleep_ms as u64));
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Pure drop-detection policy (testable, no Windows/threading deps).
-// ─────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Cumulative-drop fraction above which the run is declared catastrophic.
-/// 5% loss = ~10× the noise floor we see in healthy runs.
+/// 5% loss = ~10Ã— the noise floor we see in healthy runs.
 #[cfg(any(windows, test))]
 const CATASTROPHIC_DROP_FRACTION: f64 = 0.05;
 
@@ -1088,9 +1466,9 @@ const CATASTROPHIC_GAP_FRAMES: u64 = 60;
 ///
 /// Two independent triggers, either fires:
 /// - cumulative loss fraction >= `CATASTROPHIC_DROP_FRACTION` (5%)
-/// - last gap size >= `CATASTROPHIC_GAP_FRAMES` (60 frames ≈ 1 s @ 60 Hz)
+/// - last gap size >= `CATASTROPHIC_GAP_FRAMES` (60 frames â‰ˆ 1 s @ 60 Hz)
 ///
-/// Pure function — extracted out of the Windows-only render loop so
+/// Pure function â€” extracted out of the Windows-only render loop so
 /// the policy can be unit-tested on every platform. Available on
 /// Windows for the actual stimulus thread; available everywhere for
 /// tests via `#[cfg(any(windows, test))]`.
@@ -1126,7 +1504,7 @@ mod tests {
 
     #[test]
     fn at_fraction_boundary_is_catastrophic() {
-        // 5 / 100 = exactly 5% → catastrophic (>=, not >).
+        // 5 / 100 = exactly 5% â†’ catastrophic (>=, not >).
         assert!(is_catastrophic_drop(5, 100, 1));
     }
 
@@ -1142,7 +1520,7 @@ mod tests {
 
     #[test]
     fn single_gap_at_threshold_is_catastrophic() {
-        // gap == CATASTROPHIC_GAP_FRAMES (60) → catastrophic.
+        // gap == CATASTROPHIC_GAP_FRAMES (60) â†’ catastrophic.
         assert!(is_catastrophic_drop(60, 10_000, 60));
     }
 

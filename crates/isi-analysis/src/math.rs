@@ -1,14 +1,31 @@
 //! Analysis math that runs on the host: retinotopy orchestration,
-//! post-segmentation derived maps, and a few utility transforms. Heavy
-//! numerics (dF/F, DFT, SNR, smoothing, gradients, VFS) live in
-//! `crate::compute::ops` and operate on `tch::Tensor`.
+//! post-segmentation derived maps, and a few utility transforms.
+//!
+//! Heavy numerics (dF/F, DFT, SNR, smoothing, gradients, VFS) run on the
+//! Burn tensor substrate (`crate::compute`). `compute_retinotopy` is the
+//! production retinotopy entry point; its host-side scaffolding
+//! (`rotated_complex_maps`, `degree_scales`) handles the optional rotation and
+//! degree scaling, and it assembles the final maps inline.
 
 use ndarray::Array2;
 use num_complex::Complex64;
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{AcquisitionProperties, AnalysisParams, ComplexMaps, RetinotopyMaps};
 use crate::compute;
+use crate::{AcquisitionProperties, AnalysisError, AnalysisParams, ComplexMaps, RetinotopyMaps};
+
+/// Bail out with [`AnalysisError::Cancelled`] when the run was cancelled. The
+/// retinotopy stage checks this between its device sub-ops so a mid-stage param
+/// change (which sets `cancel`) is honored without waiting for the stage to
+/// finish — mirroring the per-cycle check in `compute::projection::run`.
+fn check_cancel(cancel: &AtomicBool) -> crate::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(AnalysisError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -24,7 +41,7 @@ use crate::compute;
 /// once, to populate the display fields `azi_phase` and `alt_phase`.
 ///
 ///   1. Optional 90° rotation on host (only when `rotation_k != 0`).
-///   2. Upload the four complex maps to device as `Kind::ComplexFloat`.
+///   2. Upload the four complex maps to device as `Complex2` pairs.
 ///   3. Per-orientation position phasor via Marshel-Garrett delay
 ///      subtraction (`position_phasor_delay_subtracted`). Returns a
 ///      complex tensor `z = exp(i·φ)`; the wrapped real φ is never
@@ -39,18 +56,25 @@ use crate::compute;
 ///   9. Single device→CPU download of all retinotopy results. Phase
 ///      recovered for display via `arg(z_smoothed)` at this boundary.
 ///  10. Phase → degrees on host (linear scale).
-pub fn compute_retinotopy(
+///
+/// Apply the optional host-side 90°·k rotation to the four complex maps,
+/// returning owned copies. The rotation convention lives in one place.
+/// Small, sometimes-applied, four arrays only — host ndarray work.
+fn rotated_complex_maps(
     maps: &ComplexMaps,
-    acquisition: &AcquisitionProperties,
-    params: &AnalysisParams,
-) -> crate::Result<RetinotopyMaps> {
-    // Optional rotation on host — small, sometimes-applied, four arrays only.
-    let (azi_fwd, azi_rev, alt_fwd, alt_rev) = if acquisition.rotation_k != 0 {
+    rotation_k: i32,
+) -> (
+    Array2<Complex64>,
+    Array2<Complex64>,
+    Array2<Complex64>,
+    Array2<Complex64>,
+) {
+    if rotation_k != 0 {
         (
-            rot90(&maps.azi_fwd, acquisition.rotation_k),
-            rot90(&maps.azi_rev, acquisition.rotation_k),
-            rot90(&maps.alt_fwd, acquisition.rotation_k),
-            rot90(&maps.alt_rev, acquisition.rotation_k),
+            rot90(&maps.azi_fwd, rotation_k),
+            rot90(&maps.azi_rev, rotation_k),
+            rot90(&maps.alt_fwd, rotation_k),
+            rot90(&maps.alt_rev, rotation_k),
         )
     } else {
         (
@@ -59,51 +83,84 @@ pub fn compute_retinotopy(
             maps.alt_fwd.clone(),
             maps.alt_rev.clone(),
         )
-    };
+    }
+}
 
-    // Upload the four complex maps to device as native Kind::ComplexFloat.
-    let a_fwd = compute::array2_complex_to_complex_tensor(&azi_fwd);
-    let a_rev = compute::array2_complex_to_complex_tensor(&azi_rev);
-    let l_fwd = compute::array2_complex_to_complex_tensor(&alt_fwd);
-    let l_rev = compute::array2_complex_to_complex_tensor(&alt_rev);
+/// Per-orientation degree-scale factor `angular_range / 2π`.
+fn degree_scales(acquisition: &AcquisitionProperties) -> (f64, f64) {
+    (
+        acquisition.azi_angular_range / (2.0 * PI),
+        acquisition.alt_angular_range / (2.0 * PI),
+    )
+}
 
-    // Per-orientation amplitude = mean of forward and reverse magnitudes
-    // (SNLC `Gprocesskret_batch.m`: `mag_az = 0.5*(mag_fwd + mag_rev)`).
+/// Compute retinotopy on the Burn substrate. Same stage order as the
+/// docstring above: rotate → upload → cycle combine → phasor smoothing →
+/// VFS + gradients → magnification → single device→host download. Gated
+/// end-to-end by `tests/equivalence.rs` against the committed baseline.
+pub fn compute_retinotopy(
+    maps: &ComplexMaps,
+    acquisition: &AcquisitionProperties,
+    params: &AnalysisParams,
+    cancel: &AtomicBool,
+) -> crate::Result<RetinotopyMaps> {
+    let (azi_fwd, azi_rev, alt_fwd, alt_rev) = rotated_complex_maps(maps, acquisition.rotation_k);
+
+    // Upload the four complex maps to device as Complex2 pairs.
+    let a_fwd = compute::array2_complex_to_complex2(&azi_fwd);
+    let a_rev = compute::array2_complex_to_complex2(&azi_rev);
+    let l_fwd = compute::array2_complex_to_complex2(&alt_fwd);
+    let l_rev = compute::array2_complex_to_complex2(&alt_rev);
+
+    // Per-orientation amplitude = mean of forward and reverse magnitudes.
     let azi_amp_t = compute::position_amplitude(&a_fwd, &a_rev);
     let alt_amp_t = compute::position_amplitude(&l_fwd, &l_rev);
 
-    // Stage 1 — cycle combine (fwd+rev → position phasor).
+    check_cancel(cancel)?;
+    // Stage 1 — cycle combine.
     let (azi_z, alt_z) = params.cycle_combine.apply(&a_fwd, &a_rev, &l_fwd, &l_rev);
 
+    check_cancel(cancel)?;
     // Stage 2 — position phasor smoothing.
-    let (azi_z_s, alt_z_s) = params.phase_smoothing.apply(
-        &azi_z, &alt_z, &azi_amp_t, &alt_amp_t,
-    );
+    let (azi_z_s, alt_z_s) =
+        params
+            .phase_smoothing
+            .apply(&azi_z, &alt_z, azi_amp_t.clone(), alt_amp_t.clone());
 
-    // Stage 3 — VFS computation (also returns the four phase gradients,
-    // which magnification consumes).
+    check_cancel(cancel)?;
+    // Stage 3 — VFS + the four phase gradients.
     let (vfs_t, d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy) =
         params.vfs_computation.apply(&azi_z_s, &alt_z_s);
 
-    let scale_azi = acquisition.azi_angular_range / (2.0 * PI);
-    let scale_alt = acquisition.alt_angular_range / (2.0 * PI);
+    let (scale_azi, scale_alt) = degree_scales(acquisition);
     let mag_t = compute::compute_magnification_jacobian(
-        &d_azi_dx, &d_azi_dy, &d_alt_dx, &d_alt_dy, scale_azi, scale_alt,
+        d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, scale_azi, scale_alt,
     );
 
-    // Single device→CPU download. Phase recovered for display via
-    // `arg(z)` at this boundary — the only place atan2 of the smoothed
-    // phasor is taken, and only for the display field.
-    let vfs = compute::tensor_to_array2_f64(&vfs_t)?;
-    let magnification_raw = compute::tensor_to_array2_f64(&mag_t)?;
-    let azi_phase = compute::tensor_to_array2_f64(&azi_z_s.angle())?;
-    let alt_phase = compute::tensor_to_array2_f64(&alt_z_s.angle())?;
-    let azi_amplitude = compute::tensor_to_array2_f64(&azi_amp_t)?;
-    let alt_amplitude = compute::tensor_to_array2_f64(&alt_amp_t)?;
+    // Device→host downloads (the lazy op graph actually executes here). A last
+    // cancel check lets a mid-stage cancellation skip the syncs entirely.
+    check_cancel(cancel)?;
+    // Phase recovered via arg(z_smoothed).
+    let vfs = compute::tensor_to_array2_f64(vfs_t)?;
+    let magnification_raw = compute::tensor_to_array2_f64(mag_t)?;
+    let azi_phase = compute::tensor_to_array2_f64(azi_z_s.angle())?;
+    let alt_phase = compute::tensor_to_array2_f64(alt_z_s.angle())?;
+    let azi_amplitude = compute::tensor_to_array2_f64(azi_amp_t)?;
+    let alt_amplitude = compute::tensor_to_array2_f64(alt_amp_t)?;
 
-    let azi_phase_degrees = phase_to_degrees(&azi_phase, acquisition.azi_angular_range, acquisition.offset_azi);
-    let alt_phase_degrees = phase_to_degrees(&alt_phase, acquisition.alt_angular_range, acquisition.offset_alt);
-
+    // Assemble the result: derive the degree-scaled phase maps, then pack the
+    // struct by named field (so the six same-shaped `Array2<f64>` maps can't be
+    // transposed). This is the one place the phase→degrees convention lives.
+    let azi_phase_degrees = phase_to_degrees(
+        &azi_phase,
+        acquisition.azi_angular_range,
+        acquisition.offset_azi,
+    );
+    let alt_phase_degrees = phase_to_degrees(
+        &alt_phase,
+        acquisition.alt_angular_range,
+        acquisition.offset_alt,
+    );
     Ok(RetinotopyMaps {
         azi_phase,
         alt_phase,
@@ -127,7 +184,36 @@ pub fn compute_retinotopy(
 pub fn apply_label_roi(src: &Array2<f64>, area_labels: &Array2<i32>) -> Array2<f64> {
     let (h, w) = src.dim();
     Array2::from_shape_fn((h, w), |(r, c)| {
-        if area_labels[[r, c]] > 0 { src[[r, c]] } else { 0.0 }
+        if area_labels[[r, c]] > 0 {
+            src[[r, c]]
+        } else {
+            0.0
+        }
+    })
+}
+
+/// Cortical magnification factor (Allen CMF, **px²/deg²**) — the reciprocal of
+/// the visual-field Jacobian determinant `|det J|` (deg²/px², our
+/// `magnification_raw`). High where a small patch of visual space maps to a
+/// large patch of cortex (i.e. where cortex is *magnified*), which is the
+/// physiologically meaningful reading and matches Allen's
+/// `RetinotopicMapping._getDeterminantMap` orientation.
+///
+/// `eps` floors the denominator so degenerate (near-singular) pixels don't
+/// produce infinities. Pixels outside any segmented patch are zeroed
+/// (`area_labels == 0`), exactly like the other ROI-gated derived maps.
+pub fn cortical_magnification_factor(
+    magnification_raw: &Array2<f64>,
+    area_labels: &Array2<i32>,
+) -> Array2<f64> {
+    const EPS: f64 = 1e-12;
+    let (h, w) = magnification_raw.dim();
+    Array2::from_shape_fn((h, w), |(r, c)| {
+        if area_labels[[r, c]] > 0 {
+            1.0 / magnification_raw[[r, c]].max(EPS)
+        } else {
+            0.0
+        }
     })
 }
 
@@ -151,8 +237,7 @@ pub fn eccentricity_pixel_deg(alt_deg: f64, azi_deg: f64, alt_c_deg: f64, azi_c_
     let d_alt = (alt_deg - alt_c_deg) * to_rad;
     let d_azi = (azi_deg - azi_c_deg) * to_rad;
     let cos_d_alt = d_alt.cos();
-    let term = d_alt.tan().powi(2)
-        + d_azi.tan().powi(2) / (cos_d_alt * cos_d_alt).max(1e-12);
+    let term = d_alt.tan().powi(2) + d_azi.tan().powi(2) / (cos_d_alt * cos_d_alt).max(1e-12);
     term.sqrt().atan() * 180.0 / PI
 }
 
@@ -170,7 +255,9 @@ pub fn compute_eccentricity(
     let max_label = *area_labels.iter().max().unwrap_or(&0);
     let mut counts = vec![0usize; max_label as usize + 1];
     for &l in area_labels.iter() {
-        if l > 0 { counts[l as usize] += 1; }
+        if l > 0 {
+            counts[l as usize] += 1;
+        }
     }
     let v1_label = (1..=max_label as usize)
         .max_by_key(|&i| counts[i])
@@ -192,8 +279,145 @@ pub fn compute_eccentricity(
     let center_alt = if n > 0 { sum_alt / n as f64 } else { 0.0 };
 
     Array2::from_shape_fn((h, w), |(r, c)| {
-        if area_labels[[r, c]] == 0 { return 0.0; }
+        if area_labels[[r, c]] == 0 {
+            return 0.0;
+        }
         eccentricity_pixel_deg(alt_deg[[r, c]], azi_deg[[r, c]], center_alt, center_azi)
+    })
+}
+
+/// Angular eccentricity (degrees) with the **SNLC/Callaway** cosine
+/// convention — the denominator cosine is on the **azimuth** delta, not the
+/// altitude. Verbatim `getAreaBorders.m` L223-224 (`reference/ISI/...`):
+///
+/// ```text
+/// az  = (kmap_hor  - aziC)·π/180
+/// alt = (kmap_vert - altC)·π/180
+/// ecc = atan( sqrt( tan(az)² + tan(alt)² / cos(az)² ) )·180/π
+/// ```
+///
+/// This is the mirror of [`eccentricity_pixel_deg`] (Allen, cos-on-altitude);
+/// the two genuinely disagree off the meridians. No cosine floor — the SNLC
+/// oracle divides by `cos(az)²` directly (azimuth stays well inside ±90°).
+pub fn eccentricity_pixel_deg_snlc(
+    alt_deg: f64,
+    azi_deg: f64,
+    alt_c_deg: f64,
+    azi_c_deg: f64,
+) -> f64 {
+    let to_rad = PI / 180.0;
+    let az = (azi_deg - azi_c_deg) * to_rad;
+    let alt = (alt_deg - alt_c_deg) * to_rad;
+    let cos_az = az.cos();
+    let term = az.tan().powi(2) + alt.tan().powi(2) / (cos_az * cos_az);
+    term.sqrt().atan() * 180.0 / PI
+}
+
+/// V1-centric eccentricity map (degrees), **faithful to SNLC `getAreaBorders.m`**
+/// (`getV1id.m` + `getPatchCoM.m`). The reference point differs from
+/// [`compute_eccentricity`] (our OpenISI choice) in three transcribed ways:
+///   1. `imopen(disk-10)` the segmented mask *before* component selection
+///      (removes thin spurs that would drag the centroid);
+///   2. V1 = the largest 4-connected component of the *opened* mask, first on a
+///      tie (`bwlabel(im,4)` + MATLAB `max`);
+///   3. the center is a **single-pixel sample** of azi/alt at the rounded
+///      **pixel-space centroid** of that component (with off-patch snap to the
+///      nearest in-patch pixel), NOT the visual-field mean over V1 pixels.
+///
+/// The per-pixel formula is the SNLC cos-on-azimuth one
+/// ([`eccentricity_pixel_deg_snlc`]). Pixels outside any patch are zeroed.
+pub fn compute_eccentricity_snlc(
+    azi_deg: &Array2<f64>,
+    alt_deg: &Array2<f64>,
+    area_labels: &Array2<i32>,
+) -> Array2<f64> {
+    use crate::segmentation::connectivity::label_4conn;
+    use crate::segmentation::morphology::binary_opening_disk;
+
+    let (h, w) = azi_deg.dim();
+
+    // (1) imopen(disk-10) on the binary segmentation mask.
+    let mask = Array2::from_shape_fn((h, w), |(r, c)| area_labels[[r, c]] > 0);
+    let opened = binary_opening_disk(&mask, 10);
+
+    // (2) V1 = largest 4-connected component of the opened mask (first on tie).
+    let (lbl, n) = label_4conn(&opened);
+    let mut counts = vec![0usize; n + 1];
+    for &l in lbl.iter() {
+        if l > 0 {
+            counts[l as usize] += 1;
+        }
+    }
+    let mut v1: i32 = 0;
+    let mut best = 0usize;
+    for (l, &cnt) in counts.iter().enumerate().skip(1) {
+        // strict `>` keeps the FIRST label on a tie (MATLAB `max` semantics).
+        if cnt > best {
+            best = cnt;
+            v1 = l as i32;
+        }
+    }
+    if v1 == 0 {
+        // Opening erased everything — no reference point; zero map.
+        return Array2::zeros((h, w));
+    }
+
+    // (3) Pixel-space centroid of V1: com_x = mean column, com_y = mean row.
+    let (mut sx, mut sy, mut cnt) = (0.0f64, 0.0f64, 0usize);
+    for r in 0..h {
+        for c in 0..w {
+            if lbl[[r, c]] == v1 {
+                sx += c as f64;
+                sy += r as f64;
+                cnt += 1;
+            }
+        }
+    }
+    let mut com_x = sx / cnt as f64;
+    let mut com_y = sy / cnt as f64;
+
+    // Off-patch snap: if the rounded centroid is not on V1, replace it with the
+    // in-patch pixel nearest the (float) centroid — first in row-major scan on a
+    // distance tie (mirrors numpy `where(rdom==mind)`).
+    let rr = com_y.round() as isize;
+    let cc = com_x.round() as isize;
+    let on_patch = rr >= 0
+        && rr < h as isize
+        && cc >= 0
+        && cc < w as isize
+        && lbl[[rr as usize, cc as usize]] == v1;
+    if !on_patch {
+        let mut min_d = f64::INFINITY;
+        let (mut bx, mut by) = (com_x, com_y);
+        for r in 0..h {
+            for c in 0..w {
+                if lbl[[r, c]] == v1 {
+                    let dx = c as f64 - com_x;
+                    let dy = r as f64 - com_y;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d < min_d {
+                        min_d = d;
+                        bx = c as f64;
+                        by = r as f64;
+                    }
+                }
+            }
+        }
+        com_x = bx;
+        com_y = by;
+    }
+
+    // Single-pixel sample of azi/alt at the rounded centroid.
+    let pr = (com_y.round() as usize).min(h - 1);
+    let pc = (com_x.round() as usize).min(w - 1);
+    let center_azi = azi_deg[[pr, pc]];
+    let center_alt = alt_deg[[pr, pc]];
+
+    Array2::from_shape_fn((h, w), |(r, c)| {
+        if area_labels[[r, c]] == 0 {
+            return 0.0;
+        }
+        eccentricity_pixel_deg_snlc(alt_deg[[r, c]], azi_deg[[r, c]], center_alt, center_azi)
     })
 }
 
@@ -210,19 +434,25 @@ pub fn compute_contours(
 
     for r in 0..h {
         for c in 0..w {
-            if area_labels[[r, c]] == 0 { continue; }
+            if area_labels[[r, c]] == 0 {
+                continue;
+            }
             let val = phase_deg[[r, c]];
             let bin = (val / interval_deg).floor();
 
             // Check right neighbor.
             if c + 1 < w && area_labels[[r, c + 1]] > 0 {
                 let nbin = (phase_deg[[r, c + 1]] / interval_deg).floor();
-                if bin != nbin { result[[r, c]] = true; }
+                if bin != nbin {
+                    result[[r, c]] = true;
+                }
             }
             // Check bottom neighbor.
             if r + 1 < h && area_labels[[r + 1, c]] > 0 {
                 let nbin = (phase_deg[[r + 1, c]] / interval_deg).floor();
-                if bin != nbin { result[[r, c]] = true; }
+                if bin != nbin {
+                    result[[r, c]] = true;
+                }
             }
         }
     }
@@ -294,19 +524,28 @@ pub fn separable_filter(input: &Array2<f64>, kernel: &[f64]) -> Array2<f64> {
 }
 
 fn reflect(idx: isize, size: usize) -> usize {
+    // scipy `mode='reflect'` (grid-mirror): the edge pixel IS duplicated, so
+    // index -1 -> 0 and index s -> s-1 (NOT the 'mirror' variant -1 -> 1).
+    // Loops so radii larger than `size` reflect periodically, as scipy does.
     let s = size as isize;
-    if idx < 0 {
-        (-idx).min(s - 1) as usize
-    } else if idx >= s {
-        (2 * s - 2 - idx).max(0) as usize
-    } else {
-        idx as usize
+    if s == 1 {
+        return 0;
+    }
+    let mut i = idx;
+    loop {
+        if i < 0 {
+            i = -i - 1;
+        } else if i >= s {
+            i = 2 * s - 1 - i;
+        } else {
+            return i as usize;
+        }
     }
 }
 
 /// Rotate a 2D complex array by k×90° counter-clockwise.
 fn rot90(arr: &Array2<Complex64>, k: i32) -> Array2<Complex64> {
-    let k = ((k % 4) + 4) % 4;
+    let k = k.rem_euclid(4);
     match k {
         0 => arr.clone(),
         1 => {
@@ -332,6 +571,47 @@ fn rot90(arr: &Array2<Complex64>, k: i32) -> Array2<Complex64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `reflect` (the scipy `mode='reflect'` index fold) and `separable_filter`
+    /// vs scipy, specifically the LARGE-RADIUS periodic-wrap branch (radius > n)
+    /// that the gaussian goldens never reach. Part 1 pins the raw index map
+    /// over `-9..=12` for n=4 (recovered from scipy `correlate1d` single-taps);
+    /// part 2 the 2-pass separable filter on a 4×4 grid with a length-15 kernel.
+    /// Fixtures from `gen_reflect_wrap_golden.py`. Predicted-match.
+    #[test]
+    fn reflect_and_separable_match_scipy_large_radius() {
+        // Part 1 — index mapping (n=4, radius 9, probes -9..=12).
+        let idxmap: Vec<i32> =
+            include_bytes!("../tests/golden/fixtures/reflect_wrap_idxmap.bin")
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+        let probes: Vec<isize> = (-9..=12).collect();
+        assert_eq!(idxmap.len(), probes.len(), "probe count mismatch");
+        for (k, &i) in probes.iter().enumerate() {
+            assert_eq!(reflect(i, 4) as i32, idxmap[k], "reflect({i}, 4)");
+        }
+
+        // Part 2 — separable filter, kernel length 15 > n=4.
+        let ld = |b: &[u8]| -> Vec<f64> {
+            b.chunks_exact(8)
+                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        };
+        let inp = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_input.bin"));
+        let kernel = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_kernel.bin"));
+        let out_exp = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_output.bin"));
+        let input = Array2::from_shape_fn((4, 4), |(r, c)| inp[r * 4 + c]);
+        let out = separable_filter(&input, &kernel);
+        let mut md = 0.0f64;
+        for r in 0..4 {
+            for c in 0..4 {
+                md = md.max((out[[r, c]] - out_exp[r * 4 + c]).abs());
+            }
+        }
+        eprintln!("separable_filter (radius>n) vs scipy: max diff = {md:.2e}");
+        assert!(md < 1e-12, "separable_filter wrap branch diverges from scipy: {md:.2e}");
+    }
 
     #[test]
     fn test_gaussian_kernel_normalizes() {
@@ -367,4 +647,60 @@ mod tests {
         assert_eq!(r2.dim(), (3, 5));
     }
 
+    // Property: eccentricity at the reference centre is exactly 0. d_alt =
+    // d_azi = 0 → tan² + tan² / cos²(0) = 0 → atan(0) = 0. Bit-exact at
+    // any (alt_c, azi_c) within the valid range.
+    #[test]
+    fn property_eccentricity_at_center_is_zero() {
+        for &(alt_c, azi_c) in &[
+            (0.0, 0.0),
+            (10.0, -25.0),
+            (-45.0, 30.0),
+            (60.0, 60.0),
+            (-30.0, -60.0),
+        ] {
+            let v = eccentricity_pixel_deg(alt_c, azi_c, alt_c, azi_c);
+            assert!(
+                v.abs() < 1e-12,
+                "ecc at center ({}, {}) should be 0, got {}",
+                alt_c,
+                azi_c,
+                v,
+            );
+        }
+    }
+
+    // Property: eccentricity is invariant to the sign of either delta. The
+    // formula depends only on tan²(Δ) and (tan/cos)² — both even functions.
+    // ecc(alt_c + δ, azi_c) == ecc(alt_c − δ, azi_c).
+    #[test]
+    fn property_eccentricity_symmetric_under_delta_sign_reversal() {
+        let alt_c = 5.0_f64;
+        let azi_c = -10.0_f64;
+        for &delta in &[1.0_f64, 5.0, 10.0, 25.0] {
+            // Vary altitude
+            let e_plus = eccentricity_pixel_deg(alt_c + delta, azi_c, alt_c, azi_c);
+            let e_minus = eccentricity_pixel_deg(alt_c - delta, azi_c, alt_c, azi_c);
+            assert!(
+                (e_plus - e_minus).abs() < 1e-10,
+                "altitude delta sign: ecc(+{}) = {} vs ecc(-{}) = {}",
+                delta,
+                e_plus,
+                delta,
+                e_minus,
+            );
+
+            // Vary azimuth
+            let e_plus = eccentricity_pixel_deg(alt_c, azi_c + delta, alt_c, azi_c);
+            let e_minus = eccentricity_pixel_deg(alt_c, azi_c - delta, alt_c, azi_c);
+            assert!(
+                (e_plus - e_minus).abs() < 1e-10,
+                "azimuth delta sign: ecc(+{}) = {} vs ecc(-{}) = {}",
+                delta,
+                e_plus,
+                delta,
+                e_minus,
+            );
+        }
+    }
 }

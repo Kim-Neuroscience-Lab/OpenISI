@@ -61,25 +61,23 @@ pub fn parse_edid_physical_size(edid: &[u8]) -> Option<(f64, f64, &'static str)>
 mod platform {
     use super::*;
     use std::mem;
-    use windows::core::PCWSTR;
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
-        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-        SetupDiOpenDevRegKey, DIGCF_PRESENT, DIREG_DEV, SP_DEVINFO_DATA,
+        DIGCF_PRESENT, DIREG_DEV, SP_DEVINFO_DATA, SetupDiDestroyDeviceInfoList,
+        SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiOpenDevRegKey,
     };
     use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1, IDXGIOutput};
     use windows::Win32::Graphics::Gdi::{
-        EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW,
-        ENUM_CURRENT_SETTINGS, HDC, HMONITOR, MONITORINFOEXW,
+        DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW,
+        GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
     };
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegQueryValueExW, KEY_READ, REG_BINARY,
-    };
+    use windows::Win32::System::Registry::{KEY_READ, REG_BINARY, RegCloseKey, RegQueryValueExW};
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+    use windows::core::PCWSTR;
 
     /// GUID_DEVCLASS_MONITOR: {4d36e96e-e325-11ce-bfc1-08002be10318}
-    const GUID_DEVCLASS_MONITOR: windows::core::GUID = windows::core::GUID::from_u128(
-        0x4d36e96e_e325_11ce_bfc1_08002be10318,
-    );
+    const GUID_DEVCLASS_MONITOR: windows::core::GUID =
+        windows::core::GUID::from_u128(0x4d36e96e_e325_11ce_bfc1_08002be10318);
 
     /// Collect all HMONITOR handles via EnumDisplayMonitors.
     fn enumerate_hmonitors() -> Vec<HMONITOR> {
@@ -113,11 +111,7 @@ mod platform {
         let mut info: MONITORINFOEXW = unsafe { mem::zeroed() };
         info.monitorInfo.cbSize = mem::size_of::<MONITORINFOEXW>() as u32;
         let ok = unsafe { GetMonitorInfoW(hmonitor, &mut info as *mut _ as *mut _) };
-        if ok.as_bool() {
-            Some(info)
-        } else {
-            None
-        }
+        if ok.as_bool() { Some(info) } else { None }
     }
 
     /// Extract a friendly name string from a WCHAR device name array.
@@ -213,12 +207,10 @@ mod platform {
                             Some(&mut data_size),
                         );
 
-                        if status.is_ok() {
-                            if let Some((w_mm, h_mm, source)) =
-                                parse_edid_physical_size(&edid_buf)
-                            {
-                                results.push((w_mm, h_mm, source.to_string()));
-                            }
+                        if status.is_ok()
+                            && let Some((w_mm, h_mm, source)) = parse_edid_physical_size(&edid_buf)
+                        {
+                            results.push((w_mm, h_mm, source.to_string()));
                         }
                     }
 
@@ -234,7 +226,7 @@ mod platform {
         results
     }
 
-    /// Enumerate all connected monitors and return a Vec<MonitorInfo>.
+    /// Enumerate all connected monitors and return a `Vec<MonitorInfo>`.
     pub fn detect_monitors() -> Vec<MonitorInfo> {
         let hmonitors = enumerate_hmonitors();
         let edid_entries = read_all_edid_entries();
@@ -283,6 +275,23 @@ mod platform {
         monitors
     }
 
+    /// Whether this process is running inside a remote (RDP / Terminal Services)
+    /// session, in which case the desktop is presented through a *virtual*
+    /// display adapter rather than a physical monitor's scanout.
+    ///
+    /// This matters for stimulus timing: a virtual display has no hardware
+    /// vblank, so frame-present pacing — and therefore the dropped-stimulus-frame
+    /// count — is not physically meaningful. Stimulus *render* correctness and
+    /// the camera (its own hardware clock) are unaffected. Console-mirroring
+    /// tools (VNC, Parsec) are *not* Terminal Services sessions and correctly
+    /// report `false`, because they mirror the real physical scanout and so
+    /// preserve genuine vsync.
+    pub fn is_remote_session() -> bool {
+        // SM_REMOTESESSION is nonzero iff the calling process is associated with
+        // a Terminal Services client session.
+        unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+    }
+
     /// Find the DXGI output (IDXGIOutput) for a given monitor index.
     pub fn find_dxgi_output(monitor_index: usize) -> crate::error::AppResult<IDXGIOutput> {
         use crate::error::AppError;
@@ -295,8 +304,9 @@ mod platform {
             )));
         }
 
-        let target_info = get_monitor_info_ex(monitors[monitor_index])
-            .ok_or_else(|| AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index)))?;
+        let target_info = get_monitor_info_ex(monitors[monitor_index]).ok_or_else(|| {
+            AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index))
+        })?;
         let target_rect = target_info.monitorInfo.rcMonitor;
 
         unsafe {
@@ -352,8 +362,9 @@ mod platform {
             )));
         }
 
-        let info = get_monitor_info_ex(hmonitors[monitor_index])
-            .ok_or_else(|| AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index)))?;
+        let info = get_monitor_info_ex(hmonitors[monitor_index]).ok_or_else(|| {
+            AppError::Hardware(format!("Failed to get info for monitor {}", monitor_index))
+        })?;
 
         let rc = info.monitorInfo.rcMonitor;
         Ok((rc.left, rc.top))
@@ -370,7 +381,7 @@ mod platform {
 
     /// Returns an empty list — hardware monitor detection requires Windows APIs.
     pub fn detect_monitors() -> Vec<MonitorInfo> {
-        eprintln!("[monitor] Hardware monitor detection is not available on this platform");
+        tracing::warn!("hardware monitor detection is not available on this platform");
         Vec::new()
     }
 
@@ -380,6 +391,11 @@ mod platform {
             "Monitor position detection requires Windows".into(),
         ))
     }
+
+    /// Non-Windows: no Terminal Services concept; assume a local physical session.
+    pub fn is_remote_session() -> bool {
+        false
+    }
 }
 
 // =============================================================================
@@ -388,6 +404,7 @@ mod platform {
 
 pub use platform::detect_monitors;
 pub use platform::get_monitor_position;
+pub use platform::is_remote_session;
 
 #[cfg(windows)]
 pub use platform::find_dxgi_output;

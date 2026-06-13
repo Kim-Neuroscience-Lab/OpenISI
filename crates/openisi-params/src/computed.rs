@@ -80,26 +80,53 @@ impl Registry {
     }
 
     /// Build a DisplayGeometry from current params + hardware context.
-    /// Returns None if monitor dimensions are not available.
-    fn build_display_geometry(&self) -> Option<openisi_stimulus::geometry::DisplayGeometry> {
+    /// Returns None if **any** required field is unavailable:
+    ///   - monitor panel cm (user-override > EDID; see
+    ///     [`crate::hardware::effective_hardware_value`])
+    ///   - monitor pixel resolution (must come from the connected display;
+    ///     there is no sane "guess 1920×1080" fallback for a missing
+    ///     monitor — geometry without a real panel is meaningless and the
+    ///     UI must surface "no display selected" rather than render to a
+    ///     fictional canvas).
+    pub fn build_display_geometry(&self) -> Option<openisi_stimulus::geometry::DisplayGeometry> {
+        let width_cm = self.effective_monitor_width_cm()?;
+        let height_cm = self.effective_monitor_height_cm()?;
         let hw = &self.hardware;
-        let (width_cm, height_cm) = match (hw.monitor_width_cm, hw.monitor_height_cm) {
-            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
-            _ => return None,
-        };
-
-        let width_px = hw.monitor_width_px.unwrap_or(1920);
-        let height_px = hw.monitor_height_px.unwrap_or(1080);
+        let width_px = hw.monitor_width_px?;
+        let height_px = hw.monitor_height_px?;
 
         Some(openisi_stimulus::geometry::DisplayGeometry::new(
             self.experiment_projection(),
             self.viewing_distance_cm(),
             self.horizontal_offset_deg(),
             self.vertical_offset_deg(),
+            self.bisector_x_cm(),
+            self.bisector_y_cm(),
             width_cm,
             height_cm,
             width_px,
             height_px,
         ))
+    }
+
+    /// Effective monitor panel width in cm — see
+    /// [`crate::hardware::effective_hardware_value`] for precedence rules.
+    pub fn effective_monitor_width_cm(&self) -> Option<f64> {
+        crate::hardware::effective_hardware_value(
+            self.is_user_override(crate::ParamId::MonitorWidthCm),
+            self.monitor_width_cm(),
+            self.hardware.monitor_width_cm,
+            |w| *w > 0.0,
+        )
+    }
+
+    /// Effective monitor panel height in cm — same precedence as width.
+    pub fn effective_monitor_height_cm(&self) -> Option<f64> {
+        crate::hardware::effective_hardware_value(
+            self.is_user_override(crate::ParamId::MonitorHeightCm),
+            self.monitor_height_cm(),
+            self.hardware.monitor_height_cm,
+            |h| *h > 0.0,
+        )
     }
 }

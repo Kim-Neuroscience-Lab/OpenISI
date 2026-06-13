@@ -129,11 +129,7 @@ impl Registry {
     /// Same validation as `set`, but does NOT mark the param as a user
     /// override — shipped values are the baseline, not user intent.
     /// `pub(crate)` so toml_io can call it; not part of the public API.
-    pub(crate) fn set_from_shipped(
-        &mut self,
-        id: ParamId,
-        value: ParamValue,
-    ) -> ParamsResult<()> {
+    pub(crate) fn set_from_shipped(&mut self, id: ParamId, value: ParamValue) -> ParamsResult<()> {
         self.set_inner(id, value, /* mark_user */ false)
     }
 
@@ -141,12 +137,7 @@ impl Registry {
     /// override, then emit change events. The `mark_user` flag is the
     /// only difference between the public `set` and the shipped-layer
     /// loader path.
-    fn set_inner(
-        &mut self,
-        id: ParamId,
-        value: ParamValue,
-        mark_user: bool,
-    ) -> ParamsResult<()> {
+    fn set_inner(&mut self, id: ParamId, value: ParamValue, mark_user: bool) -> ParamsResult<()> {
         let def = &PARAM_DEFS[id as usize];
 
         // Validate against effective constraint (dynamic override or static).
@@ -175,8 +166,35 @@ impl Registry {
     /// (either by a `set()` call or by `load_user_*` finding it in
     /// `user_dir/<target>.toml`). Used by `save_*` to decide what to
     /// serialize.
-    pub(crate) fn is_user_override(&self, id: ParamId) -> bool {
+    pub fn is_user_override(&self, id: ParamId) -> bool {
         self.user_overrides.contains(&id)
+    }
+
+    /// Return the effective value of a parameter — what consumers
+    /// SHOULD see, with hardware fallback applied:
+    ///
+    /// * For hardware-influenced params (`MonitorWidthCm`,
+    ///   `MonitorHeightCm`), this returns the user-calibrated value if
+    ///   they've set one in the UI/overlay, otherwise the EDID-detected
+    ///   `HardwareContext` value, otherwise the shipped default. This
+    ///   keeps the SSoT precedence in one place — descriptor queries,
+    ///   geometry construction, and provenance all see the same number.
+    /// * For every other param, this is just the raw stored value.
+    pub fn effective_value(&self, id: ParamId) -> ParamValue {
+        match id {
+            ParamId::MonitorWidthCm => {
+                if let Some(w) = self.effective_monitor_width_cm() {
+                    return ParamValue::F64(w);
+                }
+            }
+            ParamId::MonitorHeightCm => {
+                if let Some(h) = self.effective_monitor_height_cm() {
+                    return ParamValue::F64(h);
+                }
+            }
+            _ => {}
+        }
+        self.values[id as usize].clone()
     }
 
     // ── Hardware Context ─────────────────────────────────────────────
@@ -234,10 +252,14 @@ impl Registry {
 
     // ── Snapshots ────────────────────────────────────────────────────
 
-    /// Create a frozen snapshot of all current parameter values.
+    /// Create a frozen snapshot of all current parameter values, plus
+    /// the hardware context and user-override set so consumers can apply
+    /// the right precedence (e.g. via `effective_monitor_width_cm()`).
     pub fn snapshot(&self) -> RegistrySnapshot {
         RegistrySnapshot {
             values: self.values.clone(),
+            hardware: self.hardware.clone(),
+            user_overrides: self.user_overrides.clone(),
         }
     }
 
@@ -431,8 +453,8 @@ pub fn param_value_to_json(value: &ParamValue) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{PersistTarget, PARAM_DEFS};
+    use super::*;
     use std::path::Path;
 
     fn config_dir() -> PathBuf {
@@ -448,12 +470,29 @@ mod tests {
         assert_eq!(reg.values.len(), ParamId::count());
     }
 
+    /// Every shipped TOML must round-trip through its loader without
+    /// errors. The previous coverage gap (only rig + experiment loaded,
+    /// not analysis) let a stale method-name string sit in
+    /// `config/analysis.toml` through three release cycles before an
+    /// audit caught it. This test refuses to let that happen again:
+    /// every persist-target file the binary loads at startup is loaded
+    /// here too.
+    #[test]
+    fn every_shipped_toml_loads_cleanly() {
+        let dir = config_dir();
+        let mut reg = Registry::new(&dir, &dir);
+        reg.load_rig().expect("load shipped rig.toml");
+        reg.load_experiment().expect("load shipped experiment.toml");
+        reg.load_analysis().expect("load shipped analysis.toml");
+    }
+
     #[test]
     fn defaults_match_toml() {
         let dir = config_dir();
         let mut reg = Registry::new(&dir, &dir);
         reg.load_rig().expect("load rig.toml");
         reg.load_experiment().expect("load experiment.toml");
+        reg.load_analysis().expect("load analysis.toml");
 
         // Spot-check values from rig.toml
         assert_eq!(reg.camera_exposure_us(), 1000);
@@ -600,7 +639,8 @@ mod tests {
         let mut reg = Registry::new(&dir, &dir);
 
         // Set exposure to 1000 (valid for static range 1..1_000_000)
-        reg.set(ParamId::CameraExposureUs, ParamValue::U32(1000)).unwrap();
+        reg.set(ParamId::CameraExposureUs, ParamValue::U32(1000))
+            .unwrap();
 
         // Inject hardware that has a narrower range
         reg.inject_hardware(HardwareContext {
@@ -640,7 +680,8 @@ mod tests {
 
         // In batch mode, pending_changes accumulate.
         reg.batch(|r| {
-            r.set(ParamId::CameraExposureUs, ParamValue::U32(2000)).unwrap();
+            r.set(ParamId::CameraExposureUs, ParamValue::U32(2000))
+                .unwrap();
             r.set(ParamId::CameraBinning, ParamValue::U16(2)).unwrap();
             // Inside batch, changes should still be pending.
             // (We can't easily observe this without an app_handle, but we can
@@ -670,7 +711,8 @@ mod tests {
         assert_eq!(snap.conditions(), reg.conditions());
 
         // Modify registry — snapshot should not change
-        reg.set(ParamId::CameraExposureUs, ParamValue::U32(9999)).unwrap();
+        reg.set(ParamId::CameraExposureUs, ParamValue::U32(9999))
+            .unwrap();
         assert_eq!(snap.camera_exposure_us(), 1000); // original value
         assert_eq!(reg.camera_exposure_us(), 9999); // new value
     }
@@ -687,7 +729,8 @@ mod tests {
         assert!((reg.luminance_low() - 0.0).abs() < 1e-10);
 
         // Set mean=0.3, contrast=0.5
-        reg.set(ParamId::MeanLuminance, ParamValue::F64(0.3)).unwrap();
+        reg.set(ParamId::MeanLuminance, ParamValue::F64(0.3))
+            .unwrap();
         reg.set(ParamId::Contrast, ParamValue::F64(0.5)).unwrap();
         // high = 0.3 + 0.5 * 0.3 = 0.45
         // low = 0.3 - 0.5 * 0.3 = 0.15
@@ -709,7 +752,8 @@ mod tests {
     fn computed_visual_field_with_hardware() {
         let dir = config_dir();
         let mut reg = Registry::new(&dir, &dir);
-        reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0)).unwrap();
+        reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0))
+            .unwrap();
 
         reg.inject_hardware(HardwareContext {
             monitor_width_px: Some(1920),
@@ -732,7 +776,8 @@ mod tests {
         let mut reg = Registry::new(&dir, &dir);
 
         // Set FPS to 120 (valid with static constraint MinU32(1))
-        reg.set(ParamId::TargetStimulusFps, ParamValue::U32(120)).unwrap();
+        reg.set(ParamId::TargetStimulusFps, ParamValue::U32(120))
+            .unwrap();
 
         // Inject monitor with 60 Hz refresh
         reg.inject_hardware(HardwareContext {
@@ -752,7 +797,8 @@ mod tests {
     fn stimulus_width_constraint_from_geometry() {
         let dir = config_dir();
         let mut reg = Registry::new(&dir, &dir);
-        reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0)).unwrap();
+        reg.set(ParamId::ViewingDistanceCm, ParamValue::F64(25.0))
+            .unwrap();
 
         reg.inject_hardware(HardwareContext {
             monitor_width_px: Some(1920),
@@ -806,11 +852,20 @@ mod descriptor_count_tests {
         // longer live in the primitive registry (they're inside
         // `AnalysisParams` method enum variants), so the registry is
         // smaller than it was.
-        assert!(total >= 40, "Expected at least 40 total params, got {total}");
+        assert!(
+            total >= 40,
+            "Expected at least 40 total params, got {total}"
+        );
 
         // Verify a couple of representative groups.
-        let stimulus_count = PARAM_DEFS.iter().filter(|d| d.group == GroupId::Stimulus).count();
-        assert!(stimulus_count >= 13, "Stimulus should have >= 13 params, got {stimulus_count}");
+        let stimulus_count = PARAM_DEFS
+            .iter()
+            .filter(|d| d.group == GroupId::Stimulus)
+            .count();
+        assert!(
+            stimulus_count >= 13,
+            "Stimulus should have >= 13 params, got {stimulus_count}"
+        );
         // The Segmentation GroupId variant was removed after Phase 5
         // (all segmentation tunables moved into AnalysisParams method
         // enums + Option<T> fields; surfaced via TunableDescriptor,

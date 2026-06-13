@@ -17,8 +17,12 @@ export function buildParamInput(desc) {
     }
 
     if (desc.param_type === 'enum') {
-        const options = (desc.constraint?.values || []).map(v =>
-            `<option value="${v}" ${v === desc.value ? 'selected' : ''}>${v}</option>`
+        // constraint.values is an array of { value, label } from
+        // the unified openisi_params::EnumOption — `value` is the wire
+        // string the registry persists, `label` is the human-facing
+        // display string from the variant's strum::Display impl.
+        const options = (desc.constraint?.values || []).map(opt =>
+            `<option value="${opt.value}" ${opt.value === desc.value ? 'selected' : ''}>${opt.label}</option>`
         ).join('');
         return `<div class="form-row" data-param-row="${desc.id}">
             <label>${desc.label}</label>
@@ -121,10 +125,12 @@ export function applyParamChanges(container, changes) {
             if (el.type === 'checkbox') {
                 el.checked = change.value;
             } else if (el.tagName === 'SELECT') {
-                // If constraint changed with new enum values, rebuild options.
+                // If constraint changed with new enum values, rebuild
+                // options. Each value is an { value, label } pair
+                // (see openisi_params::EnumOption).
                 if (change.constraint?.values) {
-                    el.innerHTML = change.constraint.values.map(v =>
-                        `<option value="${v}" ${v === change.value ? 'selected' : ''}>${v}</option>`
+                    el.innerHTML = change.constraint.values.map(opt =>
+                        `<option value="${opt.value}" ${opt.value === change.value ? 'selected' : ''}>${opt.label}</option>`
                     ).join('');
                 } else {
                     el.value = change.value;

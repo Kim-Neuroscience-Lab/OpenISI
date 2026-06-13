@@ -53,6 +53,34 @@ The right sidebar controls the visualization layers, from top to bottom:
 - **Borders** — toggle the area boundary outlines computed from VFS segmentation.
 - **Ring** — toggle the cranial window ring overlay used for spatial calibration.
 
+## Camera hardware (PCO SDK)
+
+PCO sCMOS / pco.edge cameras are driven via PCO's closed-source SDK. The
+DLLs are not vendored in this repository — install them from PCO and the
+loader will find them automatically.
+
+**Recommended:** install the [PCO Camera Toolbox](https://www.excelitas.com/product/pcosdk)
+to its default location. The loader checks, in order:
+
+1. `C:\Program Files\Kim-Neuroscience-Lab\OpenISI\.venv\Lib\site-packages\pco\win_x64\`
+   (the `pco` PyPI package's bundled DLLs — install with `pip install pco`
+   if you have a Python environment at that path)
+2. `C:\Program Files\PCO Digital Camera Toolbox\pco.sdk\bin64\`
+3. `C:\Program Files (x86)\PCO Digital Camera Toolbox\pco.sdk\bin64\`
+
+The loader needs **two** DLLs to come up:
+
+- `sc2_cam.dll` (camera control)
+- `pco_recorder.dll` (ring buffer recording)
+
+If only `sc2_cam.dll` is present (e.g. you only installed `pco.camware`
+or `pco.gige_calib`), the loader will still fail. Install the full PCO
+Camera Toolbox or the `pco` PyPI package.
+
+Without these, the camera is reported as "PCO SDK not available" at
+startup and the stimulus + analysis paths still function — you just
+won't have a live camera feed or be able to acquire data.
+
 ## Tests
 
 ```sh

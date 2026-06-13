@@ -1,30 +1,36 @@
-# OpenISI analysis pipeline — user-editable parameter state.
+# OpenISI analysis — this lab's tuned working parameter state.
 #
-# This file is the cross-session persistence layer for analysis
-# parameters: schema lives in `src-tauri/src/params/definitions.rs`,
-# this file carries the current values for THIS machine, and each
-# .oisi's `/analysis_params` HDF5 attr carries a frozen snapshot per
-# analysis. Edit values here OR via the UI; either path goes through
-# the Registry.
+# The parameter SCHEMA and DEFAULTS are the single source of truth in
+# `crates/openisi-params/src/definitions.rs` (PARAM_DEFS). This file is the
+# cross-session persistence layer: it carries the CURRENT values for this
+# machine, which DELIBERATELY DIFFER from the defaults wherever a tuned value
+# is noted inline (e.g. `cortex_source = reliability`, `merge_overlap_thr =
+# 0.01`, `small_patch_thr = 50`). Absence of a key restores the PARAM_DEFS
+# default; a present key overrides it. Each .oisi's `/analysis_params` HDF5
+# attr carries a frozen snapshot per analysis. Edit here or via the UI —
+# either path goes through the Registry.
 #
-# Defaults shown match `PARAM_DEFS` in `definitions.rs`; absence of a
-# key (e.g. comment out a line) restores the registry default.
-#
-# Every per-stage analysis tunable is a first-class Registry parameter.
-# There are NO `const FOO_DEFAULT` in `crates/isi-analysis/src/methods/`;
-# the method enums there are pure runtime containers populated from this
-# file by the src-tauri → analysis bridge.
+# Every per-stage analysis tunable is a first-class Registry parameter; there
+# are NO `const FOO_DEFAULT` in `crates/isi-analysis/src/methods/` — the method
+# enums there are runtime containers populated from this file by the bridge.
+
+# Projection — combine a direction's per-cycle complex maps into one map.
+# Faithful default: the plain complex average (≡ Allen `get_average_movie`
+# + single DFT, by DFT linearity). `phase_locked_average` is an OpenISI
+# deviation no oracle performs.
+[cycle_average]
+method = "simple_complex_average"
 
 # Stage 1 — Cycle combine (fwd+rev → position phasor).
 [cycle_combine]
-method = "marshel_garrett2011_delay_subtraction"
+method = "kalatsky_stryker2003_delay_subtraction"
 
 # Stage 2 — Phase / position phasor smoothing.
 [phase_smoothing]
-method = "open_isi_amp_weighted_phasor"
+method = "snlc_amp_weighted_phasor"
 
-[phase_smoothing.open_isi_amp_weighted_phasor]
-# Allen `phaseMapFilterSigma` (Zhuang 2017, `RetinotopicMapping.py` L298).
+[phase_smoothing.snlc_amp_weighted_phasor]
+# Mirrors Allen `phaseMapFilterSigma` (Zhuang 2017, `RetinotopicMapping.py` L1258).
 sigma_px = 1.0
 
 # Stage 3 — Visual field sign computation.
@@ -41,11 +47,13 @@ method = "gaussian"
 sigma_um = 60.0
 
 # Stage 5 — Cortex / ROI source.
+# HYPOTHESIS TEST 2026-06-11: reliability cortex isolates the responsive region
+# (vs snlc_garrett2014_im_bound which fills the frame on aperture data).
 [cortex_source]
-method = "snlc_garrett2014_im_bound"
+method = "reliability"
 
 [cortex_source.reliability]
-threshold = 0.5
+threshold = 0.85
 
 [cortex_source.snlc_garrett2014_im_bound]
 # Garrett 2014 `getMouseAreasX.m` L76-95.
@@ -95,10 +103,9 @@ ecc_map_filter_sigma = 10
 border_width = 1
 small_patch_thr = 100
 
-# Stage 9 — Per-pixel quality gate.
-[quality_gate]
-method = "none"
-
 # Stage 10 — Eccentricity map.
+# `open_isi_whole_cortex_v1` = mean-over-V1-pixels center + Allen cos-on-altitude
+# formula (OpenISI composition). `snlc_get_area_borders_v1_center` is the faithful
+# SNLC `getAreaBorders.m` reference point (imopen-disk10 + pixel-CoM sample).
 [eccentricity]
-method = "garrett2014_whole_cortex_v1"
+method = "open_isi_whole_cortex_v1"

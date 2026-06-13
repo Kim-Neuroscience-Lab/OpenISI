@@ -5,13 +5,13 @@
 //! - `PARAM_DEFS` static table
 //! - Typed getters/setters on `Registry`
 
-use super::{
-    Carrier, CortexSourceKind, CycleCombineKind, EccentricityKind, Envelope, GroupId, Order,
-    ParamDef, ParamValue, PatchExtractionKind, PatchRefinementKind, PatchThresholdKind,
-    PersistTarget, PhaseSmoothingKind, Projection, QualityGateKind, SignMapSmoothingKind,
-    StaticConstraint, Structure, VfsComputationKind,
-};
 use super::registry::Registry;
+use super::{
+    BaselineKind, Carrier, CortexSourceKind, CycleAverageKind, CycleCombineKind, EccentricityKind,
+    Envelope, GroupId, Order, ParamDef, ParamValue, PatchExtractionKind, PatchRefinementKind,
+    PatchThresholdKind, PersistTarget, PhaseSmoothingKind, Projection, SignMapSmoothingKind,
+    StaticConstraint, Structure, VfsComputationKind, VisualField,
+};
 
 define_params! {
     // ═══════════════════════════════════════════════════════════════════
@@ -37,9 +37,71 @@ define_params! {
         "Camera Pixel Size", "\u{00b5}m/px", StaticConstraint::MinF64(0.001);
 
     // ── Display / Rig Geometry ──────────────────────────────────────────
+    //
+    // Rig geometry is calibrated per physical setup. Defaults reflect the
+    // Zhuang et al. 2017 (eLife) / `retinotopic_mapping` reference rig: a
+    // 40-inch LED TV ~88×50 cm, 13.5 cm viewing distance, monitor yawed
+    // 30° inward (mouse midline at 30° to monitor plane), bisector intercept
+    // at the geometric center until measured otherwise, right hemifield.
+    // These are starting values — actual rigs MUST override in rig.toml.
+    //
+    // Marshel & Garrett 2011 (Neuron) uses 10 cm distance and 20° yaw on a
+    // portrait 68×121 cm panel; either set of defaults is canonical. We
+    // ship Zhuang because the analysis pipeline already cites Zhuang.
+
     ViewingDistanceCm: F64 = 10.0,
         "geometry.viewing_distance_cm", Rig, Display,
         "Viewing Distance", "cm", StaticConstraint::MinF64(0.1);
+
+    // Calibrated panel size (cm). EDID values from the OS are unreliable
+    // and not used as the ground truth — the rig measurement is.
+    MonitorWidthCm: F64 = 88.0,
+        "geometry.monitor_width_cm", Rig, Display,
+        "Monitor Width", "cm", StaticConstraint::MinF64(0.1);
+
+    MonitorHeightCm: F64 = 50.0,
+        "geometry.monitor_height_cm", Rig, Display,
+        "Monitor Height", "cm", StaticConstraint::MinF64(0.1);
+
+    // Bisector intercept on the monitor face — where the eye's perpendicular
+    // ray to the monitor lands, measured in cm from the monitor geometric
+    // center. + X = toward anterior (nose), + Y = toward top. Marshel
+    // places the intercept ~28 cm up from a 121-cm portrait monitor's
+    // bottom (i.e. ~32 cm below center); Zhuang's `MonitorSetup.Monitor`
+    // models the same via asymmetric `C2T_cm`/`C2A_cm`. Default 0 cm
+    // means "eye looks at monitor geometric center" — only correct for
+    // bench-test setups; calibrate per rig.
+    BisectorXCm: F64 = 0.0,
+        "geometry.bisector_x_cm", Rig, Display,
+        "Bisector X Intercept", "cm", StaticConstraint::None;
+
+    BisectorYCm: F64 = 0.0,
+        "geometry.bisector_y_cm", Rig, Display,
+        "Bisector Y Intercept", "cm", StaticConstraint::None;
+
+    // Physical yaw of the monitor around its vertical axis, in degrees
+    // inward toward the mouse nose. Marshel 2011 = 20°, Juavinett 2017 /
+    // Zhuang 2017 = 30°. Compensates for the lateral position of the
+    // mouse eye so the monitor plane is approximately parallel to the
+    // retina.
+    MonitorYawDeg: F64 = 30.0,
+        "geometry.monitor_yaw_deg", Rig, Display,
+        "Monitor Yaw", "\u{00b0}", StaticConstraint::RangeF64(-90.0, 90.0);
+
+    // Physical pitch of the monitor around its horizontal axis, in degrees
+    // tipping the top edge toward the mouse. Juavinett 2017 uses ~20° pitch
+    // when the headframe is rotated to access lateral cortex; otherwise 0.
+    MonitorPitchDeg: F64 = 0.0,
+        "geometry.monitor_pitch_deg", Rig, Display,
+        "Monitor Pitch", "\u{00b0}", StaticConstraint::RangeF64(-90.0, 90.0);
+
+    // Which hemifield the stimulus monitor occupies. Marshel/Garrett/Zhuang
+    // all stimulate the right hemifield by convention (mouse left eye
+    // occluded for contralateral cortex imaging). Mirrors the
+    // `visual_field` discriminator in Zhuang's `MonitorSetup.Monitor`.
+    StimulusVisualField: VisualField = VisualField::Right,
+        "geometry.visual_field", Rig, Display,
+        "Visual Field", "", StaticConstraint::None;
 
     // ── Ring Overlay ──────────────────────────────────────────────────
     RingOverlayEnabled: Bool = false,
@@ -85,24 +147,46 @@ define_params! {
     //      with `active_when` predicates so the UI shows only the
     //      tunables of the currently-selected method.
     //
+    // Stage 0 — ΔF/F baseline (F0 denominator for the bin-1 DFT). The
+    // inter-sweep variants take F0 from the rest periods only; the all-frame
+    // variants are the faithful Allen `normalizeMovie` baseline. No tunables.
+    BaselineMethod: BaselineKind = BaselineKind::OpenIsiInterSweepMean,
+        "baseline.method", Analysis, Baseline,
+        "Method", "", StaticConstraint::None;
+
+    // Projection — cycle averaging (combine the K per-cycle complex maps of a
+    // direction). Default = plain complex average (faithful Allen/SNLC); no tunables.
+    CycleAverageMethod: CycleAverageKind = CycleAverageKind::SimpleComplexAverage,
+        "cycle_average.method", Analysis, CycleAverage,
+        "Method", "", StaticConstraint::None;
+
     // Stage 1 — Cycle combine.
 
-    CycleCombineMethod: CycleCombineKind = CycleCombineKind::MarshelGarrett2011DelaySubtraction,
+    CycleCombineMethod: CycleCombineKind = CycleCombineKind::KalatskyStryker2003DelaySubtraction,
         "cycle_combine.method", Analysis, CycleCombine,
         "Method", "", StaticConstraint::None;
 
     // Stage 2 — Phase / position phasor smoothing.
 
-    PhaseSmoothingMethod: PhaseSmoothingKind = PhaseSmoothingKind::OpenIsiAmpWeightedPhasor,
+    PhaseSmoothingMethod: PhaseSmoothingKind = PhaseSmoothingKind::SnlcAmpWeightedPhasor,
         "phase_smoothing.method", Analysis, PhaseSmoothing,
         "Method", "", StaticConstraint::None;
 
-    // Allen `phaseMapFilterSigma` (Zhuang 2017, `RetinotopicMapping.py` L298).
-    PhaseSmoothingOpenIsiAmpWeightedPhasorSigmaPx: F64 = 1.0,
-        "phase_smoothing.open_isi_amp_weighted_phasor.sigma_px", Analysis, PhaseSmoothing,
+    // SNLC amplitude-weighted complex-phasor smoothing σ. Mirrors Allen
+    // `phaseMapFilterSigma` (Zhuang 2017, `RetinotopicMapping.py` L1258, default 1).
+    PhaseSmoothingSnlcAmpWeightedPhasorSigmaPx: F64 = 1.0,
+        "phase_smoothing.snlc_amp_weighted_phasor.sigma_px", Analysis, PhaseSmoothing,
         "Smoothing \u{03c3}", "px", StaticConstraint::RangeF64(0.0, 50.0),
         active_when = |reg: &Registry|
-            reg.phase_smoothing_method() == PhaseSmoothingKind::OpenIsiAmpWeightedPhasor;
+            reg.phase_smoothing_method() == PhaseSmoothingKind::SnlcAmpWeightedPhasor;
+
+    // Allen `_getSignMap` `phaseMapFilterSigma` (Zhuang 2017, default 1) — the
+    // scalar Gaussian on the position/phase map.
+    PhaseSmoothingAllenZhuang2017PositionGaussianSigmaPx: F64 = 1.0,
+        "phase_smoothing.allen_zhuang2017_position_gaussian.sigma_px", Analysis, PhaseSmoothing,
+        "Smoothing \u{03c3}", "px", StaticConstraint::RangeF64(0.0, 50.0),
+        active_when = |reg: &Registry|
+            reg.phase_smoothing_method() == PhaseSmoothingKind::AllenZhuang2017PositionGaussian;
 
     // Stage 3 — VFS computation.
 
@@ -270,15 +354,9 @@ define_params! {
         active_when = |reg: &Registry|
             reg.patch_refinement_method() == PatchRefinementKind::AllenZhuang2017SplitMerge;
 
-    // Stage 9 — Quality gate.
-
-    QualityGateMethod: QualityGateKind = QualityGateKind::None,
-        "quality_gate.method", Analysis, QualityGate,
-        "Method", "", StaticConstraint::None;
-
     // Stage 10 — Eccentricity.
 
-    EccentricityMethod: EccentricityKind = EccentricityKind::Garrett2014WholeCortexV1,
+    EccentricityMethod: EccentricityKind = EccentricityKind::OpenIsiWholeCortexV1,
         "eccentricity.method", Analysis, Eccentricity,
         "Method", "", StaticConstraint::None;
 
@@ -296,11 +374,18 @@ define_params! {
         "stimulus_geometry.rotation_k", Experiment, Geometry,
         "Rotation K", "", StaticConstraint::RangeI32(-3, 3);
 
-    AziAngularRange: F64 = 100.0,
+    // Declared sweep envelope of the drifting bar — Zhuang 2017 canonical
+    // is 140° azimuth (-10° to 130°) × 110° altitude (-50° to 60°).
+    // Marshel 2011 uses 147° × 153°. This is the EXTENT actually presented,
+    // not the monitor's full angular subtense; the shader masks pixels
+    // outside this envelope to background luminance so the recorded
+    // `azi_angular_range`/`alt_angular_range` truly describes what the
+    // mouse was shown.
+    AziAngularRange: F64 = 140.0,
         "stimulus_geometry.azi_angular_range", Experiment, Geometry,
         "Azimuth Angular Range", "\u{00b0}", StaticConstraint::RangeF64(0.0, 360.0);
 
-    AltAngularRange: F64 = 100.0,
+    AltAngularRange: F64 = 110.0,
         "stimulus_geometry.alt_angular_range", Experiment, Geometry,
         "Altitude Angular Range", "\u{00b0}", StaticConstraint::RangeF64(0.0, 360.0);
 
@@ -422,6 +507,11 @@ define_params! {
         "stimulus.params.mean_luminance", Experiment, Stimulus,
         "Mean Luminance", "", StaticConstraint::RangeF64(0.0, 1.0);
 
+    // Black outside the stimulus envelope (deliberate rig choice). This
+    // DIVERGES from the Marshel 2011 / Zhuang 2017 canon, which uses mean gray
+    // (= MeanLuminance) outside the bar to keep bar-onset luminance transients
+    // small. Black is used on this rig for a clean, unambiguous stimulus/FOV
+    // boundary; the larger onset step is an accepted tradeoff.
     BackgroundLuminance: F64 = 0.0,
         "stimulus.params.background_luminance", Experiment, Stimulus,
         "Background Luminance", "", StaticConstraint::RangeF64(0.0, 1.0);
@@ -442,7 +532,10 @@ define_params! {
         "stimulus.params.stimulus_width_deg", Experiment, Stimulus,
         "Stimulus Width", "\u{00b0}", StaticConstraint::MinF64(0.001);
 
-    SweepSpeedDegPerSec: F64 = 90.0,
+    // Canonical Marshel 2011 (8.5–9.5°/s for intrinsic imaging) / Zhuang 2017
+    // (9°/s). Previous default 90.0 was a 10× Godot-port carryover that ran
+    // the bar across a typical 140° envelope in ~1.5 s instead of ~17 s.
+    SweepSpeedDegPerSec: F64 = 9.0,
         "stimulus.params.sweep_speed_deg_per_sec", Experiment, Stimulus,
         "Sweep Speed", "\u{00b0}/s", StaticConstraint::MinF64(0.001);
 

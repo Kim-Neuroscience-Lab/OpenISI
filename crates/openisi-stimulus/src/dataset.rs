@@ -53,12 +53,24 @@ impl FrameState {
 }
 
 /// Envelope type (stimulus shape).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Wire string: `#[serde(rename_all = "snake_case")]` (`fullfield`,
+/// `bar`, `wedge`, `ring`). Display label: `strum::Display` via the
+/// per-variant `to_string` attribute. Variant iteration:
+/// `strum::EnumIter`. Both wire format and label come from this one
+/// declaration — see [`crate::labels`] for the projection.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvelopeType {
+    #[strum(to_string = "Full field")]
     Fullfield = 0,
+    #[strum(to_string = "Drifting bar")]
     Bar = 1,
+    #[strum(to_string = "Rotating wedge")]
     Wedge = 2,
+    #[strum(to_string = "Expanding ring")]
     Ring = 3,
 }
 
@@ -136,7 +148,6 @@ pub struct FrameRecord {
     pub condition_occurrence: u32,
     pub is_baseline: bool,
 }
-
 
 /// The stimulus dataset — accumulates per-frame data during acquisition.
 pub struct StimulusDataset {
@@ -263,7 +274,13 @@ impl StimulusDataset {
 
     /// Record a single frame.
     pub fn record_frame(&mut self, record: &FrameRecord) {
-        assert!(self.is_recording, "record_frame() called while not recording");
+        // A frame arriving while not recording is a logic slip (a Stop/Complete
+        // race), not a reason to abort the 60 Hz render thread with a panic.
+        // Drop the stray frame and surface it; the run continues.
+        if !self.is_recording {
+            tracing::error!("record_frame called while not recording — frame dropped");
+            return;
+        }
 
         self.timestamps_us.push(record.timestamp_us);
         self.condition_indices.push(record.condition_index);
@@ -272,7 +289,8 @@ impl StimulusDataset {
         self.progress.push(record.sweep_progress);
         self.state_ids.push(record.state_id as u8);
         self.condition_occurrences.push(record.condition_occurrence);
-        self.is_baseline.push(if record.is_baseline { 1 } else { 0 });
+        self.is_baseline
+            .push(if record.is_baseline { 1 } else { 0 });
 
         // Timing quality — compute frame delta
         if self.last_timestamp_us > 0 {
@@ -281,7 +299,8 @@ impl StimulusDataset {
 
             // Detect dropped frames (delta > threshold * expected)
             if self.frame_count >= self.config.drop_detection_warmup_frames
-                && (delta_us as f64) > self.expected_delta_us as f64 * self.config.drop_detection_threshold
+                && (delta_us as f64)
+                    > self.expected_delta_us as f64 * self.config.drop_detection_threshold
             {
                 self.dropped_frame_indices.push(self.frame_count as u32);
             }
@@ -315,7 +334,10 @@ impl StimulusDataset {
         if self.frame_deltas_us.len() < 2 {
             return 0.0;
         }
-        let count = self.frame_deltas_us.len().min(self.config.fps_window_frames);
+        let count = self
+            .frame_deltas_us
+            .len()
+            .min(self.config.fps_window_frames);
         let start = self.frame_deltas_us.len() - count;
         let sum: i64 = self.frame_deltas_us[start..].iter().sum();
         let avg_us = sum as f64 / count as f64;
@@ -462,6 +484,8 @@ mod tests {
             geometry: DisplayGeometry::new(
                 ProjectionType::Cartesian,
                 25.0,
+                0.0,
+                0.0,
                 0.0,
                 0.0,
                 53.0,

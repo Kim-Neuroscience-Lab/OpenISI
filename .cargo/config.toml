@@ -1,27 +1,5 @@
-# Project-managed libtorch.
-#
-# The `vendor/libtorch` directory is populated by `scripts/setup.sh` (or
-# `scripts/setup.ps1` on Windows). We force LIBTORCH to that path so the
-# build picks up the vendored libtorch automatically — no shell-side
-# setup, no dependence on system or Python-installed libtorch.
-#
-# Caveat: `LIBTORCH_USE_PYTORCH` must NOT be set in the developer's shell
-# environment. torch-sys's build script switches to a Python-torch path
-# the instant that variable is *set* (regardless of value), and cargo's
-# [env] table can override values but cannot unset a variable. The setup
-# script detects the presence of `LIBTORCH_USE_PYTORCH` and tells the
-# developer to remove it from their shell rc.
-#
-# See `docs/ANALYSIS_COMPUTE.md` for the rationale.
-
-[env]
-LIBTORCH = { value = "vendor/libtorch", relative = true, force = true }
-
-# Runtime dylib resolution. tch's build script uses LIBTORCH to find headers and
-# libs at *build* time but doesn't add an LC_RPATH entry to the produced binary,
-# so `@rpath/libtorch.dylib` references fail at runtime. Setting DYLD_LIBRARY_PATH
-# (macOS) and LD_LIBRARY_PATH (Linux) here means every `cargo run` / `cargo test`
-# / `cargo tauri dev` invocation finds the vendored libtorch automatically —
-# matching the build-time `LIBTORCH` value.
-DYLD_LIBRARY_PATH = { value = "vendor/libtorch/lib", relative = true, force = true }
-LD_LIBRARY_PATH = { value = "vendor/libtorch/lib", relative = true, force = true }
+# OpenISI uses Burn (pure-Rust tensor substrate) for analysis compute.
+# There is no native-library env setup: Burn's ndarray/CUDA/wgpu backends
+# are ordinary Cargo crates with no vendored C++ runtime to locate. The
+# former `LIBTORCH` / vendored-libtorch staging was removed when the tch
+# (libtorch) backend was retired — see docs/UNIFIED_COMPUTE_ARCHITECTURE.md.

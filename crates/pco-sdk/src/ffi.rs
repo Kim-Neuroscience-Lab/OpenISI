@@ -109,6 +109,12 @@ impl PcoCameraType {
     }
 }
 
+impl Default for PcoCameraType {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// PCO_OpenStruct — extended open parameters for PCO_OpenCameraEx.
 ///
 /// From PCO SDK (Python ctypes in sdk.py):

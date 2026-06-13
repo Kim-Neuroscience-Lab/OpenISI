@@ -516,7 +516,7 @@ async function buildSnrMaskForMap(mapName) {
     const axis = axisForMap(mapName);
     if (!axis) return;
 
-    const snrName = axis === "azi" ? "snr_azi" : "snr_alt";
+    const snrName = axis === "azi" ? "spectral_snr_azi" : "spectral_snr_alt";
     const ampName = axis === "azi" ? "azi_amplitude" : "alt_amplitude";
 
     const loadSpectralFirst = viz.snrPreferSpectral && viz.availableResults.has(snrName);
@@ -792,8 +792,14 @@ function buildMapPopup(results) {
         magnification: "Magnification",
         contours_azi: "Contours Azi",
         contours_alt: "Contours Alt",
-        snr_azi: "SNR Azi",
-        snr_alt: "SNR Alt",
+        spectral_snr_azi: "Spectral SNR Azi",
+        spectral_snr_alt: "Spectral SNR Alt",
+        allen_power_snr_azi: "Allen Power-SNR Azi",
+        allen_power_snr_alt: "Allen Power-SNR Alt",
+        reliability_azi_fwd: "Reliability Azi-Fwd",
+        reliability_azi_rev: "Reliability Azi-Rev",
+        reliability_alt_fwd: "Reliability Alt-Fwd",
+        reliability_alt_rev: "Reliability Alt-Rev",
     };
 
     // Add a button for each displayable result.
