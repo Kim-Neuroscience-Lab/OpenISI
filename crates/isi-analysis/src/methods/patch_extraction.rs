@@ -4,67 +4,14 @@
 //! patch list and per-patch signs.
 
 use ndarray::Array2;
-use openisi_params::{
-    PatchExtractionAllenBorderWidth, PatchExtractionAllenCloseIter,
-    PatchExtractionAllenDilationIter, PatchExtractionAllenOpenIter,
-    PatchExtractionAllenSmallPatchThr, Tagged,
-};
 
 use crate::segmentation::Patch;
 
 /// Method choice for extracting patches from the threshold mask.
 ///
-/// `#[non_exhaustive]` + constructor below enforce registry-sourced
-/// tunables.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum PatchExtractionMethod {
-    /// Allen `retinotopic_mapping` `_getRawPatchMap` + `_getRawPatches`
-    /// (Zhuang 2017, eLife 6:e18372; `RetinotopicMapping.py` L1089–1210).
-    ///
-    /// Pipeline (faithful to scipy.ndimage call sites in
-    /// `RetinotopicMapping.py`):
-    /// 1. `scipy.ndimage.binary_opening(imseg, iterations=open_iter)` —
-    ///    remove salt-and-pepper. The default 2D structure is a 4-conn
-    ///    cross, so `open_iter` iterations = a Manhattan-disk SE of
-    ///    radius `open_iter` (a diamond), NOT a Euclidean disk.
-    /// 2. `scipy.ndimage.label(imseg)` — 4-conn CC labelling.
-    /// 3. Per-patch `scipy.ndimage.binary_closing(currPatch,
-    ///    iterations=close_iter)` — smooth each patch's boundary using
-    ///    the same 4-conn cross / Manhattan-disk SE.
-    /// 4. `dilation_patches2_allen(patchmap, dilation_iter, border_width)` —
-    ///    Allen's bulk-dilate-then-skeletonize separation: dilate the seed
-    ///    patches, skeletonize the halo where dilations collide, subtract
-    ///    that skeleton from the dilated union, and keep only components
-    ///    that still overlap a seed (`RetinotopicMapping.py` L190–225).
-    /// 5. Trim labels within `border_width` of the image edge.
-    /// 6. Majority-sign assignment per final patch from `vfs_smoothed`.
-    AllenZhuang2017LabelOpenCloseDilate {
-        open_iter: i32,
-        close_iter: i32,
-        dilation_iter: i32,
-        border_width: i32,
-        small_patch_thr: usize,
-    },
-}
-
-impl PatchExtractionMethod {
-    pub fn allen_zhuang2017_label_open_close_dilate(
-        open_iter: Tagged<PatchExtractionAllenOpenIter>,
-        close_iter: Tagged<PatchExtractionAllenCloseIter>,
-        dilation_iter: Tagged<PatchExtractionAllenDilationIter>,
-        border_width: Tagged<PatchExtractionAllenBorderWidth>,
-        small_patch_thr: Tagged<PatchExtractionAllenSmallPatchThr>,
-    ) -> Self {
-        Self::AllenZhuang2017LabelOpenCloseDilate {
-            open_iter: open_iter.into_inner(),
-            close_iter: close_iter.into_inner(),
-            dilation_iter: dilation_iter.into_inner(),
-            border_width: border_width.into_inner(),
-            small_patch_thr: small_patch_thr.into_inner(),
-        }
-    }
-}
+/// Canonical type: [`openisi_params::config::analysis::PatchExtraction`] (UNIFY);
+/// compute behavior is attached via [`PatchExtractionExt`].
+pub use openisi_params::config::analysis::PatchExtraction as PatchExtractionMethod;
 
 /// Output of the patch-extraction stage: a list of `Patch` (mask + sign)
 /// and a copy of the post-morphology binary mask for downstream tooling.
@@ -115,12 +62,17 @@ pub(crate) fn raw_patch_map_allen(
         )
 }
 
-impl PatchExtractionMethod {
-    /// Extract patches from `imseg` (the post-threshold binary mask) and
-    /// the smoothed VFS (used to assign patch signs). Mirrors Allen's
-    /// `_getRawPatchMap` (`RetinotopicMapping.py` L1089–1124) followed
-    /// by `_getRawPatches` (L1126–1182) end-to-end.
-    pub fn apply(&self, imseg: &Array2<bool>, vfs_smoothed: &Array2<f64>) -> PatchExtractionOutput {
+/// Compute behavior for the patch-extraction stage (extension trait).
+pub trait PatchExtractionExt {
+    /// Extract patches from `imseg` (the post-threshold binary mask) and the
+    /// smoothed VFS (used to assign patch signs). Mirrors Allen's
+    /// `_getRawPatchMap` (`RetinotopicMapping.py` L1089–1124) followed by
+    /// `_getRawPatches` (L1126–1182) end-to-end.
+    fn apply(&self, imseg: &Array2<bool>, vfs_smoothed: &Array2<f64>) -> PatchExtractionOutput;
+}
+
+impl PatchExtractionExt for PatchExtractionMethod {
+    fn apply(&self, imseg: &Array2<bool>, vfs_smoothed: &Array2<f64>) -> PatchExtractionOutput {
         use rayon::prelude::*;
 
         use crate::segmentation::connectivity::{

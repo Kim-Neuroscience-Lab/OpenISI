@@ -35,19 +35,17 @@ use std::f64::consts::PI;
 use ndarray::Array2;
 use num_complex::Complex64;
 
-use isi_analysis::methods::CortexSourceMethod;
+use isi_analysis::methods::{CortexSourceMethod, PatchRefinementExt};
 use isi_analysis::{AcquisitionProperties, AnalysisParams, ComplexMaps, ProvenanceLevel};
 
 const H: usize = 64;
 const W: usize = 64;
 
 /// Canonical default pipeline (Kalatsky combine, OpenISI amp-weighted phasor
-/// smoothing, OpenISI chain-rule VFS) from a fresh registry snapshot — the
-/// exact construction path production uses.
+/// smoothing, OpenISI chain-rule VFS) from the typed `AnalysisConfig` defaults —
+/// the exact construction path production uses.
 fn default_params() -> AnalysisParams {
-    let here = std::path::Path::new(".");
-    let snap = openisi_params::Registry::new(here, here).snapshot();
-    isi_analysis::bridge::analysis_params_from_snapshot(&snap)
+    AnalysisParams::from(&openisi_params::config::AnalysisConfig::default())
 }
 
 /// Identity geometry: `rotation_k = 0` (no pre-rotation of the complex maps),
@@ -211,7 +209,7 @@ fn full_pipeline_segments_two_areas_of_opposite_sign() {
     };
 
     let mut params = default_params();
-    params.cortex_source = CortexSourceMethod::no_restriction();
+    params.cortex_source = CortexSourceMethod::NoRestriction;
 
     // The pure seeded-maps path: complex maps are the input (stage 0 skipped),
     // no reliability/polygon, full tail recompute. `compute_analysis` is the

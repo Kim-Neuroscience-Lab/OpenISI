@@ -12,34 +12,21 @@
 use crate::compute::Complex2;
 
 /// Method choice for combining a direction's per-cycle complex maps.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum CycleAverageMethod {
-    /// Plain complex average `Σ_k Z_k / K`. Faithful to Allen `get_average_movie`
-    /// then a single DFT, and SNLC `Gf1image` accumulation (the per-cycle DFT
-    /// kernel is identical across cycles, so averaging the complex maps equals
-    /// DFT-ing the averaged movie). The validated default.
-    SimpleComplexAverage,
+///
+/// Canonical type: [`openisi_params::config::analysis::CycleAverage`] (UNIFY);
+/// compute behavior is attached via [`CycleAverageExt`].
+pub use openisi_params::config::analysis::CycleAverage as CycleAverageMethod;
 
-    /// **OpenISI deviation (no oracle):** phase-lock each cycle to the consensus
-    /// global phase `φ̄ = arg(Σ_k e^{iφ_k})` (shift by `−(φ_k − φ̄)`) before
-    /// averaging, removing per-cycle global-phase drift. Not performed by Allen or
-    /// SNLC; retained as an option, not the default.
-    PhaseLockedAverage,
-}
-
-impl CycleAverageMethod {
-    pub fn simple_complex_average() -> Self {
-        Self::SimpleComplexAverage
-    }
-    pub fn phase_locked_average() -> Self {
-        Self::PhaseLockedAverage
-    }
-
+/// Compute behavior for the cycle-average stage (extension trait).
+pub trait CycleAverageExt {
     /// Combine the per-cycle complex maps into the direction-averaged map.
     /// `phases[k]` is cycle `k`'s global phase `arg(Σ_pixels Z_k)` (used only by
     /// the phase-locked variant). Returns `None` for an empty cycle set.
-    pub fn apply(&self, cycles: Vec<Complex2>, phases: &[f64]) -> Option<Complex2> {
+    fn apply(&self, cycles: Vec<Complex2>, phases: &[f64]) -> Option<Complex2>;
+}
+
+impl CycleAverageExt for CycleAverageMethod {
+    fn apply(&self, cycles: Vec<Complex2>, phases: &[f64]) -> Option<Complex2> {
         let n = cycles.len();
         // Complex addition of two `Complex2` planes; folded over the cycles.
         let add = |a: Complex2, b: Complex2| {
@@ -147,7 +134,7 @@ mod tests {
                 i.atan2(r)
             })
             .collect();
-        let averaged = CycleAverageMethod::simple_complex_average()
+        let averaged = CycleAverageMethod::SimpleComplexAverage
             .apply(cycles, &phases)
             .expect("non-empty");
 
@@ -197,10 +184,10 @@ mod tests {
             })
             .collect();
 
-        let locked = CycleAverageMethod::phase_locked_average()
+        let locked = CycleAverageMethod::PhaseLockedAverage
             .apply(cycles.clone(), &phases)
             .expect("non-empty");
-        let simple = CycleAverageMethod::simple_complex_average()
+        let simple = CycleAverageMethod::SimpleComplexAverage
             .apply(cycles, &phases)
             .expect("non-empty");
 

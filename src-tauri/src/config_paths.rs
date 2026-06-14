@@ -67,8 +67,8 @@ impl Profile {
 /// Resolved directories for the two-layer registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLayout {
-    /// Read-only shipped baseline holding `rig.toml` / `experiment.toml` /
-    /// `analysis.toml`.
+    /// Read-only shipped baseline holding `rig.json` / `experiment.json` /
+    /// `analysis.json`.
     pub shipped_dir: PathBuf,
     /// Writable active overlay (sparse user/dev overrides), same filenames.
     pub user_dir: PathBuf,

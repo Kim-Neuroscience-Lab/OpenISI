@@ -74,10 +74,9 @@ fn spawn_inner(
                 path: req.path.clone(),
             });
 
-            let params = isi_analysis::bridge::analysis_params_from_snapshot(&req.snapshot);
             let progress = isi_analysis::SilentProgress;
 
-            let result = isi_analysis::analyze(&req.path, &params, &progress, &cancel_clone);
+            let result = isi_analysis::analyze(&req.path, &req.params, &progress, &cancel_clone);
 
             match result {
                 Ok(()) => {

@@ -281,24 +281,23 @@ fn navigate<'a>(root: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_
 /// `/rig_params` + `/experiment_params` at capture time.
 ///
 /// **Strict schema, enforced at reconstruction (not via serde on this
-/// struct).** The on-disk form is the Registry-tree JSON in the `.oisi`
-/// `/analysis_params` attribute, reloaded through
-/// `RegistrySnapshot::from_json_tree`, which is fail-loud: every analysis
-/// param must be present and known, or it returns `ParamsError::Config` —
-/// corrupted or incomplete files do NOT silently load with code-default
+/// struct).** The on-disk form is the tagged-`AnalysisConfig` JSON in the
+/// `.oisi` `/analysis_params` attribute, reloaded through
+/// [`crate::bridge::analysis_params_from_oisi_tree`], which is fail-loud:
+/// a tree that doesn't deserialize as the current `AnalysisConfig` returns
+/// an error — corrupted or legacy files do NOT silently load with code-default
 /// values. The orchestrator catches that error and surfaces a clean
 /// "schema mismatch — re-run analysis" message; the pre-2026 migration
 /// path (`is_pre_2026_analysis_params`) handles known schema drift
 /// distinctly, upstream of reconstruction.
 ///
-/// **No `Default` impl, no serde derives.** `AnalysisParams` is now a
+/// **No `Default` impl, no serde derives.** `AnalysisParams` is a
 /// runtime-only struct — its on-disk form lives in the `.oisi` HDF5
-/// attr as the Registry-tree JSON (produced by
-/// `RegistrySnapshot::to_json_for_target(PersistTarget::Analysis)`),
-/// not as serde-derived JSON of this struct. The only construction
-/// path is `Self::new(...)` below, called from the bridge in
-/// `bridge::analysis_params_from_snapshot`. `#[non_exhaustive]`
-/// prevents struct-literal construction from outside this crate.
+/// attr as the tagged-`AnalysisConfig` JSON (produced by
+/// `serde_json::to_value(&AnalysisConfig)`), not as serde-derived JSON of this
+/// struct. The only construction path is `Self::new(...)` below, called from the
+/// `bridge` adapters. `#[non_exhaustive]` prevents struct-literal construction
+/// from outside this crate.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct AnalysisParams {
@@ -328,10 +327,9 @@ pub struct AnalysisParams {
 
 impl AnalysisParams {
     /// Construct an `AnalysisParams` from already-built method enums.
-    /// The bridge in `bridge::analysis_params_from_snapshot` is the
-    /// only production caller; it constructs each method enum via
-    /// its registry-typed constructor, so every value in the result
-    /// provably came from the canonical SSoT.
+    /// The `bridge` adapters (`From<&AnalysisConfig>`) are the only production
+    /// callers; the method enums ARE the typed config's tagged enums, so every
+    /// value in the result provably came from the canonical SSoT config.
     // Justified `#[allow]`, not a parameter object: the 11 arguments ARE the
     // struct's fields (no smaller cohesive concept to extract), and each is a
     // distinct method-enum type, so a positional swap is a compile error — the

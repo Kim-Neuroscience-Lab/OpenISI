@@ -207,8 +207,8 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<AppState>) {
                                 height = info.height_px,
                                 "camera connected"
                             );
-                            // Read current exposure from registry (the single source of truth).
-                            let exposure_us = state.registry.lock().camera_exposure_us();
+                            // Read current exposure from the config store (SSoT).
+                            let exposure_us = state.config.lock().rig().camera.exposure_us;
                             {
                                 let mut session = state.session.lock();
                                 session.camera_connected = true;
@@ -409,8 +409,8 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<AppState>) {
                                 )
                             } else {
                                 tracing::warn!("no acquisition state at completion");
-                                // Fallback: take a live snapshot from the registry.
-                                let fallback_snap = state.registry.lock().snapshot();
+                                // Fallback: a live typed config snapshot.
+                                let fallback_cfg = state.config.lock().snapshot();
                                 (
                                     AccumulatedData {
                                         frames: Vec::new(),
@@ -420,7 +420,7 @@ pub fn run_event_forwarder(app: AppHandle, state: Arc<AppState>) {
                                         width: 0,
                                         height: 0,
                                     },
-                                    fallback_snap,
+                                    fallback_cfg,
                                     None,
                                     None,
                                 )

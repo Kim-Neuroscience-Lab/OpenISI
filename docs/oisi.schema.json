@@ -31,7 +31,7 @@
           "type": "object",
           "properties": {
             "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "JSON snapshot of every Rig-target parameter from the registry, captured at acquisition. Read by AcquisitionProperties::from_oisi_attrs at analyze time (camera.um_per_pixel)." },
+            "description": { "const": "serde JSON of the typed RigConfig, captured at acquisition. Read by AcquisitionProperties::from_oisi_attrs at analyze time (camera.um_per_pixel)." },
             "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
           }
         },
@@ -39,7 +39,7 @@
           "type": "object",
           "properties": {
             "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "JSON snapshot of every Experiment-target parameter from the registry. Carries stimulus_geometry.{azi_angular_range, alt_angular_range, offset_azi, offset_alt, rotation_k}." },
+            "description": { "const": "serde JSON of the typed ExperimentConfig. Carries stimulus_geometry.{azi_angular_range, alt_angular_range, offset_azi, offset_alt, rotation_k}." },
             "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
           }
         },
@@ -47,7 +47,7 @@
           "type": "object",
           "properties": {
             "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "JSON-serialized AnalysisParams — per-stage method enum choices. Updated on every `analyze` run via io::write_analysis_params_attr." },
+            "description": { "const": "serde JSON of the tagged AnalysisConfig — per-stage {method, active tunables}. Updated on every `analyze` run via io::write_analysis_params_attr." },
             "present_when": { "const": "after first analysis run" }
           }
         },
@@ -208,13 +208,13 @@
         },
         "/complex_maps": {
           "type": "object",
-          "description": "Per-orientation forward/reverse complex maps (output of cycle averaging + DFT). Each is a 2D complex64 array.",
+          "description": "Per-orientation forward/reverse complex maps (output of cycle averaging + DFT). HDF5 carries no portable native-complex type, so each map is stored as a real/imag split: f64 (H, W, 2) with [:,:,0]=real, [:,:,1]=imag.",
           "present_when": "after first analysis run OR if file was imported from complex-map data.",
           "properties": {
-            "azi_fwd": { "dtype": "complex128", "shape": "(H, W)" },
-            "azi_rev": { "dtype": "complex128", "shape": "(H, W)" },
-            "alt_fwd": { "dtype": "complex128", "shape": "(H, W)" },
-            "alt_rev": { "dtype": "complex128", "shape": "(H, W)" }
+            "azi_fwd": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
+            "azi_rev": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
+            "alt_fwd": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
+            "alt_rev": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." }
           }
         },
         "/results": {
@@ -236,7 +236,8 @@
             "area_signs": { "dtype": "i8", "shape": "(N,)", "description": "Per-patch sign in [-1, +1] order-matched to area_labels values 1..N." },
             "area_borders": { "dtype": "u8 (bool)", "shape": "(H, W)" },
             "eccentricity": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch" },
-            "magnification": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch" },
+            "magnification": { "dtype": "f64", "shape": "(H, W)", "units": "px^2/deg^2", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch", "description": "Cortical magnification (ROI-masked); area per degree² of visual angle." },
+            "magnification_raw": { "dtype": "f64", "shape": "(H, W)", "units": "deg^2/px^2", "palette": "jet", "display_range": "finite [min, max]", "description": "Unmasked Jacobian determinant |det J| (full frame, no ROI gating); the split-criterion input." },
             "contours_azi": { "dtype": "u8 (bool)", "shape": "(H, W)" },
             "contours_alt": { "dtype": "u8 (bool)", "shape": "(H, W)" },
             "spectral_snr_azi": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },

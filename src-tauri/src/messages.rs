@@ -3,8 +3,8 @@
 //! Defines the command/event types for crossbeam channels between
 //! the main thread, stimulus thread, and camera thread.
 
-use crate::params::RegistrySnapshot;
 use crate::session::MonitorInfo;
+use openisi_params::config::ConfigSnapshot;
 
 // =============================================================================
 // Stimulus Thread
@@ -25,16 +25,17 @@ pub enum StimulusCmd {
 }
 
 /// Full configuration for an acquisition run. Self-contained — the stimulus thread
-/// receives everything it needs in this single message.
+/// receives everything it needs in this single message. `snapshot` is the typed
+/// config frozen at start (the stimulus thread reads its fields directly).
 pub struct AcquisitionCommand {
-    pub snapshot: RegistrySnapshot,
+    pub snapshot: ConfigSnapshot,
     pub monitor: MonitorInfo,
     pub measured_refresh_hz: f64,
 }
 
 /// Configuration for preview mode.
 pub struct PreviewCommand {
-    pub snapshot: RegistrySnapshot,
+    pub snapshot: ConfigSnapshot,
     pub monitor: MonitorInfo,
 }
 
@@ -152,7 +153,11 @@ pub enum AnalysisCmd {
 
 pub struct AnalysisRequest {
     pub path: std::path::PathBuf,
-    pub snapshot: crate::params::RegistrySnapshot,
+    /// The typed analysis parameters for this run, built from the live config at
+    /// request time. The worker consumes these directly.
+    pub params: isi_analysis::AnalysisParams,
+    /// The `/analysis_params` provenance tree stamped into the `.oisi` on success
+    /// (the serde form of the tagged `AnalysisConfig`).
     pub params_tree: serde_json::Value,
 }
 

@@ -1,0 +1,523 @@
+[
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "All-frame mean (Allen normalizeMovie)",
+          "value": "allen_all_frame_mean"
+        },
+        {
+          "label": "All-frame median (Allen normalizeMovie)",
+          "value": "allen_all_frame_median"
+        },
+        {
+          "label": "Inter-sweep rest mean (OpenISI)",
+          "value": "open_isi_inter_sweep_mean"
+        },
+        {
+          "label": "Inter-sweep rest median (OpenISI)",
+          "value": "open_isi_inter_sweep_median"
+        }
+      ]
+    },
+    "group": "Baseline",
+    "id": "baseline.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "open_isi_inter_sweep_mean"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Reliability mask",
+          "value": "reliability"
+        },
+        {
+          "label": "User polygon",
+          "value": "user_polygon"
+        },
+        {
+          "label": "SNLC ImBound (Garrett 2014)",
+          "value": "snlc_garrett2014_im_bound"
+        },
+        {
+          "label": "No restriction (full frame)",
+          "value": "no_restriction"
+        }
+      ]
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "reliability"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.reliability.threshold",
+    "label": "Reliability threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.85
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.snlc_garrett2014_im_bound.close",
+    "label": "Closing radius",
+    "param_type": "i32",
+    "unit": "px",
+    "value": 10
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.snlc_garrett2014_im_bound.dilate",
+    "label": "Dilation radius",
+    "param_type": "i32",
+    "unit": "px",
+    "value": 3
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 10.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.snlc_garrett2014_im_bound.k",
+    "label": "σ multiplier",
+    "param_type": "f64",
+    "unit": "",
+    "value": 1.5
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Simple complex average (Allen / SNLC)",
+          "value": "simple_complex_average"
+        },
+        {
+          "label": "Phase-locked average (OpenISI)",
+          "value": "phase_locked_average"
+        }
+      ]
+    },
+    "group": "CycleAverage",
+    "id": "cycle_average.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "simple_complex_average"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Delay subtraction (Kalatsky & Stryker 2003)",
+          "value": "kalatsky_stryker2003_delay_subtraction"
+        },
+        {
+          "label": "Unweighted cycle average (no delay correction)",
+          "value": "unweighted_cycle_average"
+        }
+      ]
+    },
+    "group": "CycleCombine",
+    "id": "cycle_combine.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "kalatsky_stryker2003_delay_subtraction"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Whole-cortex V1, mean center (OpenISI)",
+          "value": "open_isi_whole_cortex_v1"
+        },
+        {
+          "label": "V1 center, pixel-CoM sample (SNLC / getAreaBorders)",
+          "value": "snlc_get_area_borders_v1_center"
+        }
+      ]
+    },
+    "group": "Eccentricity",
+    "id": "eccentricity.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "open_isi_whole_cortex_v1"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 20.0,
+      "min": 1.0
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.allen_zhuang2017_label_open_close_dilate.border_width",
+    "label": "Border width",
+    "param_type": "i32",
+    "unit": "px",
+    "value": 1
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.allen_zhuang2017_label_open_close_dilate.close_iter",
+    "label": "Closing iterations",
+    "param_type": "i32",
+    "unit": "",
+    "value": 3
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.allen_zhuang2017_label_open_close_dilate.dilation_iter",
+    "label": "Dilation iterations",
+    "param_type": "i32",
+    "unit": "",
+    "value": 15
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.allen_zhuang2017_label_open_close_dilate.open_iter",
+    "label": "Opening iterations",
+    "param_type": "i32",
+    "unit": "",
+    "value": 3
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 10000.0,
+      "min": 0.0
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.allen_zhuang2017_label_open_close_dilate.small_patch_thr",
+    "label": "Drop patches smaller than",
+    "param_type": "usize",
+    "unit": "px",
+    "value": 50
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Label + open/close/dilate (Allen / Zhuang 2017)",
+          "value": "allen_zhuang2017_label_open_close_dilate"
+        }
+      ]
+    },
+    "group": "PatchExtraction",
+    "id": "patch_extraction.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "allen_zhuang2017_label_open_close_dilate"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 20.0,
+      "min": 1.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.border_width",
+    "label": "Border width",
+    "param_type": "i32",
+    "unit": "px",
+    "value": 1
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.ecc_map_filter_sigma",
+    "label": "Eccentricity filter σ",
+    "param_type": "i32",
+    "unit": "px",
+    "value": 10
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.merge_overlap_thr",
+    "label": "Merge overlap threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.01
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 10000.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.small_patch_thr",
+    "label": "Drop patches smaller than",
+    "param_type": "usize",
+    "unit": "px",
+    "value": 100
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.split_local_min_cut_step",
+    "label": "Split min cut step",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 5.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 10.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.split_overlap_thr",
+    "label": "Split overlap threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 1.1
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.visual_space_close_iter",
+    "label": "Visual-space close iterations",
+    "param_type": "i32",
+    "unit": "",
+    "value": 15
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 10.0,
+      "min": 0.001
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.allen_zhuang2017_split_merge.visual_space_pixel_size",
+    "label": "Visual-space pixel size",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.5
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "None",
+          "value": "none"
+        },
+        {
+          "label": "Split/merge refinement (Allen / Zhuang 2017)",
+          "value": "allen_zhuang2017_split_merge"
+        }
+      ]
+    },
+    "group": "PatchRefinement",
+    "id": "patch_refinement.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "allen_zhuang2017_split_merge"
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "PatchThreshold",
+    "id": "patch_threshold.allen_zhuang2017_fixed_sign_map_thr.value",
+    "label": "Threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.35
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 10.0,
+      "min": 0.0
+    },
+    "group": "PatchThreshold",
+    "id": "patch_threshold.garrett2014_sigma_scaled.k",
+    "label": "σ multiplier",
+    "param_type": "f64",
+    "unit": "",
+    "value": 1.5
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Fixed sign-map threshold (Allen / Zhuang 2017)",
+          "value": "allen_zhuang2017_fixed_sign_map_thr"
+        },
+        {
+          "label": "Sigma-scaled (Garrett 2014)",
+          "value": "garrett2014_sigma_scaled"
+        }
+      ]
+    },
+    "group": "PatchThreshold",
+    "id": "patch_threshold.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "garrett2014_sigma_scaled"
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PhaseSmoothing",
+    "id": "phase_smoothing.allen_zhuang2017_position_gaussian.sigma_px",
+    "label": "Smoothing σ",
+    "param_type": "f64",
+    "unit": "px",
+    "value": 1.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Amplitude-weighted phasor (SNLC)",
+          "value": "snlc_amp_weighted_phasor"
+        },
+        {
+          "label": "Position Gaussian (Allen / Zhuang 2017)",
+          "value": "allen_zhuang2017_position_gaussian"
+        }
+      ]
+    },
+    "group": "PhaseSmoothing",
+    "id": "phase_smoothing.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "snlc_amp_weighted_phasor"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.0
+    },
+    "group": "PhaseSmoothing",
+    "id": "phase_smoothing.snlc_amp_weighted_phasor.sigma_px",
+    "label": "Smoothing σ",
+    "param_type": "f64",
+    "unit": "px",
+    "value": 1.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 500.0,
+      "min": 0.0
+    },
+    "group": "SignMapSmoothing",
+    "id": "sign_map_smoothing.gaussian.sigma_um",
+    "label": "Smoothing σ",
+    "param_type": "f64",
+    "unit": "µm",
+    "value": 60.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Gaussian",
+          "value": "gaussian"
+        }
+      ]
+    },
+    "group": "SignMapSmoothing",
+    "id": "sign_map_smoothing.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "gaussian"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Chain-rule phasor gradient (OpenISI)",
+          "value": "open_isi_chain_rule_phasor_gradient"
+        }
+      ]
+    },
+    "group": "VfsComputation",
+    "id": "vfs_computation.method",
+    "label": "Method",
+    "param_type": "enum",
+    "unit": "",
+    "value": "open_isi_chain_rule_phasor_gradient"
+  }
+]

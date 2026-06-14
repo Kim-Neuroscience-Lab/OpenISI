@@ -5,7 +5,11 @@
 
 use ndarray::Array2;
 
-use crate::methods::cortex_source::CortexResolveContext;
+use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt};
+use crate::methods::{
+    BaselineExt, EccentricityExt, PatchExtractionExt, PatchRefinementExt, PatchThresholdExt,
+    SignMapSmoothingExt,
+};
 use crate::{math, segmentation, AnalysisError};
 
 use super::stage::{Stage, StageCtx, StageId};

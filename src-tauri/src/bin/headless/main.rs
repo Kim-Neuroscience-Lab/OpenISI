@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use openisi_lib::error::{AppError, AppResult};
-use openisi_lib::params::Registry;
+use openisi_params::config::ConfigStore;
 
 mod figures;
 use figures::{
@@ -111,6 +111,23 @@ enum Commands {
         /// Path to the `.oisi` file.
         file: PathBuf,
     },
+    /// Export an `.oisi` file to a reference-valid NWB file (DANDI-submittable).
+    ///
+    /// A pure transformation via the `tools/export_nwb` Python bridge (pynwb +
+    /// the `ndx-openisi` extension) — the native `.oisi` is unchanged. Requires
+    /// Python with `pynwb` installed at export time only (see
+    /// `tools/export_nwb/requirements.txt`). Conformance is guaranteed by the
+    /// reference implementation, not by this CLI.
+    ExportNwb {
+        /// Path to the `.oisi` file.
+        file: PathBuf,
+        /// Output `.nwb` path (default: same stem, `.nwb` extension).
+        output: Option<PathBuf>,
+        /// Optional JSON sidecar of DANDI-required metadata the `.oisi` does not
+        /// capture (subject age/sex/species, experimenter, …).
+        #[arg(long)]
+        metadata: Option<PathBuf>,
+    },
     /// Import an SNLC `.mat` directory into a new `.oisi`.
     Import {
         /// Directory of SNLC `.mat` files.
@@ -163,6 +180,11 @@ fn try_main() -> AppResult<()> {
         Commands::DftCheck { file } => cmd_dft_check(&file),
         Commands::Migrate { file } => cmd_migrate(&file),
         Commands::Inspect { file } => cmd_inspect(&file),
+        Commands::ExportNwb {
+            file,
+            output,
+            metadata,
+        } => cmd_export_nwb(&file, output.as_deref(), metadata.as_deref()),
         Commands::Import { mat_dir, output } => cmd_import(&mat_dir, output.as_deref()),
         Commands::ImportSamples => cmd_import_samples(),
         Commands::ImportSession {
@@ -178,7 +200,7 @@ fn try_main() -> AppResult<()> {
 // Config loading
 // ═══════════════════════════════════════════════════════════════════════
 
-fn load_registry() -> AppResult<Registry> {
+fn load_config_store() -> AppResult<ConfigStore> {
     let exe_dir = std::env::current_exe()
         .map_err(|e| AppError::Config(format!("locate current executable: {e}")))?
         .parent()
@@ -202,37 +224,37 @@ fn load_registry() -> AppResult<Registry> {
 
     let config_dir = candidates
         .into_iter()
-        .find(|p| p.join("rig.toml").exists())
+        .find(|p| p.join("rig.json").exists())
         .ok_or_else(|| {
             AppError::Config(format!(
-                "cannot find config directory with rig.toml. Searched: {}",
+                "cannot find config directory with rig.json. Searched: {}",
                 candidate_paths.join(", ")
             ))
         })?;
 
     // Behavior-preserving placeholder: shipped == user == config_dir,
     // pending proper dev/prod path resolution.
-    let mut registry = Registry::new(&config_dir, &config_dir);
-    registry.load_rig().map_err(|e| {
+    let mut store = ConfigStore::new(&config_dir, &config_dir);
+    store.load_rig().map_err(|e| {
         AppError::Config(format!(
             "load rig config from {}: {e}",
             config_dir.display()
         ))
     })?;
-    registry.load_analysis().map_err(|e| {
+    store.load_analysis().map_err(|e| {
         AppError::Config(format!(
             "load analysis config from {}: {e}",
             config_dir.display()
         ))
     })?;
-    registry.load_experiment().map_err(|e| {
+    store.load_experiment().map_err(|e| {
         AppError::Config(format!(
             "load experiment from {}: {e}",
             config_dir.display()
         ))
     })?;
 
-    Ok(registry)
+    Ok(store)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -276,35 +298,35 @@ fn cmd_camera_check(_duration_sec: Option<f64>) -> AppResult<()> {
 
 #[cfg(windows)]
 fn cmd_info() -> AppResult<()> {
-    let reg = load_registry()?;
+    let reg = load_config_store()?;
     let snap = reg.snapshot();
 
     println!("=== Rig Config ===");
     println!(
         "Camera: exposure={}µs binning={}",
-        snap.camera_exposure_us(),
-        snap.camera_binning()
+        snap.rig.camera.exposure_us,
+        snap.rig.camera.binning
     );
     println!(
         "Geometry: viewing_distance={}cm",
-        snap.viewing_distance_cm()
+        snap.rig.geometry.viewing_distance_cm
     );
     println!(
         "Display: target_fps={} rotation={}°",
-        snap.target_stimulus_fps(),
-        snap.monitor_rotation_deg()
+        snap.rig.display.target_stimulus_fps,
+        snap.rig.display.monitor_rotation_deg
     );
 
     println!();
     println!("=== Experiment ===");
-    println!("Envelope: {:?}", snap.stimulus_envelope());
-    println!("Carrier: {:?}", snap.stimulus_carrier());
-    println!("Conditions: {:?}", snap.conditions());
-    println!("Repetitions: {}", snap.repetitions());
+    println!("Envelope: {:?}", snap.experiment.stimulus.envelope);
+    println!("Carrier: {:?}", snap.experiment.stimulus.carrier);
+    println!("Conditions: {:?}", snap.experiment.presentation.conditions);
+    println!("Repetitions: {}", snap.experiment.presentation.repetitions);
     println!(
         "Baselines: {}/{}s",
-        snap.baseline_start_sec(),
-        snap.baseline_end_sec()
+        snap.experiment.timing.baseline_start_sec,
+        snap.experiment.timing.baseline_end_sec
     );
 
     println!();
@@ -369,7 +391,7 @@ fn cmd_info() -> AppResult<()> {
 
 #[cfg(windows)]
 fn cmd_validate_display(monitor: Option<usize>) -> AppResult<()> {
-    let reg = load_registry()?;
+    let reg = load_config_store()?;
     let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
@@ -408,7 +430,7 @@ fn cmd_validate_display(monitor: Option<usize>) -> AppResult<()> {
         ));
     }
 
-    let sample_count = snap.display_validation_sample_count();
+    let sample_count = snap.rig.system.display_validation_sample_count;
     let warmup = 30u32;
     let total = sample_count + warmup;
     let mut timestamps = Vec::with_capacity(total as usize);
@@ -463,7 +485,7 @@ fn cmd_validate_display(monitor: Option<usize>) -> AppResult<()> {
 fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
     let measure_sec: f64 = seconds.unwrap_or(3.0);
 
-    let reg = load_registry()?;
+    let reg = load_config_store()?;
     let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
@@ -489,7 +511,7 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
     let _rate = camera
         .set_max_pixel_rate()
         .map_err(|e| AppError::Hardware(format!("Failed to set pixel rate: {e}")))?;
-    let binning = snap.camera_binning();
+    let binning = snap.rig.camera.binning;
     if binning > 1 {
         camera
             .set_binning(binning, binning)
@@ -499,7 +521,7 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
         .set_timestamp_binary()
         .map_err(|e| AppError::Hardware(format!("Failed to set timestamp mode: {e}")))?;
     camera
-        .set_exposure_us(snap.camera_exposure_us())
+        .set_exposure_us(snap.rig.camera.exposure_us)
         .map_err(|e| AppError::Hardware(format!("Failed to set exposure: {e}")))?;
     if let Err(e) = camera.arm() {
         return Err(AppError::Hardware(format!("Failed to arm camera: {e}")));
@@ -515,7 +537,7 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
 
     // Wait for first frame.
     let deadline = std::time::Instant::now()
-        + Duration::from_millis(snap.camera_first_frame_timeout_ms() as u64);
+        + Duration::from_millis(snap.rig.system.camera_first_frame_timeout_ms as u64);
     loop {
         if std::time::Instant::now() > deadline {
             return Err(AppError::Hardware(
@@ -525,7 +547,7 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
         match recorder.get_latest_frame() {
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(
-                snap.camera_first_frame_poll_ms() as u64,
+                snap.rig.system.camera_first_frame_poll_ms as u64,
             )),
             Err(e) => {
                 return Err(AppError::Hardware(format!("Frame error: {e}")));
@@ -536,12 +558,12 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
     // Start stimulus thread.
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
-    let bg_lum = snap.background_luminance();
-    let preview_width_px = snap.preview_width_px();
-    let preview_interval_ms = snap.preview_interval_ms();
-    let preview_cycle_sec = snap.preview_cycle_sec();
-    let idle_sleep_ms = snap.idle_sleep_ms();
-    let drop_detection_warmup_frames = snap.drop_detection_warmup_frames();
+    let bg_lum = snap.experiment.stimulus.params.background_luminance;
+    let preview_width_px = snap.rig.system.preview_width_px;
+    let preview_interval_ms = snap.rig.system.preview_interval_ms;
+    let preview_cycle_sec = snap.rig.system.preview_cycle_sec;
+    let idle_sleep_ms = snap.rig.system.idle_sleep_ms;
+    let drop_detection_warmup_frames = snap.rig.system.drop_detection_warmup_frames;
     let mon_idx = mon.index;
     let mon_w = mon.width_px;
     let mon_h = mon.height_px;
@@ -631,7 +653,7 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(snap.camera_poll_interval_ms() as u64));
+        std::thread::sleep(Duration::from_millis(snap.rig.system.camera_poll_interval_ms as u64));
     }
 
     // Stop.
@@ -687,53 +709,53 @@ fn cmd_validate_timing(seconds: Option<f64>) -> AppResult<()> {
     use openisi_stimulus::geometry::DisplayGeometry;
 
     let geometry = DisplayGeometry::new(
-        snap.experiment_projection(),
-        snap.viewing_distance_cm(),
-        snap.horizontal_offset_deg(),
-        snap.vertical_offset_deg(),
-        snap.bisector_x_cm(),
-        snap.bisector_y_cm(),
-        snap.monitor_width_cm(),
-        snap.monitor_height_cm(),
+        snap.experiment.geometry.projection,
+        snap.rig.geometry.viewing_distance_cm,
+        snap.experiment.geometry.horizontal_offset_deg,
+        snap.experiment.geometry.vertical_offset_deg,
+        snap.rig.geometry.bisector_x_cm,
+        snap.rig.geometry.bisector_y_cm,
+        snap.rig.geometry.monitor_width_cm,
+        snap.rig.geometry.monitor_height_cm,
         mon.width_px,
         mon.height_px,
     );
 
-    let envelope = snap.stimulus_envelope();
+    let envelope = snap.experiment.stimulus.envelope;
     let sweep_sec = match envelope {
         openisi_lib::params::Envelope::Bar => {
-            let total_travel = geometry.visual_field_width_deg() + snap.stimulus_width_deg();
-            total_travel / snap.sweep_speed_deg_per_sec()
+            let total_travel = geometry.visual_field_width_deg() + snap.experiment.stimulus.params.stimulus_width_deg;
+            total_travel / snap.experiment.stimulus.params.sweep_speed_deg_per_sec
         }
-        openisi_lib::params::Envelope::Wedge => 360.0 / snap.rotation_speed_deg_per_sec(),
+        openisi_lib::params::Envelope::Wedge => 360.0 / snap.experiment.stimulus.params.rotation_speed_deg_per_sec,
         openisi_lib::params::Envelope::Ring => {
-            let total_travel = geometry.get_max_eccentricity_deg() + snap.stimulus_width_deg();
-            total_travel / snap.expansion_speed_deg_per_sec()
+            let total_travel = geometry.get_max_eccentricity_deg() + snap.experiment.stimulus.params.stimulus_width_deg;
+            total_travel / snap.experiment.stimulus.params.expansion_speed_deg_per_sec
         }
         openisi_lib::params::Envelope::Fullfield => 0.0,
     };
 
-    let n_conditions = snap.conditions().len();
-    let n_reps = snap.repetitions() as usize;
+    let n_conditions = snap.experiment.presentation.conditions.len();
+    let n_reps = snap.experiment.presentation.repetitions as usize;
     let n_trials = n_conditions * n_reps;
-    let inter_trial_sec = sweep_sec + snap.inter_stimulus_sec();
+    let inter_trial_sec = sweep_sec + snap.experiment.timing.inter_stimulus_sec;
 
     let total_sweep_time = n_trials as f64 * sweep_sec;
     let total_inter_stim = if n_trials > 1 {
-        (n_trials - 1) as f64 * snap.inter_stimulus_sec()
+        (n_trials - 1) as f64 * snap.experiment.timing.inter_stimulus_sec
     } else {
         0.0
     };
     let total_inter_dir = if n_conditions > 1 {
-        (n_conditions - 1) as f64 * snap.inter_direction_sec() * n_reps as f64
+        (n_conditions - 1) as f64 * snap.experiment.timing.inter_direction_sec * n_reps as f64
     } else {
         0.0
     };
-    let session_sec = snap.baseline_start_sec()
+    let session_sec = snap.experiment.timing.baseline_start_sec
         + total_sweep_time
         + total_inter_stim
         + total_inter_dir
-        + snap.baseline_end_sec();
+        + snap.experiment.timing.baseline_end_sec;
 
     println!(
         "Sweep duration: {:.3}s ({:?} envelope)",
@@ -818,7 +840,7 @@ fn select_stimulus_monitor(
 #[cfg(windows)]
 fn open_armed_camera<'a>(
     sdk: &'a pco_sdk::Sdk,
-    snap: &openisi_lib::params::RegistrySnapshot,
+    snap: &openisi_params::config::ConfigSnapshot,
 ) -> AppResult<pco_sdk::Camera<'a>> {
     let cameras = sdk.enumerate_cameras(10);
     if cameras.is_empty() {
@@ -835,7 +857,7 @@ fn open_armed_camera<'a>(
     camera
         .set_max_pixel_rate()
         .map_err(|e| AppError::Hardware(format!("Failed to set pixel rate: {e}")))?;
-    let binning = snap.camera_binning();
+    let binning = snap.rig.camera.binning;
     if binning > 1 {
         if !camera.is_valid_binning(binning) {
             let (max_h, step_h, max_v, step_v) = camera.available_binning();
@@ -852,7 +874,7 @@ fn open_armed_camera<'a>(
         .set_timestamp_binary()
         .map_err(|e| AppError::Hardware(format!("Failed to set timestamp mode: {e}")))?;
     camera
-        .set_exposure_us(snap.camera_exposure_us())
+        .set_exposure_us(snap.rig.camera.exposure_us)
         .map_err(|e| AppError::Hardware(format!("Failed to set exposure: {e}")))?;
     camera.arm().map_err(|e| {
         AppError::Hardware(format!(
@@ -877,7 +899,7 @@ fn cmd_camera_check(duration_sec: Option<f64>) -> AppResult<()> {
     use openisi_lib::camera_quality::{FrameStamp, QualityThresholds, assess_capture};
 
     let duration_sec: f64 = duration_sec.unwrap_or(10.0);
-    let reg = load_registry()?;
+    let reg = load_config_store()?;
     let snap = reg.snapshot();
 
     println!("Camera quality check: capturing for {duration_sec:.1}s (camera only, no stimulus)");
@@ -889,8 +911,8 @@ fn cmd_camera_check(duration_sec: Option<f64>) -> AppResult<()> {
         "Camera armed: {}x{}, exposure {}µs, binning {}",
         camera.width,
         camera.height,
-        snap.camera_exposure_us(),
-        snap.camera_binning()
+        snap.rig.camera.exposure_us,
+        snap.rig.camera.binning
     );
 
     let mut recorder = camera
@@ -933,8 +955,8 @@ fn cmd_camera_check(duration_sec: Option<f64>) -> AppResult<()> {
     // test and the live acquisition path agree on what "dropped" and "too long
     // an interval" mean.
     let thr = QualityThresholds {
-        timing_anomaly_factor: snap.drop_detection_threshold(),
-        warmup_frames: snap.drop_detection_warmup_frames(),
+        timing_anomaly_factor: snap.rig.system.drop_detection_threshold,
+        warmup_frames: snap.rig.system.drop_detection_warmup_frames,
         max_jitter_fraction: QualityThresholds::default().max_jitter_fraction,
     };
     let report = assess_capture(&stamps, &thr);
@@ -977,7 +999,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
     let allow_primary = primary;
     let duration_sec: f64 = duration_sec.unwrap_or(10.0);
 
-    let reg = load_registry()?;
+    let reg = load_config_store()?;
     let snap = reg.snapshot();
 
     let monitors = monitor::detect_monitors();
@@ -1004,8 +1026,8 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
     );
     println!(
         "Experiment: {:?} {:?}",
-        snap.stimulus_envelope(),
-        snap.stimulus_carrier()
+        snap.experiment.stimulus.envelope,
+        snap.experiment.stimulus.carrier
     );
 
     // Camera setup (shared path — identical config to `camera-check`).
@@ -1019,19 +1041,19 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
         "Camera armed: {}x{}, exposure {}µs",
         cam_w,
         cam_h,
-        snap.camera_exposure_us()
+        snap.rig.camera.exposure_us
     );
 
     // Stimulus thread.
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
 
-    let bg_lum = snap.background_luminance();
-    let preview_width_px = snap.preview_width_px();
-    let preview_interval_ms = snap.preview_interval_ms();
-    let preview_cycle_sec = snap.preview_cycle_sec();
-    let idle_sleep_ms = snap.idle_sleep_ms();
-    let drop_detection_warmup_frames = snap.drop_detection_warmup_frames();
+    let bg_lum = snap.experiment.stimulus.params.background_luminance;
+    let preview_width_px = snap.rig.system.preview_width_px;
+    let preview_interval_ms = snap.rig.system.preview_interval_ms;
+    let preview_cycle_sec = snap.rig.system.preview_cycle_sec;
+    let idle_sleep_ms = snap.rig.system.idle_sleep_ms;
+    let drop_detection_warmup_frames = snap.rig.system.drop_detection_warmup_frames;
     let mon_idx = monitor.index;
     let mon_w = monitor.width_px;
     let mon_h = monitor.height_px;
@@ -1104,7 +1126,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
 
     // Wait for first frame.
     let deadline =
-        Instant::now() + Duration::from_millis(snap.camera_first_frame_timeout_ms() as u64);
+        Instant::now() + Duration::from_millis(snap.rig.system.camera_first_frame_timeout_ms as u64);
     loop {
         if Instant::now() > deadline {
             return Err(AppError::Hardware(
@@ -1114,7 +1136,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
         match recorder.get_latest_frame() {
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(
-                snap.camera_first_frame_poll_ms() as u64,
+                snap.rig.system.camera_first_frame_poll_ms as u64,
             )),
             Err(e) => {
                 return Err(AppError::Hardware(format!("Frame read error: {e}")));
@@ -1168,7 +1190,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(snap.camera_poll_interval_ms() as u64));
+        std::thread::sleep(Duration::from_millis(snap.rig.system.camera_poll_interval_ms as u64));
     }
 
     // Stop.
@@ -1237,7 +1259,9 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
         .unwrap_or(0);
     let verdict_sweeps = sweep_schedule.sweep_sequence.len();
 
-    let data_dir = snap.data_directory().to_string();
+    // Typed config snapshot for provenance + the data-dir lookup.
+    let cfg_snap = snap.clone();
+    let data_dir = cfg_snap.rig.paths.data_directory.clone();
     let output_dir = if data_dir.is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
@@ -1256,7 +1280,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
             openisi_lib::export::OisiBundle {
                 stimulus_dataset: ds,
                 camera_data,
-                snapshot: &snap,
+                snapshot: &cfg_snap,
                 hardware: None,
                 schedule: &sweep_schedule,
                 timing: None,
@@ -1332,7 +1356,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
                  acquisition at the console to exercise analysis."
             );
         } else {
-            let params = isi_analysis::bridge::analysis_params_from_snapshot(&snap);
+            let params = isi_analysis::AnalysisParams::from(&snap.analysis);
             let cancel = std::sync::atomic::AtomicBool::new(false);
             match isi_analysis::analyze(
                 &output_path,
@@ -1516,9 +1540,9 @@ fn cmd_dft_check(file: &std::path::Path) -> AppResult<()> {
         (spread, r2.max(0.0), range, n)
     }
 
-    let registry = load_registry()?;
-    let snapshot = registry.snapshot();
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
+    let store = load_config_store()?;
+    let snapshot = store.snapshot();
+    let params = isi_analysis::AnalysisParams::from(store.analysis());
     let cancel = std::sync::atomic::AtomicBool::new(false);
 
     println!("DFT-from-raw vs cached complex maps — {}", path.display());
@@ -1548,10 +1572,10 @@ fn cmd_dft_check(file: &std::path::Path) -> AppResult<()> {
             let mean_dur = durs.iter().sum::<f64>() / durs.len().max(1) as f64;
             let cam_dur = ct[ct.len() - 1] - ct[0];
             let fps = (ct.len() - 1) as f64 / cam_dur;
-            let speed = snapshot.sweep_speed_deg_per_sec();
-            let azi = snapshot.azi_angular_range();
-            let alt = snapshot.alt_angular_range();
-            let barw = snapshot.stimulus_width_deg();
+            let speed = snapshot.experiment.stimulus.params.sweep_speed_deg_per_sec;
+            let azi = snapshot.experiment.stimulus_geometry.azi_angular_range;
+            let alt = snapshot.experiment.stimulus_geometry.alt_angular_range;
+            let barw = snapshot.experiment.stimulus.params.stimulus_width_deg;
             println!(
                 "Schedule: {} sweeps, mean recorded sweep window = {:.2}s, camera {:.1} fps, total {:.0}s",
                 durs.len(), mean_dur, fps, cam_dur
@@ -1610,7 +1634,7 @@ fn cmd_analyze(
     threshold_sweep: bool,
     compare_methods: bool,
 ) -> AppResult<()> {
-    let registry = load_registry()?;
+    let store = load_config_store()?;
     let path = file;
 
     // Pre-2026 schema files are refused with a clear migration message;
@@ -1623,9 +1647,11 @@ fn cmd_analyze(
         )));
     }
 
-    let snapshot = registry.snapshot();
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
-    let params_tree = snapshot.to_json_for_target(openisi_params::PersistTarget::Analysis);
+    let analysis_config = store.analysis().clone();
+    let params = isi_analysis::AnalysisParams::from(&analysis_config);
+    // Provenance: tagged `AnalysisConfig` (serde), the canonical schema.
+    let params_tree = serde_json::to_value(&analysis_config)
+        .map_err(|e| AppError::Validation(format!("serialize analysis params: {e}")))?;
 
     let progress = isi_analysis::SilentProgress;
     let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -1653,57 +1679,18 @@ fn cmd_analyze(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// migrate — upgrade pre-2026 /analysis_params to current registry-tree schema
+// migrate — upgrade pre-2026 /analysis_params to the current tagged schema
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Migrate a `.oisi` file's `/analysis_params` attribute from the
-/// pre-2026 serde-derived `AnalysisParams` shape to the current
-/// registry-tree shape.
+/// Migrate a `.oisi` file's `/analysis_params` attribute from the pre-2026
+/// shape to the current **tagged `AnalysisConfig`** shape.
 ///
-/// **Schemas:**
-///
-/// Pre-2026 was serde-derived JSON of `AnalysisParams`. Per-stage
-/// values were tagged enums with tunable fields at the stage level:
-///
-/// ```json
-/// { "phase_smoothing": {"method": "open_isi_amp_weighted_phasor", "sigma_px": 1.5} }
-/// ```
-///
-/// Current schema is the Registry tree (produced by
-/// `RegistrySnapshot::to_json_for_target(PersistTarget::Analysis)`).
-/// Tunables nest under a subtree named for the active variant, so the
-/// same content becomes:
-///
-/// ```json
-/// {
-///   "phase_smoothing": {
-///     "method": "open_isi_amp_weighted_phasor",
-///     "open_isi_amp_weighted_phasor": { "sigma_px": 1.5 }
-///   }
-/// }
-/// ```
-///
-/// **Translation rules:**
-///
-/// 1. Start from a default registry tree (PARAM_DEFS defaults for
-///    every stage). This populates every variant subtree with the
-///    canonical defaults; the migration only overrides what the old
-///    file recorded.
-/// 2. For each stage in the OLD JSON:
-///    - Take the method value from `old[stage]["method"]`, set
-///      `new[stage]["method"]`.
-///    - For each `(key, value)` in `old[stage]` other than `"method"`,
-///      place it into `new[stage][<method>][key]` — the new variant
-///      subtree.
-/// 3. Root-level moved fields from the very-old `/analysis_params`
-///    schema (`azi_angular_range`, `rotation_k`, etc.) are silently
-///    dropped — they now live in `/experiment_params` and
-///    `/rig_params`, captured at acquisition time.
-///
-/// **The translation lives in `isi_analysis::migrate`** — the ONLY place
-/// the old schema's field names appear in the codebase post-refactor.
-/// Defaults for missing tunables come from `PARAM_DEFS` (loaded into a
-/// default `Registry`), not from per-method consts.
+/// The current schema is the serde form of [`openisi_params::config::AnalysisConfig`]:
+/// `{"<stage>": {"method": "x", <x's tunables flat at the stage level>}}`. The
+/// full translation (legacy flat/nested tunables, method renames, dropped
+/// root-level fields, fill-in defaults for unset tunables) lives in
+/// [`isi_analysis::migrate::translate_pre_2026_analysis_params`] — the ONLY place
+/// the old schema's field names appear post-refactor.
 fn cmd_migrate(file: &std::path::Path) -> AppResult<()> {
     let path = file.to_path_buf();
     if !path.exists() {
@@ -1723,7 +1710,7 @@ fn cmd_migrate(file: &std::path::Path) -> AppResult<()> {
 
     if !isi_analysis::io::is_pre_2026_analysis_params(&path)? {
         println!(
-            "{}: /analysis_params already in current registry-tree schema. No migration needed.",
+            "{}: /analysis_params already in current tagged-AnalysisConfig schema. No migration needed.",
             path.display()
         );
         return Ok(());
@@ -1733,9 +1720,66 @@ fn cmd_migrate(file: &std::path::Path) -> AppResult<()> {
     isi_analysis::io::write_analysis_params_attr(&path, &new_tree)?;
 
     println!("Migrated /analysis_params on {}", path.display());
-    println!("  old shape: serde-derived AnalysisParams (tagged enums, flat tunables)");
-    println!("  new shape: Registry tree (tunables nested under variant subtrees)");
-    println!("  defaults for unset tunables sourced from PARAM_DEFS");
+    println!("  new shape: tagged AnalysisConfig (active variant's tunables flat at the stage level)");
+    println!("  defaults for unset tunables sourced from the canonical analysis defaults");
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// export-nwb — transform an .oisi into a reference-valid NWB file
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Export an `.oisi` to NWB by invoking the `tools/export_nwb` Python bridge.
+///
+/// This is the no-Python-in-the-core design: acquisition + analysis are pure
+/// Rust; only *export* shells out to pynwb (the reference NWB implementation, the
+/// only way to guarantee a valid file without re-implementing the spec). The
+/// native `.oisi` is read-only here — nothing about the analysis pipeline changes.
+fn cmd_export_nwb(
+    file: &std::path::Path,
+    output: Option<&std::path::Path>,
+    metadata: Option<&std::path::Path>,
+) -> AppResult<()> {
+    if !file.exists() {
+        return Err(AppError::NotAvailable(format!(
+            "export-nwb: file does not exist: {}",
+            file.display()
+        )));
+    }
+    let out_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => file.with_extension("nwb"),
+    };
+
+    let script = repo_root().join("tools/export_nwb/export_oisi_to_nwb.py");
+    if !script.exists() {
+        return Err(AppError::NotAvailable(format!(
+            "export-nwb: bridge script not found at {}. Run from a source checkout.",
+            script.display()
+        )));
+    }
+
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let mut cmd = std::process::Command::new(python);
+    cmd.arg(&script).arg(file).arg(&out_path);
+    if let Some(m) = metadata {
+        cmd.arg("--metadata").arg(m);
+    }
+
+    println!("Exporting {} -> {} ...", file.display(), out_path.display());
+    let status = cmd.status().map_err(|e| {
+        AppError::NotAvailable(format!(
+            "export-nwb: failed to launch `{python}` ({e}). Install Python + the \
+             export deps: pip install -r tools/export_nwb/requirements.txt"
+        ))
+    })?;
+    if !status.success() {
+        return Err(AppError::Validation(format!(
+            "export-nwb: the Python bridge exited with status {status}. \
+             Ensure `pip install -r tools/export_nwb/requirements.txt` has been run."
+        )));
+    }
+    println!("NWB export complete: {}", out_path.display());
     Ok(())
 }
 
@@ -1922,10 +1966,10 @@ fn cmd_import(mat_dir: &std::path::Path, output_arg: Option<&std::path::Path>) -
 // ═══════════════════════════════════════════════════════════════════════
 
 fn cmd_import_samples() -> AppResult<()> {
-    let reg = load_registry()?;
-    let data_dir = reg.snapshot().data_directory().to_string();
+    let reg = load_config_store()?;
+    let data_dir = reg.snapshot().rig.paths.data_directory.clone();
     if data_dir.is_empty() {
-        eprintln!("Set [paths] data_directory in rig.toml before downloading samples.");
+        eprintln!("Set paths.data_directory in rig.json before downloading samples.");
         return Ok(());
     }
     let out_dir = std::path::Path::new(&data_dir);

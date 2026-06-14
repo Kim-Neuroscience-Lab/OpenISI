@@ -1,0 +1,10 @@
+{
+  "stimulus": {
+    "params": {
+      "mean_luminance": 0.2
+    }
+  },
+  "presentation": {
+    "repetitions": 3
+  }
+}

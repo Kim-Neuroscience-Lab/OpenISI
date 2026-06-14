@@ -7,7 +7,6 @@
 //! Run: cargo run -p isi-analysis --example synthetic_recovery
 
 use std::f64::consts::PI;
-use std::path::Path;
 
 use ndarray::Array2;
 use num_complex::Complex64;
@@ -59,9 +58,8 @@ fn main() {
         um_per_pixel: 10.0,
         provenance: ProvenanceLevel::Full,
     };
-    let here = Path::new(".");
-    let snap = openisi_params::Registry::new(here, here).snapshot();
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snap);
+    let params =
+        isi_analysis::AnalysisParams::from(&openisi_params::config::AnalysisConfig::default());
 
     let never_cancel = std::sync::atomic::AtomicBool::new(false);
     let retino = isi_analysis::compute_retinotopy(&maps, &acq, &params, &never_cancel)

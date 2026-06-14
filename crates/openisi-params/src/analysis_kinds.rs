@@ -1,11 +1,11 @@
 //! Tag-only method-choice enums for each analysis stage.
 //!
-//! These are the Registry-side representation of "which method variant
-//! is selected for this stage." They mirror the tagged-enum variant
-//! names of the corresponding method enums in
-//! `crates/isi-analysis/src/methods/*.rs`, but carry no tunable data —
-//! the per-variant tunables are separate Registry params with
-//! `active_when` predicates keyed to these choice values.
+//! These are the **UI-dropdown** representation of "which method variant is
+//! selected for this stage": the descriptor layer projects them (serde wire
+//! string + strum label + `EnumIter`) into the `<option>` lists. They mirror the
+//! variant names of the tagged method enums in `config::analysis` (which ARE the
+//! `crates/isi-analysis` method types), but carry no tunable data — the per-variant
+//! tunables live on the tagged enum variants themselves.
 //!
 //! ## Three things derive automatically per variant
 //!

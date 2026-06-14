@@ -41,7 +41,16 @@ impl State {
 
 /// Sweep ordering mode.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    strum::Display,
+    strum::EnumIter,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Order {

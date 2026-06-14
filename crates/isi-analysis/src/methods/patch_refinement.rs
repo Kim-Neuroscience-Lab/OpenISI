@@ -7,84 +7,35 @@
 use std::sync::atomic::AtomicBool;
 
 use ndarray::Array2;
-use openisi_params::{
-    PatchRefinementAllenBorderWidth, PatchRefinementAllenEccMapFilterSigma,
-    PatchRefinementAllenMergeOverlapThr, PatchRefinementAllenSmallPatchThr,
-    PatchRefinementAllenSplitLocalMinCutStep, PatchRefinementAllenSplitOverlapThr,
-    PatchRefinementAllenVisualSpaceCloseIter, PatchRefinementAllenVisualSpacePixelSize, Tagged,
-};
 
 use crate::segmentation::Patch;
 use crate::AnalysisError;
 
 /// Method choice for patch refinement.
 ///
-/// `#[non_exhaustive]` + per-variant constructors enforce registry-
-/// sourced tunables.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum PatchRefinementMethod {
-    /// No refinement — the raw extracted patches pass through unchanged. Named
-    /// for what it does, not what it cites: this is not a published method, it's
-    /// the OpenISI default for pipelines that don't run Allen's split/merge step.
-    None,
+/// Canonical type: [`openisi_params::config::analysis::PatchRefinement`] (UNIFY);
+/// compute behavior is attached via [`PatchRefinementExt`].
+pub use openisi_params::config::analysis::PatchRefinement as PatchRefinementMethod;
 
-    /// Allen `_splitPatches` + `_mergePatches` (Zhuang 2017, eLife
-    /// 6:e18372; `RetinotopicMapping.py` L1247–1370 and L1371–1527).
-    AllenZhuang2017SplitMerge {
-        split_overlap_thr: f64,
-        split_local_min_cut_step: f64,
-        merge_overlap_thr: f64,
-        visual_space_pixel_size: f64,
-        visual_space_close_iter: i32,
-        ecc_map_filter_sigma: i32,
-        border_width: i32,
-        small_patch_thr: usize,
-    },
-}
-
-/// Tunables for Allen's split/merge refinement — the parameter object for
-/// [`PatchRefinementMethod::allen_zhuang2017_split_merge`]. Each field is a
-/// registry-validated `Tagged` value; the constructor unwraps them into the
-/// method variant. Named fields make the bridge's construction self-documenting
-/// (and mirror the internal `allen::Params` the algorithm ultimately consumes).
-pub struct SplitMergeParams {
-    pub split_overlap_thr: Tagged<PatchRefinementAllenSplitOverlapThr>,
-    pub split_local_min_cut_step: Tagged<PatchRefinementAllenSplitLocalMinCutStep>,
-    pub merge_overlap_thr: Tagged<PatchRefinementAllenMergeOverlapThr>,
-    pub visual_space_pixel_size: Tagged<PatchRefinementAllenVisualSpacePixelSize>,
-    pub visual_space_close_iter: Tagged<PatchRefinementAllenVisualSpaceCloseIter>,
-    pub ecc_map_filter_sigma: Tagged<PatchRefinementAllenEccMapFilterSigma>,
-    pub border_width: Tagged<PatchRefinementAllenBorderWidth>,
-    pub small_patch_thr: Tagged<PatchRefinementAllenSmallPatchThr>,
-}
-
-impl PatchRefinementMethod {
-    pub fn none() -> Self {
-        Self::None
-    }
-
-    pub fn allen_zhuang2017_split_merge(p: SplitMergeParams) -> Self {
-        Self::AllenZhuang2017SplitMerge {
-            split_overlap_thr: p.split_overlap_thr.into_inner(),
-            split_local_min_cut_step: p.split_local_min_cut_step.into_inner(),
-            merge_overlap_thr: p.merge_overlap_thr.into_inner(),
-            visual_space_pixel_size: p.visual_space_pixel_size.into_inner(),
-            visual_space_close_iter: p.visual_space_close_iter.into_inner(),
-            ecc_map_filter_sigma: p.ecc_map_filter_sigma.into_inner(),
-            border_width: p.border_width.into_inner(),
-            small_patch_thr: p.small_patch_thr.into_inner(),
-        }
-    }
-}
-
-impl PatchRefinementMethod {
+/// Compute behavior for the patch-refinement stage (extension trait).
+pub trait PatchRefinementExt {
     /// Apply the refinement. `determinant_map` is `|det(grad)|` of the
     /// position-in-visual-angle maps (= our `magnification_raw`).
-    /// `azi_position_deg` / `alt_position_deg` are positions in visual-
-    /// angle degrees (= our `azi_phase_degrees` / `alt_phase_degrees`,
-    /// which `phase_to_degrees` produces in visual-angle units).
-    pub fn apply(
+    /// `azi_position_deg` / `alt_position_deg` are positions in visual-angle
+    /// degrees (= our `azi_phase_degrees` / `alt_phase_degrees`, which
+    /// `phase_to_degrees` produces in visual-angle units).
+    fn apply(
+        &self,
+        patches: Vec<Patch>,
+        azi_position_deg: &Array2<f64>,
+        alt_position_deg: &Array2<f64>,
+        determinant_map: &Array2<f64>,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<Patch>, AnalysisError>;
+}
+
+impl PatchRefinementExt for PatchRefinementMethod {
+    fn apply(
         &self,
         patches: Vec<Patch>,
         azi_position_deg: &Array2<f64>,

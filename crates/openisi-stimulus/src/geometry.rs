@@ -8,7 +8,17 @@ use serde::{Deserialize, Serialize};
 
 /// Projection type for the display.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    strum::Display,
+    strum::EnumIter,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionType {

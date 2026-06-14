@@ -13,6 +13,7 @@ use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::compute;
+use crate::methods::{CycleCombineExt, PhaseSmoothingExt, VfsComputationExt};
 use crate::{AcquisitionProperties, AnalysisError, AnalysisParams, ComplexMaps, RetinotopyMaps};
 
 /// Bail out with [`AnalysisError::Cancelled`] when the run was cancelled. The

@@ -6,40 +6,27 @@
 //! real patches from noise on the smoothed map.
 
 use ndarray::Array2;
-use openisi_params::{SignMapSmoothingGaussianSigmaUm, Tagged};
 
 use crate::segmentation::gaussian_smooth_f64;
 
 /// Method choice for smoothing the visual field sign map.
 ///
-/// `#[non_exhaustive]` + per-variant constructors below force every
-/// construction to flow through `Self::gaussian(snap.typed::<…>())`,
-/// which structurally proves the sigma value originated in the
-/// canonical param registry (no inline `60.0` literals allowed).
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum SignMapSmoothingMethod {
-    /// Gaussian filter — Allen `retinotopic_mapping` `_getSignMap`
-    /// (Zhuang 2017, eLife 6:e18372; `RetinotopicMapping.py` L1016–1017,
-    /// L1002 default `signMapFilterSigma = 9.0` px). σ specified in
-    /// **pixels** in Allen's code; OpenISI accepts σ in micrometers and
-    /// converts at runtime via the rig's `camera_um_per_pixel` so the
-    /// spatial extent of smoothing is constant across rig resolutions.
-    Gaussian { sigma_um: f64 },
+/// Canonical type: [`openisi_params::config::analysis::SignMapSmoothing`] (UNIFY).
+/// The `Gaussian` variant's σ is specified in **micrometers** and converted to
+/// pixels at runtime via the rig's `um_per_pixel` so smoothing extent is constant
+/// across rig resolutions. Compute behavior is attached via [`SignMapSmoothingExt`].
+pub use openisi_params::config::analysis::SignMapSmoothing as SignMapSmoothingMethod;
+
+/// Compute behavior for the sign-map-smoothing stage (extension trait).
+pub trait SignMapSmoothingExt {
+    /// Smooth the raw VFS, given the rig's spatial resolution.
+    fn apply(&self, vfs: &Array2<f64>, um_per_pixel: f64) -> Array2<f64>;
+    /// σ in pixels at the given imaging resolution. For diagnostics / captions.
+    fn sigma_px(&self, um_per_pixel: f64) -> f64;
 }
 
-impl SignMapSmoothingMethod {
-    /// Construct the Gaussian variant from a registry-sourced σ value.
-    /// The `Tagged<SignMapSmoothingGaussianSigmaUm>` argument can only
-    /// be produced by `RegistrySnapshot::typed::<SignMapSmoothingGaussianSigmaUm>`.
-    pub fn gaussian(sigma_um: Tagged<SignMapSmoothingGaussianSigmaUm>) -> Self {
-        Self::Gaussian {
-            sigma_um: sigma_um.into_inner(),
-        }
-    }
-
-    /// Smooth the raw VFS, given the rig's spatial resolution.
-    pub fn apply(&self, vfs: &Array2<f64>, um_per_pixel: f64) -> Array2<f64> {
+impl SignMapSmoothingExt for SignMapSmoothingMethod {
+    fn apply(&self, vfs: &Array2<f64>, um_per_pixel: f64) -> Array2<f64> {
         match self {
             Self::Gaussian { sigma_um } => {
                 let sigma_px = *sigma_um / um_per_pixel.max(1e-6);
@@ -48,9 +35,7 @@ impl SignMapSmoothingMethod {
         }
     }
 
-    /// σ in pixels at the given imaging resolution. For diagnostics /
-    /// figure captions.
-    pub fn sigma_px(&self, um_per_pixel: f64) -> f64 {
+    fn sigma_px(&self, um_per_pixel: f64) -> f64 {
         match self {
             Self::Gaussian { sigma_um } => *sigma_um / um_per_pixel.max(1e-6),
         }

@@ -22,34 +22,28 @@ use isi_analysis::methods::{
 };
 use isi_analysis::pipeline::fingerprint::{self, StageFingerprints};
 use isi_analysis::{AcquisitionProperties, AnalysisParams, SilentProgress};
-use openisi_params::{
-    CortexSourceKind, EccentricityKind, ParamId, ParamValue, PersistTarget, Registry,
-    RegistrySnapshot,
+use openisi_params::config::analysis::{
+    CortexSource, Eccentricity, PhaseSmoothing, SignMapSmoothing,
 };
+use openisi_params::config::AnalysisConfig;
 
 fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// A canonical default `AnalysisParams` from a fresh registry snapshot.
+/// A canonical default `AnalysisParams` from the typed `AnalysisConfig` defaults.
 fn default_params() -> AnalysisParams {
-    let here = Path::new(".");
-    let snap = Registry::new(here, here).snapshot();
-    isi_analysis::bridge::analysis_params_from_snapshot(&snap)
+    AnalysisParams::from(&AnalysisConfig::default())
 }
 
-/// Default params except the phase-smoothing σ_px tunable, set via the registry
-/// (the real param path — the method enums are `#[non_exhaustive]`, so a tunable
-/// can only be varied through a snapshot, exactly as production does).
+/// Default params except the phase-smoothing σ_px tunable, set on the typed
+/// config (the same path production uses).
 fn params_with_sigma(sigma_px: f64) -> AnalysisParams {
-    let here = Path::new(".");
-    let mut reg = Registry::new(here, here);
-    reg.set(
-        ParamId::PhaseSmoothingSnlcAmpWeightedPhasorSigmaPx,
-        ParamValue::F64(sigma_px),
-    )
-    .expect("set σ_px");
-    isi_analysis::bridge::analysis_params_from_snapshot(&reg.snapshot())
+    let cfg = AnalysisConfig {
+        phase_smoothing: PhaseSmoothing::SnlcAmpWeightedPhasor { sigma_px },
+        ..Default::default()
+    };
+    AnalysisParams::from(&cfg)
 }
 
 /// Fixed acquisition geometry so fingerprints are stable across a test.
@@ -107,10 +101,10 @@ fn fingerprint_sensitive_to_baseline() {
     // would be served silently.
     let a = fixed_acq();
     let mut p = default_params();
-    p.baseline = BaselineMethod::allen_all_frame_mean();
+    p.baseline = BaselineMethod::AllenAllFrameMean;
     let retino_base = fingerprint::retinotopy(&p, &a, "rec");
     let projection_base = fingerprint::projection(&p, "rec");
-    p.baseline = BaselineMethod::open_isi_inter_sweep_mean();
+    p.baseline = BaselineMethod::OpenIsiInterSweepMean;
     assert_ne!(
         retino_base,
         fingerprint::retinotopy(&p, &a, "rec"),
@@ -127,9 +121,9 @@ fn fingerprint_sensitive_to_baseline() {
 fn fingerprint_sensitive_to_retino_param() {
     let a = fixed_acq();
     let mut p = default_params();
-    p.cycle_combine = CycleCombineMethod::kalatsky_stryker2003_delay_subtraction();
+    p.cycle_combine = CycleCombineMethod::KalatskyStryker2003DelaySubtraction;
     let base = fingerprint::retinotopy(&p, &a, "rec");
-    p.cycle_combine = CycleCombineMethod::unweighted_cycle_average();
+    p.cycle_combine = CycleCombineMethod::UnweightedCycleAverage;
     assert_ne!(
         base,
         fingerprint::retinotopy(&p, &a, "rec"),
@@ -143,10 +137,10 @@ fn fingerprint_sensitive_to_cycle_average() {
     // invalidate BOTH the projection (complex maps) and retinotopy caches.
     let a = fixed_acq();
     let mut p = default_params();
-    p.cycle_average = CycleAverageMethod::simple_complex_average();
+    p.cycle_average = CycleAverageMethod::SimpleComplexAverage;
     let retino_base = fingerprint::retinotopy(&p, &a, "rec");
     let projection_base = fingerprint::projection(&p, "rec");
-    p.cycle_average = CycleAverageMethod::phase_locked_average();
+    p.cycle_average = CycleAverageMethod::PhaseLockedAverage;
     assert_ne!(
         retino_base,
         fingerprint::retinotopy(&p, &a, "rec"),
@@ -176,13 +170,12 @@ fn fingerprint_sensitive_to_phase_smoothing_tunable() {
 
 // ─── Merkle per-stage invalidation (the never-stale property) ─────────────
 
-/// All 11 stage fingerprints for a registry mutated by `mutate`. Fixed geometry
-/// + recording identity so only the param change under test moves a key.
-fn stage_fps(mutate: impl FnOnce(&mut Registry)) -> StageFingerprints {
-    let here = Path::new(".");
-    let mut reg = Registry::new(here, here);
-    mutate(&mut reg);
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&reg.snapshot());
+/// All 11 stage fingerprints for an `AnalysisConfig` mutated by `mutate`. Fixed
+/// geometry + recording identity so only the param change under test moves a key.
+fn stage_fps(mutate: impl FnOnce(&mut AnalysisConfig)) -> StageFingerprints {
+    let mut cfg = AnalysisConfig::default();
+    mutate(&mut cfg);
+    let params = AnalysisParams::from(&cfg);
     fingerprint::compute(&params, &fixed_acq(), "rec", None)
 }
 
@@ -198,10 +191,9 @@ fn merkle_invalidation_is_exact() {
 
     // (1) A SignSmoothing input (σ_um) → sign_smoothing and ALL downstream keys
     //     change; baseline/projection/retinotopy (upstream) are untouched.
-    let s = stage_fps(|r| {
+    let s = stage_fps(|c| {
         // Default is 60.0; 123.0 is a different in-range (0..=500) value.
-        r.set(ParamId::SignMapSmoothingGaussianSigmaUm, ParamValue::F64(123.0))
-            .unwrap();
+        c.sign_map_smoothing = SignMapSmoothing::Gaussian { sigma_um: 123.0 };
     });
     assert_eq!(s.baseline, base.baseline, "upstream baseline must stay cached");
     assert_eq!(s.projection, base.projection, "upstream projection cached");
@@ -217,12 +209,8 @@ fn merkle_invalidation_is_exact() {
 
     // (2) A CortexSource method change → cortex_source + everything downstream of
     //     it changes; baseline..sign_smoothing (upstream) stay cached.
-    let c = stage_fps(|r| {
-        r.set(
-            ParamId::CortexSourceMethod,
-            ParamValue::CortexSource(CortexSourceKind::NoRestriction),
-        )
-        .unwrap();
+    let c = stage_fps(|c| {
+        c.cortex_source = CortexSource::NoRestriction;
     });
     assert_eq!(c.retinotopy, base.retinotopy);
     assert_eq!(c.sign_smoothing, base.sign_smoothing);
@@ -233,12 +221,8 @@ fn merkle_invalidation_is_exact() {
     // (3) An Eccentricity method change → ONLY eccentricity changes. It's a leaf
     //     consumer; DerivedMaps does not depend on it, so its key must NOT move
     //     (else we'd needlessly recompute derived maps on an ecc-only edit).
-    let e = stage_fps(|r| {
-        r.set(
-            ParamId::EccentricityMethod,
-            ParamValue::Eccentricity(EccentricityKind::SnlcGetAreaBordersV1Center),
-        )
-        .unwrap();
+    let e = stage_fps(|c| {
+        c.eccentricity = Eccentricity::SnlcGetAreaBordersV1Center;
     });
     assert_eq!(e.labels, base.labels);
     assert_eq!(e.patch_refinement, base.patch_refinement);
@@ -272,14 +256,10 @@ fn cache_restores_retinotopy_from_disk() {
         let new = isi_analysis::migrate::translate_pre_2026_analysis_params(&old).unwrap();
         isi_analysis::io::write_analysis_params_attr(&out, &new).unwrap();
     }
-    let snap = match isi_analysis::io::read_analysis_params_attr(&out).unwrap() {
-        Some(tree) => RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree).unwrap(),
-        None => {
-            let here = Path::new(".");
-            Registry::new(here, here).snapshot()
-        }
+    let params = match isi_analysis::io::read_analysis_params_attr(&out).unwrap() {
+        Some(tree) => isi_analysis::bridge::analysis_params_from_oisi_tree(&tree).unwrap(),
+        None => AnalysisParams::from(&AnalysisConfig::default()),
     };
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snap);
 
     let progress = SilentProgress;
     let cancel = AtomicBool::new(false);
@@ -361,14 +341,10 @@ fn setup_fixture(tag: &str) -> Option<(PathBuf, AnalysisParams)> {
         let new = isi_analysis::migrate::translate_pre_2026_analysis_params(&old).unwrap();
         isi_analysis::io::write_analysis_params_attr(&out, &new).unwrap();
     }
-    let snap = match isi_analysis::io::read_analysis_params_attr(&out).unwrap() {
-        Some(tree) => RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree).unwrap(),
-        None => {
-            let here = Path::new(".");
-            Registry::new(here, here).snapshot()
-        }
+    let params = match isi_analysis::io::read_analysis_params_attr(&out).unwrap() {
+        Some(tree) => isi_analysis::bridge::analysis_params_from_oisi_tree(&tree).unwrap(),
+        None => AnalysisParams::from(&AnalysisConfig::default()),
     };
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snap);
     Some((out, params))
 }
 
@@ -430,7 +406,7 @@ fn cut_restores_patch_chain_when_only_eccentricity_changes() {
 
     // Run B — identical params except the eccentricity method.
     let mut changed = base.clone();
-    changed.eccentricity = EccentricityMethod::snlc_get_area_borders_v1_center();
+    changed.eccentricity = EccentricityMethod::SnlcGetAreaBordersV1Center;
     run_analyze(&out, &changed);
 
     assert!(
@@ -470,7 +446,7 @@ fn cut_recomputes_tail_but_restores_upstream_on_cortex_change() {
     tamper_i32_with_sentinel(&out, "results/area_labels", 7);
 
     let mut changed = base.clone();
-    changed.cortex_source = CortexSourceMethod::no_restriction();
+    changed.cortex_source = CortexSourceMethod::NoRestriction;
     run_analyze(&out, &changed);
 
     assert!(

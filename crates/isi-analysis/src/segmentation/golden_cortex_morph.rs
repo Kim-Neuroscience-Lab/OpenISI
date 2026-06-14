@@ -15,7 +15,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::methods::cortex_source::{CortexResolveContext, CortexSourceMethod};
+    use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt, CortexSourceMethod};
     use crate::methods::patch_extraction::raw_patch_map_allen;
     use crate::segmentation::connectivity::{
         dilation_patches2_allen, keep_largest_component, label_4conn,

@@ -1,0 +1,44 @@
+[
+  {
+    "active": true,
+    "constraint": {},
+    "group": "Retinotopy",
+    "id": "snr_prefer_spectral",
+    "label": "Prefer Spectral SNR",
+    "param_type": "bool",
+    "unit": "",
+    "value": true
+  },
+  {
+    "active": true,
+    "constraint": {},
+    "group": "Retinotopy",
+    "id": "snr_threshold_enabled",
+    "label": "SNR Threshold Enabled",
+    "param_type": "bool",
+    "unit": "",
+    "value": false
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Retinotopy",
+    "id": "snr_threshold_value",
+    "label": "SNR Threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 2.0
+  },
+  {
+    "active": true,
+    "constraint": {},
+    "group": "Retinotopy",
+    "id": "snr_use_transparent_mask",
+    "label": "Use Transparent SNR Mask",
+    "param_type": "bool",
+    "unit": "",
+    "value": true
+  }
+]

@@ -4,7 +4,7 @@
 //! Tauri shell wraps `tauri::AppHandle` here and forwards the event
 //! payload as a `params:changed` IPC event to the JS UI.
 
-use openisi_params::registry::ParamChangeObserver;
+use openisi_params::ParamChangeObserver;
 use tauri::Emitter;
 
 pub struct TauriParamObserver {

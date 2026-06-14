@@ -419,6 +419,7 @@ pub fn analyze(
 
     progress.set_stage("Computing retinotopy");
     progress.set_progress(0.7);
+    use crate::methods::CortexSourceExt;
     tracing::info!(method = %params.cortex_source.short_label(), "cortex source method");
 
     let from_raw = raw.is_some();

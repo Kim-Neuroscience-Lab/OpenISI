@@ -4,7 +4,6 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
-use crate::params::ParamValue;
 
 use super::SharedState;
 
@@ -23,7 +22,7 @@ pub struct OisiFileInfo {
 /// List .oisi files in the data directory.
 #[tauri::command]
 pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileInfo>> {
-    let data_dir = state.registry.lock().data_directory().to_string();
+    let data_dir = state.config.lock().rig().paths.data_directory.clone();
 
     if data_dir.is_empty() {
         return Ok(Vec::new());
@@ -75,19 +74,16 @@ pub fn list_oisi_files(state: State<'_, SharedState>) -> AppResult<Vec<OisiFileI
 /// Get the data directory path.
 #[tauri::command]
 pub fn get_data_directory(state: State<'_, SharedState>) -> AppResult<String> {
-    Ok(state.registry.lock().data_directory().to_string())
+    Ok(state.config.lock().rig().paths.data_directory.clone())
 }
 
 /// Set the data directory path. Persists to rig.toml.
 #[tauri::command]
 pub fn set_data_directory(state: State<'_, SharedState>, path: String) -> AppResult<()> {
-    // Registry-scoped, brief: intentionally save while holding the registry lock.
-    let mut reg = state.registry.lock();
-    reg.set(
-        crate::params::ParamId::DataDirectory,
-        ParamValue::String(path),
-    )?;
-    if let Err(e) = reg.save_rig() {
+    // Config-scoped, brief: merge + save while holding the config lock.
+    let mut cfg = state.config.lock();
+    cfg.merge_rig(&serde_json::json!({ "paths": { "data_directory": path } }))?;
+    if let Err(e) = cfg.save_all() {
         tracing::error!(error = %e, "failed to save data directory");
     }
     Ok(())
@@ -120,7 +116,7 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
         .unwrap_or_else(|| "import".into());
 
     let out_dir = {
-        let data_dir = state.registry.lock().data_directory().to_string();
+        let data_dir = state.config.lock().rig().paths.data_directory.clone();
         if data_dir.is_empty() {
             src_dir.parent().unwrap_or(src_dir).to_path_buf()
         } else {
@@ -142,7 +138,7 @@ pub fn import_snlc(state: State<'_, SharedState>, dir_path: String) -> AppResult
 #[tauri::command]
 pub fn import_snlc_sample_data(state: State<'_, SharedState>) -> AppResult<Vec<String>> {
     let out_dir = {
-        let data_dir = state.registry.lock().data_directory().to_string();
+        let data_dir = state.config.lock().rig().paths.data_directory.clone();
         if data_dir.is_empty() {
             return Err(AppError::Validation(
                 "Set a data directory before downloading sample data.".into(),

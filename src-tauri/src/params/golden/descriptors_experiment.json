@@ -1,0 +1,425 @@
+[
+  {
+    "active": true,
+    "constraint": {
+      "max": 180.0,
+      "min": -180.0
+    },
+    "group": "Geometry",
+    "id": "geometry.horizontal_offset_deg",
+    "label": "Horizontal Offset",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Cartesian (flat screen)",
+          "value": "cartesian"
+        },
+        {
+          "label": "Spherical (Marshel et al. 2012)",
+          "value": "spherical"
+        },
+        {
+          "label": "Cylindrical (curved)",
+          "value": "cylindrical"
+        }
+      ]
+    },
+    "group": "Geometry",
+    "id": "geometry.projection",
+    "label": "Projection",
+    "param_type": "enum",
+    "unit": "",
+    "value": "spherical"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 90.0,
+      "min": -90.0
+    },
+    "group": "Geometry",
+    "id": "geometry.vertical_offset_deg",
+    "label": "Vertical Offset",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {},
+    "group": "Presentation",
+    "id": "presentation.conditions",
+    "label": "Conditions",
+    "param_type": "string_vec",
+    "unit": "",
+    "value": [
+      "LR",
+      "RL",
+      "TB",
+      "BT"
+    ]
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Sequential",
+          "value": "sequential"
+        },
+        {
+          "label": "Interleaved",
+          "value": "interleaved"
+        },
+        {
+          "label": "Randomized",
+          "value": "randomized"
+        }
+      ]
+    },
+    "group": "Presentation",
+    "id": "presentation.order",
+    "label": "Order",
+    "param_type": "enum",
+    "unit": "",
+    "value": "sequential"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 1.0
+    },
+    "group": "Presentation",
+    "id": "presentation.repetitions",
+    "label": "Repetitions",
+    "param_type": "u32",
+    "unit": "",
+    "value": 1
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Blocked",
+          "value": "blocked"
+        },
+        {
+          "label": "Interleaved",
+          "value": "interleaved"
+        }
+      ]
+    },
+    "group": "Presentation",
+    "id": "presentation.structure",
+    "label": "Structure",
+    "param_type": "enum",
+    "unit": "",
+    "value": "blocked"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Solid",
+          "value": "solid"
+        },
+        {
+          "label": "Checkerboard",
+          "value": "checkerboard"
+        }
+      ]
+    },
+    "group": "Stimulus",
+    "id": "stimulus.carrier",
+    "label": "Carrier",
+    "param_type": "enum",
+    "unit": "",
+    "value": "checkerboard"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Full field",
+          "value": "fullfield"
+        },
+        {
+          "label": "Drifting bar",
+          "value": "bar"
+        },
+        {
+          "label": "Rotating wedge",
+          "value": "wedge"
+        },
+        {
+          "label": "Expanding ring",
+          "value": "ring"
+        }
+      ]
+    },
+    "group": "Stimulus",
+    "id": "stimulus.envelope",
+    "label": "Envelope",
+    "param_type": "enum",
+    "unit": "",
+    "value": "bar"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.background_luminance",
+    "label": "Background Luminance",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.check_size_cm",
+    "label": "Check Size",
+    "param_type": "f64",
+    "unit": "cm",
+    "value": 1.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.check_size_deg",
+    "label": "Check Size",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 25.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.contrast",
+    "label": "Contrast",
+    "param_type": "f64",
+    "unit": "",
+    "value": 1.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.expansion_speed_deg_per_sec",
+    "label": "Expansion Speed",
+    "param_type": "f64",
+    "unit": "°/s",
+    "value": 5.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.mean_luminance",
+    "label": "Mean Luminance",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.5
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 360.0,
+      "min": -360.0
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.rotation_deg",
+    "label": "Rotation",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.rotation_speed_deg_per_sec",
+    "label": "Rotation Speed",
+    "param_type": "f64",
+    "unit": "°/s",
+    "value": 15.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.stimulus_width_deg",
+    "label": "Stimulus Width",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 20.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.strobe_frequency_hz",
+    "label": "Strobe Frequency",
+    "param_type": "f64",
+    "unit": "Hz",
+    "value": 6.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.001
+    },
+    "group": "Stimulus",
+    "id": "stimulus.params.sweep_speed_deg_per_sec",
+    "label": "Sweep Speed",
+    "param_type": "f64",
+    "unit": "°/s",
+    "value": 9.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 360.0,
+      "min": 0.0
+    },
+    "group": "Geometry",
+    "id": "stimulus_geometry.alt_angular_range",
+    "label": "Altitude Angular Range",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 110.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 360.0,
+      "min": 0.0
+    },
+    "group": "Geometry",
+    "id": "stimulus_geometry.azi_angular_range",
+    "label": "Azimuth Angular Range",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 140.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 180.0,
+      "min": -180.0
+    },
+    "group": "Geometry",
+    "id": "stimulus_geometry.offset_alt",
+    "label": "Altitude Offset",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 180.0,
+      "min": -180.0
+    },
+    "group": "Geometry",
+    "id": "stimulus_geometry.offset_azi",
+    "label": "Azimuth Offset",
+    "param_type": "f64",
+    "unit": "°",
+    "value": 0.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "max": 3.0,
+      "min": -3.0
+    },
+    "group": "Geometry",
+    "id": "stimulus_geometry.rotation_k",
+    "label": "Rotation K",
+    "param_type": "i32",
+    "unit": "",
+    "value": 0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Timing",
+    "id": "timing.baseline_end_sec",
+    "label": "Baseline End",
+    "param_type": "f64",
+    "unit": "s",
+    "value": 5.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Timing",
+    "id": "timing.baseline_start_sec",
+    "label": "Baseline Start",
+    "param_type": "f64",
+    "unit": "s",
+    "value": 5.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Timing",
+    "id": "timing.inter_direction_sec",
+    "label": "Inter-Direction",
+    "param_type": "f64",
+    "unit": "s",
+    "value": 5.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "min": 0.0
+    },
+    "group": "Timing",
+    "id": "timing.inter_stimulus_sec",
+    "label": "Inter-Stimulus",
+    "param_type": "f64",
+    "unit": "s",
+    "value": 0.0
+  }
+]

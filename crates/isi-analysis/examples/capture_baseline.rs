@@ -29,7 +29,6 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use isi_analysis::{self, AnalysisError, SilentProgress};
-use openisi_params::{PersistTarget, Registry, RegistrySnapshot};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -88,17 +87,15 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Step 3: build AnalysisParams. Prefer the file's /analysis_params tree
-    // (now in the current schema after step 2); fall back to a defaults-only
-    // snapshot from PARAM_DEFS if absent.
-    let snapshot = match isi_analysis::io::read_analysis_params_attr(output)? {
-        Some(tree) => RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)?,
+    // (now in the current schema after step 2); fall back to the typed
+    // `AnalysisConfig` defaults if absent.
+    let params = match isi_analysis::io::read_analysis_params_attr(output)? {
+        Some(tree) => isi_analysis::bridge::analysis_params_from_oisi_tree(&tree)?,
         None => {
-            println!("[capture-baseline] no /analysis_params — using registry defaults");
-            let here = Path::new(".");
-            Registry::new(here, here).snapshot()
+            println!("[capture-baseline] no /analysis_params — using config defaults");
+            isi_analysis::AnalysisParams::from(&openisi_params::config::AnalysisConfig::default())
         }
     };
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
 
     // Step 4: run the full pipeline. Writes /complex_maps/* (cached) and
     // /results/* in place.
@@ -111,7 +108,8 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // provenance. `analyze` itself doesn't write the tree; the Tauri shell
     // does that step after a successful run. The baseline file needs the
     // same stamp so subsequent equivalence tests use the same params.
-    let tree = snapshot.to_json_for_target(PersistTarget::Analysis);
+    let tree = serde_json::to_value(openisi_params::config::AnalysisConfig::from(&params))
+        .map_err(|e| AnalysisError::Validation(format!("serialize analysis params: {e}")))?;
     isi_analysis::io::write_analysis_params_attr(output, &tree)?;
 
     let final_bytes = output.metadata()?.len();

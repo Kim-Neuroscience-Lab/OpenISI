@@ -5,50 +5,12 @@
 //! consume this mask.
 
 use ndarray::Array2;
-use openisi_params::{PatchThresholdAllenValue, PatchThresholdGarrettK, Tagged};
 
 /// Method choice for the per-pixel patch threshold.
 ///
-/// `#[non_exhaustive]` + per-variant constructors enforce registry-
-/// sourced tunables.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum PatchThresholdMethod {
-    /// Fixed absolute threshold on `|signMapf|` — Allen
-    /// `retinotopic_mapping` `_getRawPatchMap` (Zhuang 2017, eLife
-    /// 6:e18372; `RetinotopicMapping.py` L1099–1103, default
-    /// `signMapThr = 0.35`). Pixels with `|signMapf| ≥ T` are
-    /// foreground.
-    ///
-    /// This is the canonical Allen Python pipeline threshold. The
-    /// fixed absolute value depends on the sign map being heavily
-    /// smoothed (Allen `signMapFilterSigma = 9`) so noise tails are
-    /// suppressed before thresholding.
-    AllenZhuang2017FixedSignMapThr { value: f64 },
-
-    /// σ-scaled threshold — Garrett et al. 2014, J Neurosci
-    /// 34(37):12587-12600 (SNLC MATLAB `getMouseAreasX.m`:
-    /// `threshSeg = k*std(VFS(:))`, then `|VFS| > threshSeg/2`).
-    /// Actual threshold = `k · σ(VFS_smooth) / 2` where σ is computed
-    /// over `vfs_smoothed` within the cortex mask.
-    ///
-    /// **Known failure mode**: σ inflates when the VFS distribution is
-    /// bimodal-but-noisy (e.g. apertured single-cycle data), causing
-    /// the threshold to collapse to ≈ noise median.
-    Garrett2014SigmaScaled { k: f64 },
-}
-
-impl PatchThresholdMethod {
-    pub fn allen_zhuang2017_fixed_sign_map_thr(value: Tagged<PatchThresholdAllenValue>) -> Self {
-        Self::AllenZhuang2017FixedSignMapThr {
-            value: value.into_inner(),
-        }
-    }
-
-    pub fn garrett2014_sigma_scaled(k: Tagged<PatchThresholdGarrettK>) -> Self {
-        Self::Garrett2014SigmaScaled { k: k.into_inner() }
-    }
-}
+/// Canonical type: [`openisi_params::config::analysis::PatchThreshold`] (UNIFY);
+/// compute behavior is attached via [`PatchThresholdExt`].
+pub use openisi_params::config::analysis::PatchThreshold as PatchThresholdMethod;
 
 /// Result of applying a `PatchThresholdMethod`. Both the binary mask
 /// and the actual scalar threshold applied to `|signMapf|` are returned
@@ -63,11 +25,17 @@ pub struct PatchThresholdOutput {
     pub threshold_applied: f64,
 }
 
-impl PatchThresholdMethod {
-    /// Apply the threshold. Returns the binary mask plus the actual
-    /// scalar threshold applied to `|signMapf|` (so diagnostic stages
-    /// like `vfs_smoothed_thresholded` can use the same value).
-    pub fn apply(
+/// Compute behavior for the patch-threshold stage (extension trait).
+pub trait PatchThresholdExt {
+    /// Apply the threshold. Returns the binary mask plus the actual scalar
+    /// threshold applied to `|signMapf|` (so diagnostic stages like
+    /// `vfs_smoothed_thresholded` can use the same value).
+    fn apply(&self, vfs_smoothed: &Array2<f64>, cortex_mask: &Array2<bool>)
+        -> PatchThresholdOutput;
+}
+
+impl PatchThresholdExt for PatchThresholdMethod {
+    fn apply(
         &self,
         vfs_smoothed: &Array2<f64>,
         cortex_mask: &Array2<bool>,

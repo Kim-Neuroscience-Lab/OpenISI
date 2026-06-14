@@ -1,0 +1,45 @@
+{
+  "camera": {
+    "exposure_us": 1000,
+    "binning": 4,
+    "um_per_pixel": 20.0
+  },
+  "geometry": {
+    "viewing_distance_cm": 10.0,
+    "monitor_width_cm": 88.0,
+    "monitor_height_cm": 50.0,
+    "bisector_x_cm": 0.0,
+    "bisector_y_cm": 0.0,
+    "monitor_yaw_deg": 30.0,
+    "monitor_pitch_deg": 0.0,
+    "visual_field": "right"
+  },
+  "ring_overlay": {
+    "enabled": false,
+    "radius_px": 200,
+    "center_x_px": 512,
+    "center_y_px": 512
+  },
+  "display": {
+    "target_stimulus_fps": 60,
+    "monitor_rotation_deg": 180.0
+  },
+  "system": {
+    "camera_frame_send_interval_ms": 33,
+    "camera_poll_interval_ms": 1,
+    "camera_first_frame_timeout_ms": 5000,
+    "camera_first_frame_poll_ms": 10,
+    "display_validation_sample_count": 150,
+    "preview_width_px": 320,
+    "preview_interval_ms": 100,
+    "preview_cycle_sec": 10.0,
+    "idle_sleep_ms": 16,
+    "fps_window_frames": 10,
+    "drop_detection_warmup_frames": 10,
+    "drop_detection_threshold": 1.5
+  },
+  "paths": {
+    "data_directory": "",
+    "experiments_directory": ""
+  }
+}

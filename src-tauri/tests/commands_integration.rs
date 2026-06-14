@@ -17,15 +17,14 @@ use std::sync::Arc;
 
 use openisi_lib::commands::SharedState;
 use openisi_lib::commands::analysis::{migrate_oisi, set_active_oisi_impl};
-use openisi_lib::params::Registry;
 use openisi_lib::state::{AppState, StimulusSpawn, ThreadHandles};
 
-/// Build a minimal `SharedState` for testing — Registry with defaults,
+/// Build a minimal `SharedState` for testing — `ConfigStore` with defaults,
 /// no real config dir loaded. `AppState` is decomposed into per-group
 /// `parking_lot` mutexes, so the shared handle is a plain `Arc`.
 fn make_state() -> SharedState {
     let tmp_cfg = tempfile::tempdir().unwrap();
-    let registry = Registry::new(tmp_cfg.path(), tmp_cfg.path());
+    let config = openisi_params::config::ConfigStore::new(tmp_cfg.path(), tmp_cfg.path());
 
     let (stim_cmd_tx, stim_cmd_rx) = crossbeam_channel::unbounded();
     let (stim_evt_tx, stim_evt_rx) = crossbeam_channel::unbounded();
@@ -48,7 +47,7 @@ fn make_state() -> SharedState {
         }),
     };
 
-    Arc::new(AppState::new(registry, threads, Vec::new()))
+    Arc::new(AppState::new(config, threads, Vec::new()))
 }
 
 /// Build a real (HDF5) .oisi tempfile so set_active_oisi's existence

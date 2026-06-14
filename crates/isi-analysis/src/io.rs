@@ -569,121 +569,54 @@ pub fn read_acquisition_identity(path: &Path) -> Result<AcquisitionIdentity, Ana
     })
 }
 
-/// Write the `.oisi /analysis_params` attribute from a registry-tree
-/// JSON value (the shape produced by
-/// `RegistrySnapshot::to_json_for_target(PersistTarget::Analysis)`).
+/// Write the `.oisi /analysis_params` attribute from a tagged-`AnalysisConfig`
+/// JSON value (the shape produced by `serde_json::to_value(&AnalysisConfig)`).
 ///
-/// The bridge owns conversion from a `RegistrySnapshot` to an
-/// `AnalysisParams`; this function owns persistence of the snapshot
-/// tree to the `.oisi` file. The two are decoupled because the
-/// analysis crate has no notion of a Registry.
+/// This function owns only persistence of the params tree to the `.oisi` file;
+/// it is agnostic to how the tree was produced. The analysis crate has no notion
+/// of a config store — callers serialize the typed `AnalysisConfig`.
 ///
 /// **Atomicity note:** HDF5 attribute rewrite is in-place on an
 /// existing file. Crash-during-write leaves the file with the old
 /// attribute; parallel writers to the same file are unsafe regardless.
 pub fn write_analysis_params_attr(
     path: &Path,
-    registry_tree: &serde_json::Value,
+    params_tree: &serde_json::Value,
 ) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
-    let json = serde_json::to_string(registry_tree)
+    let json = serde_json::to_string(params_tree)
         .map_err(|e| AnalysisError::Io(std::io::Error::other(e)))?;
     write_str_attr(&file, "analysis_params", &json)?;
     Ok(())
 }
 
-/// Return true iff the file's `/analysis_params` JSON attribute uses
-/// the pre-2026 schema (legacy serde-derived `AnalysisParams` shape:
-/// tagged-enum object with `"method"` keys; OR a flat object with
-/// stimulus-geometry fields that were moved to `/experiment_params`).
-/// Used by the orchestrator to detect old-schema files and refuse
-/// analysis with a clear "run `oisi migrate <file>`" message.
+/// Return true iff the file's `/analysis_params` JSON attribute uses a
+/// pre-2026 schema. The current schema is the tagged `AnalysisConfig`
+/// (`"<stage>": {"method": "...", <active tunables>}`); a file is pre-2026 iff
+/// its tree does **not** deserialize into `AnalysisConfig`. That single check
+/// subsumes every legacy form: the registry/nested-subtree shape (tunables
+/// nested under a variant key fail the flat-field deserialize), root-level
+/// moved fields (`azi_angular_range`, … → unknown-field on the outer struct),
+/// and renamed/legacy method strings (invalid enum tag). Used by the
+/// orchestrator to refuse old-schema files with a "run `oisi migrate`" message.
 ///
-/// Returns `Ok(false)` when the attribute is absent or matches the
-/// current registry-tree schema; returns `Err` only on HDF5 / I/O
-/// failure.
+/// Returns `Ok(false)` when the attribute is absent or already current;
+/// returns `Err` only on HDF5 / I/O failure.
 pub fn is_pre_2026_analysis_params(path: &Path) -> Result<bool, AnalysisError> {
-    // Pre-2026 markers: either the moved-field names at root, OR the
-    // tagged-enum shape (`"<stage>": {"method": "..."}` with the
-    // stage's tunables also at that level). The current schema is
-    // `"<stage>": {"method": "..."}` PLUS sibling tunable subtrees,
-    // so the presence of `"method"` alone doesn't distinguish — we rely
-    // on the moved-field names OR a flat (non-subtree) tunable sibling.
-    const MOVED_FIELDS: &[&str] = &[
-        "azi_angular_range",
-        "alt_angular_range",
-        "offset_azi",
-        "offset_alt",
-        "rotation_k",
-        "um_per_pixel",
-    ];
-
     let Some(value) = read_analysis_params_attr(path)? else {
         return Ok(false);
     };
-    let Some(obj) = value.as_object() else {
-        return Ok(false);
-    };
-    if MOVED_FIELDS.iter().any(|f| obj.contains_key(*f)) {
-        return Ok(true);
-    }
-    // Detect the legacy tagged-enum shape by its *distinguishing* marker:
-    // a FLAT tunable sibling of `method` — a non-object (scalar) value
-    // carried directly at the stage level. The legacy serde-derived
-    // AnalysisParams wrote tunables flat
-    // (`{"method": "x", "sigma_px": 2.5}`); the current schema nests every
-    // variant's tunables under that variant's object subtree
-    // (`{"method": "x", "x": {"sigma_px": 2.5}, "y": {…}}` — a stage can
-    // carry MULTIPLE variant subtrees, only one of which is active). So a
-    // stage is legacy iff it has `method` and any non-`method` sibling
-    // whose value is NOT an object (a scalar tunable).
-    //
-    // Method-only stages (`{"method": "x"}`) are NOT a marker: tunable-less
-    // methods (cycle_combine, vfs_computation, eccentricity)
-    // serialize to exactly that shape in the *current* schema, so flagging
-    // them as legacy would falsely reject valid files (and break
-    // re-analysis of already-analyzed files).
-    for (stage, stage_val) in obj.iter() {
-        if let Some(stage_obj) = stage_val.as_object() {
-            if stage_obj.contains_key("method") {
-                let has_flat_tunable = stage_obj
-                    .iter()
-                    .any(|(k, v)| k != "method" && !v.is_object());
-                if has_flat_tunable {
-                    return Ok(true);
-                }
-                // Renamed-variant detection: a current-shape file whose
-                // method string or variant subtree key matches a known
-                // legacy name needs `translate_pre_2026_analysis_params`
-                // to be re-run to bring it up to the canonical name set.
-                if let Some(method) = stage_obj.get("method").and_then(|v| v.as_str()) {
-                    if crate::migrate::rename_legacy_method(stage, method) != method {
-                        return Ok(true);
-                    }
-                }
-                for (k, _) in stage_obj.iter() {
-                    if k == "method" {
-                        continue;
-                    }
-                    if crate::migrate::rename_legacy_method(stage, k) != k {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-    }
-    Ok(false)
+    Ok(serde_json::from_value::<openisi_params::config::AnalysisConfig>(value).is_err())
 }
 
 /// Read the `/analysis_params` HDF5 attribute as a raw
-/// `serde_json::Value` (the registry-tree shape). Returns `None` if
+/// `serde_json::Value` (the tagged-`AnalysisConfig` shape). Returns `None` if
 /// the attribute is absent (file never analyzed); returns `Err` only
 /// on HDF5 / parse failure.
 ///
-/// Callers that need an `AnalysisParams` must rebuild a
-/// `RegistrySnapshot` via `RegistrySnapshot::from_json_tree` and then
-/// invoke `crate::bridge::analysis_params_from_snapshot`. The bridge
-/// is the only construction path.
+/// Callers that need an `AnalysisParams` pass the value through
+/// [`crate::bridge::analysis_params_from_oisi_tree`], which deserializes the
+/// tagged `AnalysisConfig` and adapts it (fail-loud on a legacy schema).
 pub fn read_analysis_params_attr(path: &Path) -> Result<Option<serde_json::Value>, AnalysisError> {
     let file = open_read(path)?;
     let attr_names = file
@@ -853,10 +786,10 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
 /// Write all analysis results as flat datasets in `/results/`. No sub-groups.
 ///
 /// **Does NOT write `/analysis_params`** — that's the orchestrator's
-/// responsibility via `write_analysis_params_attr` with the registry-
-/// tree JSON. Keeping them separate avoids `AnalysisParams` needing
-/// to carry a serde representation; the Registry tree is the canonical
-/// on-disk form, and only the orchestrator (which owns the snapshot)
+/// responsibility via `write_analysis_params_attr` with the tagged
+/// `AnalysisConfig` JSON. Keeping them separate avoids `AnalysisParams`
+/// needing to carry a serde representation; the tagged `AnalysisConfig` is the
+/// canonical on-disk form, and only the orchestrator (which owns the config)
 /// can produce it.
 pub fn write_results(
     path: &Path,
@@ -1085,6 +1018,7 @@ pub fn compute_complex_maps_from_raw(
     progress.set_stage("Loading camera frames");
     progress.set_progress(0.0);
     let raw = read_raw_acquisition(path)?;
+    use crate::methods::BaselineExt;
     let base = params.baseline.apply(&raw);
     crate::compute::projection::run(
         &raw,
@@ -1292,12 +1226,10 @@ mod tests {
     use std::path::PathBuf;
 
     /// Helper: build minimal AnalysisParams + AcquisitionProperties for
-    /// writing results. Construction flows through the SSoT param
-    /// registry → bridge, the same path production uses.
+    /// writing results. Construction flows from the typed `AnalysisConfig`
+    /// defaults via the `From` adapter, the same path production uses.
     fn test_params() -> crate::AnalysisParams {
-        let dir = std::path::Path::new("/tmp/test");
-        let reg = openisi_params::Registry::new(dir, dir);
-        crate::bridge::analysis_params_from_snapshot(&reg.snapshot())
+        crate::AnalysisParams::from(&openisi_params::config::AnalysisConfig::default())
     }
 
     /// Zeroed complex maps for `AnalysisResult` round-trip fixtures (the field
@@ -1685,12 +1617,9 @@ mod tests {
     fn is_pre_2026_analysis_params_current_schema_returns_false() {
         let tmp = TempFile::new("pre2026_current");
         create(tmp.path(), "test").unwrap();
-        // Current schema: stage with method + sibling variant subtree.
+        // Current schema: tagged `AnalysisConfig` — method + active tunable flat.
         let tree = serde_json::json!({
-            "sign_map_smoothing": {
-                "method": "gaussian",
-                "gaussian": { "sigma_um": 60.0 }
-            }
+            "sign_map_smoothing": { "method": "gaussian", "sigma_um": 60.0 }
         });
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
         assert!(!is_pre_2026_analysis_params(tmp.path()).unwrap());
@@ -1742,14 +1671,10 @@ mod tests {
     }
 
     /// End-to-end: a pre-2026 `.oisi` → detect → migrate → write back →
-    /// strict reload → bridge. This is the only test exercising the full
-    /// chain, and it guards the interaction with the now-fail-loud
-    /// `from_json_tree` reader: a migrated tree MUST reconstruct into an
-    /// `AnalysisParams` without missing/unknown-key errors.
+    /// reload → reconstruct. The migrated tree MUST deserialize into an
+    /// `AnalysisParams` (via the tagged-`AnalysisConfig` reader) without error.
     #[test]
     fn pre_2026_file_migrates_then_reconstructs_for_analysis() {
-        use openisi_params::{PersistTarget, RegistrySnapshot};
-
         let tmp = TempFile::new("migrate_e2e");
         create(tmp.path(), "raw_acquisition").unwrap();
 
@@ -1776,21 +1701,19 @@ mod tests {
             "migrated file should be current-schema"
         );
 
-        // Reconstruct through the FAIL-LOUD reader → bridge. If migration
-        // produced an incomplete or unknown-keyed tree, from_json_tree
-        // would error here.
+        // Reconstruct through the tagged-config reader. If migration produced an
+        // incomplete or unknown-keyed tree, this would error.
         let tree = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
-        let snap = RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
-            .expect("migrated tree must pass the strict reader");
-        // Constructing AnalysisParams via the bridge == the file is analyzable.
-        let _params = crate::bridge::analysis_params_from_snapshot(&snap);
+        let _params = crate::bridge::analysis_params_from_oisi_tree(&tree)
+            .expect("migrated tree must reconstruct into AnalysisParams");
 
-        // The migrated override survived the whole round-trip (under the renamed
-        // SNLC key); the moved field was dropped.
+        // The migrated override survived (renamed to the SNLC method, tunable
+        // flat at the stage level); the moved field was dropped.
         assert_eq!(
-            tree["phase_smoothing"]["snlc_amp_weighted_phasor"]["sigma_px"],
-            serde_json::json!(2.5)
+            tree["phase_smoothing"]["method"],
+            serde_json::json!("snlc_amp_weighted_phasor")
         );
+        assert_eq!(tree["phase_smoothing"]["sigma_px"], serde_json::json!(2.5));
         assert!(tree.get("azi_angular_range").is_none());
     }
 }

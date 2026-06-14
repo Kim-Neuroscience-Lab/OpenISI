@@ -60,7 +60,16 @@ impl FrameState {
 /// `strum::EnumIter`. Both wire format and label come from this one
 /// declaration — see [`crate::labels`] for the projection.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    strum::Display,
+    strum::EnumIter,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum EnvelopeType {

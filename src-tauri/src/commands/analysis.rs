@@ -45,18 +45,17 @@ pub fn inspect_oisi(path: String) -> AppResult<serde_json::Value> {
 
 /// Run analysis on a .oisi file.
 ///
-/// **Source of truth flow.** A fresh `RegistrySnapshot` is taken from
-/// the current Registry, the bridge converts it to `AnalysisParams`,
-/// the analysis runs, and the Registry tree is stamped into the
-/// `.oisi /analysis_params` HDF5 attribute. Every value used in the
-/// pipeline provably came from the SSoT param registry — no
-/// `AnalysisParams::bootstrap()`, no inline defaults.
+/// **Source of truth flow.** The current `AnalysisConfig` is read from the
+/// `ConfigStore`, the `From` adapter converts it to `AnalysisParams`, the
+/// analysis runs, and the tagged `AnalysisConfig` is stamped (serde JSON) into
+/// the `.oisi /analysis_params` HDF5 attribute. Every value used in the pipeline
+/// provably came from the SSoT typed config — no inline defaults.
 ///
 /// **Concurrency invariant:** `path` is taken as an explicit argument
 /// (not read from the `active_oisi` lock mid-run).
 #[tauri::command]
 pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<String> {
-    let snapshot = state.registry.lock().snapshot();
+    let analysis_config = state.config.lock().analysis().clone();
     let analysis_tx = state.threads.analysis_tx.clone();
 
     let path_buf = std::path::PathBuf::from(&path);
@@ -77,12 +76,15 @@ pub fn run_analysis(state: State<'_, SharedState>, path: String) -> AppResult<St
     // param edits don't queue up synchronously. Listen to the
     // `analysis:started` / `analysis:complete` / `analysis:failed` /
     // `analysis:cancelled` Tauri events for status.
-    let params_tree = snapshot.to_json_for_target(openisi_params::PersistTarget::Analysis);
+    let params = isi_analysis::AnalysisParams::from(&analysis_config);
+    // Provenance is the tagged `AnalysisConfig` (serde) — the canonical schema.
+    let params_tree = serde_json::to_value(&analysis_config)
+        .map_err(|e| AppError::Validation(format!("serialize analysis params: {e}")))?;
     analysis_tx
         .send(crate::messages::AnalysisCmd::Run(Box::new(
             crate::messages::AnalysisRequest {
                 path: path_buf,
-                snapshot,
+                params,
                 params_tree,
             },
         )))
@@ -150,14 +152,13 @@ pub fn set_active_oisi_impl(state: &SharedState, path: String) -> AppResult<()> 
     Ok(())
 }
 
-/// Read the active `.oisi`'s `/analysis_params` registry tree, OR the
-/// current Registry tree if no file is active. Display-only.
+/// Read the active `.oisi`'s `/analysis_params` tree, OR the current
+/// `AnalysisConfig` (serialized) if no file is active. Display-only.
 ///
-/// Users edit analysis parameters via the standard `set_params` /
-/// `set_active_params` calls on the Registry — there is no special
-/// per-`.oisi` editing path. Re-running analysis on the current
-/// Registry produces a new `/analysis_params` tree stamped into the
-/// `.oisi`.
+/// Users edit analysis parameters via the standard `set_params` calls on the
+/// `ConfigStore` — there is no special per-`.oisi` editing path. Re-running
+/// analysis with the current config produces a new `/analysis_params` tree
+/// stamped into the `.oisi`.
 #[tauri::command]
 pub fn get_analysis_params(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     get_analysis_params_impl(&state)
@@ -167,15 +168,16 @@ pub fn get_analysis_params_impl(state: &SharedState) -> AppResult<serde_json::Va
     // Capture the active path and a registry snapshot, dropping each guard
     // before any I/O.
     let path = state.active_oisi.lock().clone();
-    let snapshot = state.registry.lock().snapshot();
 
     if let Some(p) = path
         && let Some(tree) = isi_analysis::io::read_analysis_params_attr(&p)?
     {
         return Ok(tree);
     }
-    // No file or no stored tree → return the current Registry tree.
-    Ok(snapshot.to_json_for_target(openisi_params::PersistTarget::Analysis))
+    // No file or no stored tree → return the current analysis config (tagged).
+    let analysis_config = state.config.lock().analysis().clone();
+    serde_json::to_value(&analysis_config)
+        .map_err(|e| AppError::Validation(format!("serialize analysis params: {e}")))
 }
 
 /// Read any result dataset from a .oisi file. Returns typed data.

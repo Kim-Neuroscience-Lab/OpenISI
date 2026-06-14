@@ -20,7 +20,6 @@ pub mod timing;
 use std::sync::Arc;
 
 use error::{AppError, AppResult};
-use params::Registry;
 use state::AppState;
 
 /// Raise the Windows multimedia timer resolution to 1 ms for the process so
@@ -67,7 +66,7 @@ pub fn run() {
 /// surface cleanly through `?`-propagation instead of `eprintln!` +
 /// `process::exit(1)` sprinkled through the code path.
 fn try_run() -> AppResult<()> {
-    // Registry construction + config-dir resolution happen inside the Tauri
+    // Config-store construction + config-dir resolution happen inside the Tauri
     // `setup()` callback, where `app.path()` (the platform-standard resolver
     // for the bundle resource dir and the per-user app-config dir) is
     // available. The dev-mode repo `config` is anchored to CARGO_MANIFEST_DIR
@@ -87,7 +86,7 @@ fn start_tauri() -> AppResult<()> {
             crate::begin_realtime_timer();
 
             // ── Resolve config directories properly via Tauri's path API ──
-            // The registry is constructed HERE (not before the app) because
+            // The config store is constructed HERE (not before the app) because
             // `app.path()` — the platform-standard resolver for the bundle
             // resource dir and the per-user app-config dir — only exists once
             // the app does. Policy lives in `config_paths` (pure, tested);
@@ -120,15 +119,18 @@ fn start_tauri() -> AppResult<()> {
                 "config resolved",
             );
 
-            // ── Build + load the registry ──
-            let mut registry = Registry::new(&layout.shipped_dir, &layout.user_dir);
-            registry.load_rig().map_err(|e| {
+            // ── Build + load the typed config store ──
+            // GUI loads rig + experiment; analysis params come from the file's
+            // `/analysis_params` or default.
+            let mut config =
+                openisi_params::config::ConfigStore::new(&layout.shipped_dir, &layout.user_dir);
+            config.load_rig().map_err(|e| {
                 Box::<dyn std::error::Error>::from(format!(
                     "load rig params from {}: {e}",
                     layout.shipped_dir.display()
                 ))
             })?;
-            registry.load_experiment().map_err(|e| {
+            config.load_experiment().map_err(|e| {
                 Box::<dyn std::error::Error>::from(format!(
                     "load experiment params from {}: {e}",
                     layout.shipped_dir.display()
@@ -139,7 +141,7 @@ fn start_tauri() -> AppResult<()> {
             // A deliberate, visible default (<Documents>/OpenISI) persisted
             // explicitly into the user layer and surfaced in the UI — not an
             // ongoing silent fallback.
-            if registry.data_directory().is_empty()
+            if config.rig().paths.data_directory.is_empty()
                 && let Some(default_dir) =
                     config_paths::default_data_dir(app.path().document_dir().ok().as_deref())
             {
@@ -149,17 +151,14 @@ fn start_tauri() -> AppResult<()> {
                         default_dir.display()
                     ))
                 })?;
-                registry
-                    .set(
-                        crate::params::ParamId::DataDirectory,
-                        crate::params::ParamValue::String(
-                            default_dir.to_string_lossy().into_owned(),
-                        ),
-                    )
+                config
+                    .merge_rig(&serde_json::json!({
+                        "paths": { "data_directory": default_dir.to_string_lossy().into_owned() }
+                    }))
                     .map_err(|e| {
                         Box::<dyn std::error::Error>::from(format!("set default data dir: {e}"))
                     })?;
-                registry.save_rig().map_err(|e| {
+                config.save_all().map_err(|e| {
                     Box::<dyn std::error::Error>::from(format!(
                         "persist default data dir to {}: {e}",
                         layout.user_dir.display()
@@ -169,7 +168,7 @@ fn start_tauri() -> AppResult<()> {
             }
 
             // ── Param-change observer for IPC ──
-            registry.set_observer(Box::new(crate::params::observer::TauriParamObserver::new(
+            config.set_observer(Box::new(crate::params::observer::TauriParamObserver::new(
                 app.handle().clone(),
             )));
 
@@ -212,7 +211,7 @@ fn start_tauri() -> AppResult<()> {
             };
 
             // ── App state ──
-            let app_state = AppState::new(registry, threads, monitors);
+            let app_state = AppState::new(config, threads, monitors);
 
             // ── Spawn analysis worker thread ──
             // Runs `isi_analysis::analyze` off the IPC command thread,
@@ -227,11 +226,11 @@ fn start_tauri() -> AppResult<()> {
                     Box::<dyn std::error::Error>::from(format!("spawn analysis worker: {e}"))
                 })?;
 
-            // Push the EDID-detected stimulus monitor into the registry's
+            // Push the EDID-detected stimulus monitor into the config store's
             // HardwareContext so `effective_monitor_width_cm()` etc. resolve
             // to the live panel dims (auto-detected). The user can still
             // override via the Rig Calibration UI; user overrides win over
-            // hardware per `Registry::effective_monitor_width_cm`.
+            // hardware per `ConfigSnapshot::effective_monitor_width_cm`.
             //
             // The "stimulus monitor" is whichever was previously selected,
             // else the highest-refresh-rate one (typical convention for a
@@ -255,14 +254,14 @@ fn start_tauri() -> AppResult<()> {
                 })
             };
             if let Some(m) = &stimulus_monitor {
-                let mut reg = app_state.registry.lock();
-                let mut hw = reg.hardware().clone();
+                let mut cfg = app_state.config.lock();
+                let mut hw = cfg.hardware().clone();
                 hw.monitor_width_cm = Some(m.width_cm);
                 hw.monitor_height_cm = Some(m.height_cm);
                 hw.monitor_width_px = Some(m.width_px);
                 hw.monitor_height_px = Some(m.height_px);
                 hw.monitor_refresh_hz = Some(m.refresh_hz);
-                reg.inject_hardware(hw);
+                cfg.inject_hardware(hw);
                 tracing::info!(
                     monitor = %m.name,
                     width_px = m.width_px, height_px = m.height_px,
@@ -319,12 +318,13 @@ fn start_tauri() -> AppResult<()> {
                 cam_frame_send_interval_ms,
                 cam_poll_interval_ms,
             ) = {
-                let reg = app_state.registry.lock();
+                let cfg = app_state.config.lock();
+                let s = &cfg.rig().system;
                 (
-                    reg.camera_first_frame_timeout_ms(),
-                    reg.camera_first_frame_poll_ms(),
-                    reg.camera_frame_send_interval_ms(),
-                    reg.camera_poll_interval_ms(),
+                    s.camera_first_frame_timeout_ms,
+                    s.camera_first_frame_poll_ms,
+                    s.camera_frame_send_interval_ms,
+                    s.camera_poll_interval_ms,
                 )
             };
             std::thread::Builder::new()
@@ -417,7 +417,7 @@ fn start_tauri() -> AppResult<()> {
             // Workspace state
             commands::acquire::get_session,
             commands::acquire::get_workspace_status,
-            // Parameter registry
+            // Parameters (typed config store)
             crate::params::commands::get_param_descriptors,
             crate::params::commands::get_analysis_stages,
             crate::params::commands::set_params,
@@ -435,8 +435,8 @@ fn start_tauri() -> AppResult<()> {
                 if let Some(state) = app_handle.try_state::<crate::commands::SharedState>() {
                     let s = state.inner();
                     // Persist the durable session for next-launch resume.
-                    // user_dir comes from the registry; lock briefly and release.
-                    let user_dir = s.registry.lock().user_dir().to_path_buf();
+                    // user_dir comes from the config store; lock briefly and release.
+                    let user_dir = s.config.lock().user_dir().to_path_buf();
                     {
                         let dir = user_dir;
                         // Capture the durable session snapshot. Copy the active
@@ -452,27 +452,18 @@ fn start_tauri() -> AppResult<()> {
                             tracing::info!(dir = %dir.display(), "session saved");
                         }
 
-                        // Persist the param-registry user-overlay TOMLs (only
-                        // fields marked as user_overrides). Without this, UI
-                        // edits to rig/experiment/analysis params would not
-                        // survive a restart. At shutdown there is no contention,
-                        // so holding the registry lock across the writes is fine.
+                        // Persist the typed config user layer (rig/experiment/
+                        // analysis JSON). Without this, UI edits to params would
+                        // not survive a restart. At shutdown there is no
+                        // contention, so holding the config lock across the
+                        // writes is fine.
                         {
-                            let reg = s.registry.lock();
-                            use openisi_params::toml_io::{
-                                save_user_analysis, save_user_experiment, save_user_rig,
-                            };
-                            if let Err(e) = save_user_rig(&reg, &dir.join("rig.toml")) {
-                                tracing::error!(error = %e, "failed to save rig overlay");
+                            let cfg = s.config.lock();
+                            if let Err(e) = cfg.save_all() {
+                                tracing::error!(error = %e, "failed to save param overlays");
+                            } else {
+                                tracing::info!(dir = %dir.display(), "param overlays saved");
                             }
-                            if let Err(e) = save_user_experiment(&reg, &dir.join("experiment.toml"))
-                            {
-                                tracing::error!(error = %e, "failed to save experiment overlay");
-                            }
-                            if let Err(e) = save_user_analysis(&reg, &dir.join("analysis.toml")) {
-                                tracing::error!(error = %e, "failed to save analysis overlay");
-                            }
-                            tracing::info!(dir = %dir.display(), "param overlays saved");
                         }
                     }
                     let _ = s

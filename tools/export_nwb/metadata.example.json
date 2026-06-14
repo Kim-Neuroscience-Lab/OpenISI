@@ -1,0 +1,15 @@
+{
+  "experimenter": ["Murray, Adam"],
+  "experiment_description": "Widefield intrinsic-signal-imaging retinotopic mapping of mouse visual cortex (OpenISI).",
+  "institution": "University of California, Santa Barbara",
+  "lab": "Kim Neuroscience Lab",
+  "imaging_plane_location": "VIS",
+  "subject": {
+    "subject_id": "R43",
+    "species": "Mus musculus",
+    "sex": "M",
+    "age": "P10W",
+    "strain": "C57BL/6J",
+    "description": "Head-fixed mouse, exposed visual cortex for ISI."
+  }
+}

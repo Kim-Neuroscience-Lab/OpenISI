@@ -246,7 +246,7 @@ fn emit_retino_geometry(h: &mut Hasher, acq: &AcquisitionProperties) {
 /// Per-stage fingerprints for the incremental cache. Each field is the
 /// Merkle key of that stage — its direct inputs plus its dependency stages'
 /// keys. A stage may be restored from cache only if its stored key matches.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageFingerprints {
     pub baseline: String,
     pub projection: String,

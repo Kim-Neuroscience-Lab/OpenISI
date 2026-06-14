@@ -1,0 +1,20 @@
+namespaces:
+- author:
+  - Kim Neuroscience Lab
+  contact:
+  - a.murray0413@gmail.com
+  doc: 'OpenISI intrinsic-signal retinotopy extension: per-pixel retinotopy result
+    maps (the ImagingRetinotopy replacement), complex Fourier maps, stimulus geometry,
+    analysis provenance, and multi-clock acquisition timing forensics.'
+  name: ndx-openisi
+  schema:
+  - namespace: core
+    neurodata_types:
+    - NWBDataInterface
+    - Image
+    - VectorData
+  - namespace: hdmf-common
+    neurodata_types:
+    - Data
+  - source: ndx-openisi.extensions.yaml
+  version: 0.1.0

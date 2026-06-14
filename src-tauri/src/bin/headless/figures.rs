@@ -10,16 +10,17 @@
 
 use openisi_lib::render::{jet, render_map, write_rgba_png};
 
-// `compare_method_variants` re-loads the registry to source per-variant tunables
-// from PARAM_DEFS; `load_registry` lives in the binary root.
-use super::load_registry;
+// `compare_method_variants` and the figure-provenance fallback re-load the typed
+// config to source per-variant tunables / the current analysis tree;
+// `load_config_store` lives in the binary root.
+use super::load_config_store;
 
 pub(crate) fn compare_method_variants(
     oisi_path: &std::path::Path,
     base_params: &isi_analysis::AnalysisParams,
     figures_dir: &std::path::Path,
 ) {
-    use isi_analysis::methods::CortexSourceMethod;
+    use isi_analysis::methods::{CortexSourceExt, CortexSourceMethod};
 
     let compare_dir = figures_dir.join("compare");
     if let Err(e) = std::fs::create_dir_all(&compare_dir) {
@@ -29,27 +30,22 @@ pub(crate) fn compare_method_variants(
 
     println!("Comparing method variants per stage...");
 
-    // Build all CortexSourceMethod variants using SSoT-sourced tunables from
-    // the current Registry. The tunable values for each variant come
-    // from PARAM_DEFS via the typed snapshot accessor; the method-
-    // choice itself is enumerated locally to drive the comparison.
-    let reg = match load_registry() {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "cannot load registry");
-            return;
-        }
+    // Build all CortexSourceMethod variants with the canonical default tunables.
+    // The default-variant tunables (`SnlcGarrett2014ImBound`) come straight from
+    // the typed `CortexSource::default()` (the SSoT); the `Reliability` variant's
+    // default threshold has no persisted home in the tagged config (only the
+    // active variant's tunables are stored), so its canonical default is named
+    // explicitly here. The method choice itself is enumerated locally to drive
+    // the comparison.
+    use openisi_params::config::analysis::CortexSource;
+    let CortexSource::SnlcGarrett2014ImBound { k, close, dilate } = CortexSource::default() else {
+        unreachable!("CortexSource::default() is SnlcGarrett2014ImBound");
     };
-    let snap = reg.snapshot();
     let cortex_variants = vec![
-        CortexSourceMethod::no_restriction(),
-        CortexSourceMethod::reliability(snap.typed::<openisi_params::CortexSourceReliabilityThreshold>()),
-        CortexSourceMethod::user_polygon(),
-        CortexSourceMethod::snlc_garrett2014_im_bound(
-            snap.typed::<openisi_params::CortexSourceSnlcK>(),
-            snap.typed::<openisi_params::CortexSourceSnlcClose>(),
-            snap.typed::<openisi_params::CortexSourceSnlcDilate>(),
-        ),
+        CortexSourceMethod::NoRestriction,
+        CortexSourceMethod::Reliability { threshold: 0.5 },
+        CortexSourceMethod::UserPolygon,
+        CortexSourceMethod::SnlcGarrett2014ImBound { k, close, dilate },
     ];
 
     compare_stage_variants(
@@ -909,18 +905,12 @@ pub(crate) fn export_threshold_sweep_grids(
         }
     };
     // Pull the reliability threshold from the configured CortexSourceMethod
-    // method if it's the Reliability variant; otherwise read the
-    // registry default via the bridge (consistent SSoT path).
+    // if it's the Reliability variant; otherwise fall back to the canonical
+    // default threshold (the tagged config stores tunables only for the active
+    // variant, so a non-Reliability source has no persisted threshold).
     let reliability_threshold = match &params.cortex_source {
         isi_analysis::methods::CortexSourceMethod::Reliability { threshold } => *threshold,
-        _ => {
-            let def = &openisi_params::PARAM_DEFS
-                [openisi_params::ParamId::CortexSourceReliabilityThreshold as usize];
-            match &def.default {
-                openisi_params::ParamValue::F64(v) => *v,
-                _ => unreachable!("CortexSourceReliabilityThreshold is F64"),
-            }
-        }
+        _ => 0.5,
     };
     let cortex_mask = isi_analysis::segmentation::cortex_from_reliability(
         &rel.0,
@@ -1420,10 +1410,11 @@ pub(crate) fn write_meta_json(
     let analysis_params_tree = isi_analysis::io::read_analysis_params_attr(oisi_path)
         .ok()
         .flatten()
-        .unwrap_or_else(|| match load_registry() {
-            Ok(reg) => reg
-                .snapshot()
-                .to_json_for_target(openisi_params::PersistTarget::Analysis),
+        .unwrap_or_else(|| match load_config_store() {
+            Ok(store) => {
+                // Fallback: current analysis config (the tagged `AnalysisConfig`).
+                serde_json::to_value(store.analysis()).unwrap_or(serde_json::Value::Null)
+            }
             Err(_) => serde_json::Value::Null,
         });
 

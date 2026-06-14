@@ -219,12 +219,8 @@ fn device_stability_vs_embedded_results() {
     // that produced the embedded results. Loading this particular file's
     // mixed-schema `/analysis_params` is a separate migration concern and
     // out of scope for a substrate-stability check.
-    let snapshot = openisi_params::Registry::new(
-        std::path::Path::new("/tmp/regression"),
-        std::path::Path::new("/tmp/regression"),
-    )
-    .snapshot();
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
+    let params =
+        isi_analysis::AnalysisParams::from(&openisi_params::config::AnalysisConfig::default());
     let rig = isi_analysis::io::read_rig_params(&path).ok().flatten();
     let exp = isi_analysis::io::read_experiment_params(&path)
         .ok()

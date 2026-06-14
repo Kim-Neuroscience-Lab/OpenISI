@@ -7,31 +7,33 @@ use crate::error::{AppError, AppResult};
 use crate::events::build_hardware_snapshot;
 use crate::export::AcquisitionAccumulator;
 use crate::messages::{AcquisitionCommand, PreviewCommand, StimulusCmd};
-use crate::params::RegistrySnapshot;
 use crate::state::AcquisitionState;
 
 use super::SharedState;
 
-/// Validate experiment parameters before acquisition or preview.
-fn validate_experiment(snap: &RegistrySnapshot) -> AppResult<()> {
+/// Validate experiment parameters before acquisition or preview. Reads the typed
+/// [`ExperimentConfig`](openisi_params::config::ExperimentConfig) (derived from the
+/// live registry snapshot by the caller).
+fn validate_experiment(exp: &openisi_params::config::ExperimentConfig) -> AppResult<()> {
     use crate::params::Envelope;
-    match snap.stimulus_envelope() {
+    let p = &exp.stimulus.params;
+    match exp.stimulus.envelope {
         Envelope::Bar => {
-            if snap.sweep_speed_deg_per_sec() <= 0.0 {
+            if p.sweep_speed_deg_per_sec <= 0.0 {
                 return Err(AppError::Validation(
                     "Sweep speed must be greater than zero".into(),
                 ));
             }
         }
         Envelope::Wedge => {
-            if snap.rotation_speed_deg_per_sec() <= 0.0 {
+            if p.rotation_speed_deg_per_sec <= 0.0 {
                 return Err(AppError::Validation(
                     "Rotation speed must be greater than zero".into(),
                 ));
             }
         }
         Envelope::Ring => {
-            if snap.expansion_speed_deg_per_sec() <= 0.0 {
+            if p.expansion_speed_deg_per_sec <= 0.0 {
                 return Err(AppError::Validation(
                     "Expansion speed must be greater than zero".into(),
                 ));
@@ -39,17 +41,17 @@ fn validate_experiment(snap: &RegistrySnapshot) -> AppResult<()> {
         }
         Envelope::Fullfield => {}
     }
-    if snap.stimulus_width_deg() <= 0.0 {
+    if p.stimulus_width_deg <= 0.0 {
         return Err(AppError::Validation(
             "Stimulus width must be greater than zero".into(),
         ));
     }
-    if snap.repetitions() == 0 {
+    if exp.presentation.repetitions == 0 {
         return Err(AppError::Validation(
             "Repetitions must be at least 1".into(),
         ));
     }
-    if snap.conditions().is_empty() {
+    if exp.presentation.conditions.is_empty() {
         return Err(AppError::Validation("No conditions defined".into()));
     }
     Ok(())
@@ -71,10 +73,9 @@ pub fn set_session_metadata(
 /// Start acquisition — ties stimulus + camera together.
 #[tauri::command]
 pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
-    // Take a snapshot for validation and acquisition.
-    let snapshot = state.registry.lock().snapshot();
-
-    validate_experiment(&snapshot)?;
+    // Typed config snapshot frozen at acquisition start (validation + provenance).
+    let acq_config = state.config.lock().snapshot();
+    validate_experiment(&acq_config.experiment)?;
 
     // Gather everything we need from the session in one critical section,
     // copy it out, then drop the guard before sending / building state.
@@ -131,7 +132,7 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     };
 
     let acq_cmd = AcquisitionCommand {
-        snapshot: snapshot.clone(),
+        snapshot: acq_config.clone(),
         monitor,
         measured_refresh_hz,
     };
@@ -147,7 +148,7 @@ pub fn start_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
     accumulator.start(cam_w, cam_h);
     state.capture.lock().acquisition = Some(AcquisitionState {
         accumulator,
-        snapshot,
+        snapshot: acq_config,
         hardware_snapshot,
         timing_characterization,
     });
@@ -191,7 +192,7 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
     let output_path = if let Some(p) = path {
         std::path::PathBuf::from(p)
     } else {
-        let data_dir = pending.snapshot.data_directory().to_string();
+        let data_dir = pending.snapshot.rig.paths.data_directory.clone();
         let dir = if data_dir.is_empty() {
             std::env::current_exe()
                 .ok()
@@ -269,9 +270,8 @@ pub fn discard_acquisition(state: State<'_, SharedState>) -> AppResult<()> {
 /// Start stimulus preview on the stimulus monitor (no recording).
 #[tauri::command]
 pub fn start_preview(state: State<'_, SharedState>) -> AppResult<()> {
-    let snapshot = state.registry.lock().snapshot();
-
-    validate_experiment(&snapshot)?;
+    let config = state.config.lock().snapshot();
+    validate_experiment(&config.experiment)?;
 
     let monitor = state
         .session
@@ -285,7 +285,10 @@ pub fn start_preview(state: State<'_, SharedState>) -> AppResult<()> {
     state
         .threads
         .stimulus_tx
-        .send(StimulusCmd::Preview(PreviewCommand { snapshot, monitor }))
+        .send(StimulusCmd::Preview(PreviewCommand {
+            snapshot: config,
+            monitor,
+        }))
         .map_err(|e| AppError::Hardware(format!("Failed to send preview command: {e}")))?;
     Ok(())
 }
@@ -305,8 +308,11 @@ pub fn stop_preview(state: State<'_, SharedState>) -> AppResult<()> {
 #[tauri::command]
 pub fn get_session(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
     let (exposure_us, monitor_rotation_deg) = {
-        let reg = state.registry.lock();
-        (reg.camera_exposure_us(), reg.monitor_rotation_deg())
+        let cfg = state.config.lock();
+        (
+            cfg.rig().camera.exposure_us,
+            cfg.rig().display.monitor_rotation_deg,
+        )
     };
     let stimulus_thread_ready = state.threads.stimulus_spawn.lock().spawned;
     let (last_acquisition, anatomical_captured) = {

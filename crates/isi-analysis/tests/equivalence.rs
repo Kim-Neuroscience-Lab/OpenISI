@@ -23,7 +23,7 @@ use std::sync::atomic::AtomicBool;
 
 use isi_analysis::{self, SilentProgress};
 use ndarray::ArrayD;
-use openisi_params::{PersistTarget, Registry, RegistrySnapshot};
+use openisi_params::config::AnalysisConfig;
 use serde::Deserialize;
 
 // `Array::into_raw_vec` is deprecated in favor of `into_raw_vec_and_offset`
@@ -88,16 +88,12 @@ fn run_analyze_into(input: &Path, output: &Path) {
         isi_analysis::io::write_analysis_params_attr(output, &new).expect("write migrated params");
     }
 
-    let snapshot =
+    let params =
         match isi_analysis::io::read_analysis_params_attr(output).expect("read /analysis_params") {
-            Some(tree) => RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &tree)
-                .expect("from_json_tree"),
-            None => {
-                let here = Path::new(".");
-                Registry::new(here, here).snapshot()
-            }
+            Some(tree) => isi_analysis::bridge::analysis_params_from_oisi_tree(&tree)
+                .expect("reconstruct AnalysisParams from /analysis_params"),
+            None => isi_analysis::AnalysisParams::from(&AnalysisConfig::default()),
         };
-    let params = isi_analysis::bridge::analysis_params_from_snapshot(&snapshot);
 
     let progress = SilentProgress;
     let cancel = AtomicBool::new(false);

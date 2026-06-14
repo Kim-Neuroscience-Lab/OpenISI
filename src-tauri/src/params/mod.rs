@@ -9,4 +9,5 @@
 pub use openisi_params::*;
 
 pub mod commands;
+pub mod config_descriptors;
 pub mod observer;

@@ -7,102 +7,33 @@
 //! is universally available but adds no restriction.
 
 use ndarray::Array2;
-use openisi_params::{
-    CortexSourceReliabilityThreshold, CortexSourceSnlcClose, CortexSourceSnlcDilate,
-    CortexSourceSnlcK, Tagged,
-};
+use openisi_params::config::analysis::CortexSource;
 
 use crate::{AnalysisError, ReliabilityMaps};
 
 /// Method choice for resolving the cortex mask.
 ///
-/// `#[non_exhaustive]` + per-variant constructors enforce registry-
-/// sourced tunables.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum CortexSourceMethod {
-    /// Cross-cycle reliability cortex (Allen Brain Observatory; Zhuang,
-    /// Ng, Williams, Valley, Li, Garrett, Waters 2017, eLife 6:e18372).
-    /// Largest connected component of pixels where the per-direction
-    /// reliability (amp-weighted vector coherence across cycles) exceeds
-    /// `threshold` for *all four* directions, with `largest_cc →
-    /// fill_holes` cleanup. Requires per-cycle data — fails over to a
-    /// different method (orchestrator's choice) for cycle-averaged
-    /// imports without reliability.
-    Reliability { threshold: f64 },
+/// The canonical type is [`openisi_params::config::analysis::CortexSource`] — the
+/// garde-validated, internally-tagged config enum (variants documented there).
+/// `isi-analysis` consumes it directly (UNIFY: config tunables ≡ compute
+/// tunables); the compute behavior is attached here via [`CortexSourceExt`].
+/// The `CortexSourceMethod` alias keeps existing references stable during the
+/// migration (renamed to `CortexSource` in the final cleanup pass).
+pub use openisi_params::config::analysis::CortexSource as CortexSourceMethod;
 
-    /// User-drawn polygon stored at `.oisi /anatomical/cortex_roi` as a
-    /// bool mask. Pure user input, no inference. The orchestrator reads
-    /// the mask from the file via `crate::io::read_cortex_roi`. Variant
-    /// carries no parameters — the mask is pulled from the file.
-    UserPolygon,
-
-    /// SNLC `imbound` from Garrett, Nauhaus, Marshel, Callaway 2014,
-    /// J Neurosci 34(37):12587-12600; implementation in
-    /// `getMouseAreasX.m` lines 76–95 of SNLC MATLAB toolbox.
-    /// VFS-structure morphology: σ-scaled threshold of smoothed VFS
-    /// (`|VFS| > k · σ(VFS) / 2`) → imopen(disk(2)) →
-    /// imclose(disk(`close`)) → imfill → imdilate(disk(`dilate`)) →
-    /// imfill → keep largest 4-connected component.
-    ///
-    /// Known failure mode: σ self-cancels on noise-dominated data
-    /// (apertured single-cycle, etc.), expanding cortex to most of the
-    /// frame. Use only for clean signal-dominated data per the Garrett
-    /// 2014 assumption.
-    SnlcGarrett2014ImBound { k: f64, close: i32, dilate: i32 },
-
-    /// No cortex restriction — analysis runs over the full frame and
-    /// the sign-map threshold + morphology does all the patch gating.
-    /// Allen `retinotopic_mapping` happens to operate this way by default
-    /// (Zhuang 2017; `RetinotopicMapping.py` operates on full frames)
-    /// but they did not introduce "full frame" as a distinct method —
-    /// they simply omitted the restriction. Named for what it does.
-    /// Used for cycle-averaged imports where reliability isn't
-    /// available and no user override is provided.
-    NoRestriction,
-}
-
-impl CortexSourceMethod {
-    pub fn reliability(threshold: Tagged<CortexSourceReliabilityThreshold>) -> Self {
-        Self::Reliability {
-            threshold: threshold.into_inner(),
-        }
-    }
-
-    pub fn user_polygon() -> Self {
-        Self::UserPolygon
-    }
-
-    pub fn snlc_garrett2014_im_bound(
-        k: Tagged<CortexSourceSnlcK>,
-        close: Tagged<CortexSourceSnlcClose>,
-        dilate: Tagged<CortexSourceSnlcDilate>,
-    ) -> Self {
-        Self::SnlcGarrett2014ImBound {
-            k: k.into_inner(),
-            close: close.into_inner(),
-            dilate: dilate.into_inner(),
-        }
-    }
-
-    pub fn no_restriction() -> Self {
-        Self::NoRestriction
-    }
-
+/// Compute behavior for the cortex-source stage (extension trait — the data type
+/// lives in `openisi-params`, the algorithm lives here).
+pub trait CortexSourceExt {
+    /// Resolve the cortex mask under the active method. Errors if the variant's
+    /// required input isn't in `ctx`.
+    fn apply(&self, ctx: &CortexResolveContext) -> Result<Array2<bool>, AnalysisError>;
     /// Short label for this variant — used in figure-grid headers.
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            Self::Reliability { .. } => "reliability",
-            Self::UserPolygon => "user_polygon",
-            Self::SnlcGarrett2014ImBound { .. } => "snlc_imbound",
-            Self::NoRestriction => "no_restriction",
-        }
-    }
+    fn short_label(&self) -> &'static str;
 }
 
 /// Inputs available when resolving a cortex mask. Different variants
 /// consume different fields. The orchestrator builds this and passes
-/// it to `CortexSourceMethod::apply`.
+/// it to [`CortexSourceExt::apply`].
 pub struct CortexResolveContext<'a> {
     pub shape: (usize, usize),
     /// Per-direction reliability maps (raw acquisition path only).
@@ -113,10 +44,19 @@ pub struct CortexResolveContext<'a> {
     pub vfs_smoothed: Option<&'a Array2<f64>>,
 }
 
-impl CortexSourceMethod {
+impl CortexSourceExt for CortexSource {
+    fn short_label(&self) -> &'static str {
+        match self {
+            Self::Reliability { .. } => "reliability",
+            Self::UserPolygon => "user_polygon",
+            Self::SnlcGarrett2014ImBound { .. } => "snlc_imbound",
+            Self::NoRestriction => "no_restriction",
+        }
+    }
+
     /// Resolve the cortex mask under the active method. Returns an
     /// error if the variant's required input isn't in `ctx`.
-    pub fn apply(&self, ctx: &CortexResolveContext) -> Result<Array2<bool>, AnalysisError> {
+    fn apply(&self, ctx: &CortexResolveContext) -> Result<Array2<bool>, AnalysisError> {
         use crate::segmentation::connectivity::keep_largest_component;
         use crate::segmentation::morphology::{
             binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
@@ -191,7 +131,7 @@ mod tests {
 
     #[test]
     fn full_frame_resolves_to_all_true() {
-        let m = CortexSourceMethod::NoRestriction;
+        let m = CortexSource::NoRestriction;
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,
@@ -205,7 +145,7 @@ mod tests {
 
     #[test]
     fn reliability_without_data_errors() {
-        let m = CortexSourceMethod::Reliability { threshold: 0.5 };
+        let m = CortexSource::Reliability { threshold: 0.5 };
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,

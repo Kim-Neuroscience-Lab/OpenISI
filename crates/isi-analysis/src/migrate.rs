@@ -1,41 +1,91 @@
-//! Migration of pre-2026 `/analysis_params` trees to the current
-//! registry-tree schema.
+//! Migration of pre-2026 `/analysis_params` trees to the current **tagged
+//! `AnalysisConfig`** schema (`{"<stage>": {"method": "x", <x's tunables>}}`).
 //!
 //! Lifted out of the headless binary so the translation is reusable: by
-//! the end-to-end migrate→reconstruct→bridge test, and by a future GUI
+//! the end-to-end migrate→reconstruct test, and by a future GUI
 //! migrate command (the CLI is no longer the only caller). The detection
 //! counterpart is [`crate::io::is_pre_2026_analysis_params`].
 
-use openisi_params::{PersistTarget, Registry};
-
 use crate::AnalysisError;
 
-/// Translate a pre-2026 `/analysis_params` JSON tree into the current
-/// registry-tree shape. Pure function: takes the old tree, returns the
-/// new tree. Defaults for any tunable not present in the old tree come
-/// from `PARAM_DEFS` via a fresh `Registry` snapshot.
+/// The canonical **intermediate** default tree: every analysis stage's default
+/// method plus *every* variant's default tunables, nested under variant subtrees.
+/// This is the historical "registry tree" shape the migration overlays onto and
+/// then collapses to the tagged schema. It is hardcoded here (rather than derived
+/// from a live registry) because migration is a fixed historical transform and
+/// this module is by design the one place legacy schema names + their fill-in
+/// defaults live. Values mirror `config/analysis.json`'s defaults exactly; the
+/// `*_falls_back_to_*_default` tests pin them.
+fn default_intermediate_tree() -> serde_json::Value {
+    serde_json::json!({
+        "baseline": { "method": "open_isi_inter_sweep_mean" },
+        "cycle_average": { "method": "simple_complex_average" },
+        "cycle_combine": { "method": "kalatsky_stryker2003_delay_subtraction" },
+        "phase_smoothing": {
+            "method": "snlc_amp_weighted_phasor",
+            "snlc_amp_weighted_phasor": { "sigma_px": 1.0 },
+            "allen_zhuang2017_position_gaussian": { "sigma_px": 1.0 }
+        },
+        "vfs_computation": { "method": "open_isi_chain_rule_phasor_gradient" },
+        "sign_map_smoothing": {
+            "method": "gaussian",
+            "gaussian": { "sigma_um": 60.0 }
+        },
+        "cortex_source": {
+            "method": "snlc_garrett2014_im_bound",
+            "reliability": { "threshold": 0.5 },
+            "snlc_garrett2014_im_bound": { "k": 1.5, "close": 10, "dilate": 3 }
+        },
+        "patch_threshold": {
+            "method": "garrett2014_sigma_scaled",
+            "garrett2014_sigma_scaled": { "k": 1.5 },
+            "allen_zhuang2017_fixed_sign_map_thr": { "value": 0.35 }
+        },
+        "patch_extraction": {
+            "method": "allen_zhuang2017_label_open_close_dilate",
+            "allen_zhuang2017_label_open_close_dilate": {
+                "open_iter": 3, "close_iter": 3, "dilation_iter": 15,
+                "border_width": 1, "small_patch_thr": 50
+            }
+        },
+        "patch_refinement": {
+            "method": "allen_zhuang2017_split_merge",
+            "allen_zhuang2017_split_merge": {
+                "split_overlap_thr": 1.1, "split_local_min_cut_step": 5.0,
+                "merge_overlap_thr": 0.01, "visual_space_pixel_size": 0.5,
+                "visual_space_close_iter": 15, "ecc_map_filter_sigma": 10,
+                "border_width": 1, "small_patch_thr": 100
+            }
+        },
+        "eccentricity": { "method": "open_isi_whole_cortex_v1" }
+    })
+}
+
+/// Translate a pre-2026 `/analysis_params` JSON tree into the current tagged
+/// `AnalysisConfig` shape. Pure function: takes the old tree, returns the new
+/// tree. Defaults for any tunable not present in the old tree come from
+/// [`default_intermediate_tree`].
 ///
 /// Algorithm:
-/// 1. Start from a full default registry tree (`to_json_for_target`), so
-///    every variant subtree is pre-populated with canonical defaults.
+/// 1. Start from the full default intermediate tree, so every variant subtree
+///    is pre-populated with canonical defaults.
 /// 2. For each known stage in the OLD tree: copy `old[stage]["method"]`
-///    to `new[stage]["method"]`, and move every other `(key, value)` in
-///    `old[stage]` into `new[stage][<method>][key]` — the variant subtree.
+///    (renamed to canon), and overlay its tunables onto the active variant
+///    subtree (a legacy FLAT tunable is nested; an already-nested subtree is
+///    kept as-is).
 /// 3. Root-level moved fields from the very-old schema (`azi_angular_range`,
 ///    `rotation_k`, …) are silently dropped — they now live in
 ///    `/experiment_params` and `/rig_params`, captured at acquisition time.
+/// 4. Finally collapse to the tagged shape: the active variant's tunables are
+///    flattened to the stage level and the inactive subtrees dropped, so the
+///    result deserializes straight into `AnalysisConfig`.
 ///
 /// This is the ONLY place the old schema's field names appear post-refactor.
 pub fn translate_pre_2026_analysis_params(
     old: &serde_json::Value,
 ) -> Result<serde_json::Value, AnalysisError> {
-    // Base = registry defaults; overlay the old tree's methods + tunables.
-    // The paths are unused — we only snapshot PARAM_DEFS defaults, no load.
-    let here = std::path::Path::new(".");
-    let default_registry = Registry::new(here, here);
-    let mut new_tree = default_registry
-        .snapshot()
-        .to_json_for_target(PersistTarget::Analysis);
+    // Base = canonical defaults; overlay the old tree's methods + tunables.
+    let mut new_tree = default_intermediate_tree();
 
     let Some(old_obj) = old.as_object() else {
         return Err(AnalysisError::Validation(
@@ -195,6 +245,46 @@ pub fn translate_pre_2026_analysis_params(
         }
     }
 
+    // Final pass: collapse the intermediate registry shape (per-stage `method`
+    // plus every variant's subtree) into the canonical **tagged
+    // `AnalysisConfig`** shape — the ACTIVE variant's tunables flattened to the
+    // stage level, the inactive variant subtrees dropped. The result is what the
+    // current schema expects: `{"<stage>": {"method": "x", <x's tunables>}}`,
+    // which deserializes straight into `AnalysisConfig`.
+    if let Some(obj) = new_tree.as_object_mut() {
+        for stage_val in obj.values_mut() {
+            let Some(stage_obj) = stage_val.as_object_mut() else {
+                continue;
+            };
+            let Some(method) = stage_obj
+                .get("method")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+            else {
+                continue;
+            };
+            // Pull the active variant's subtree out, drop ALL variant subtrees,
+            // then flatten the active one to the stage level.
+            let active = stage_obj
+                .get(&method)
+                .and_then(|v| v.as_object())
+                .cloned();
+            let subtree_keys: Vec<String> = stage_obj
+                .iter()
+                .filter(|(k, v)| k.as_str() != "method" && v.is_object())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in subtree_keys {
+                stage_obj.remove(&k);
+            }
+            if let Some(active) = active {
+                for (k, v) in active {
+                    stage_obj.insert(k, v);
+                }
+            }
+        }
+    }
+
     Ok(new_tree)
 }
 
@@ -231,13 +321,20 @@ pub(crate) fn rename_legacy_method<'a>(stage: &str, method: &'a str) -> &'a str 
 #[cfg(test)]
 mod tests {
     use super::translate_pre_2026_analysis_params;
+    use openisi_params::config::AnalysisConfig;
     use serde_json::json;
 
+    /// Every migrated tree must deserialize straight into `AnalysisConfig` (the
+    /// canonical current schema) — the property `is_pre_2026` keys off.
+    fn assert_current_schema(tree: &serde_json::Value) {
+        serde_json::from_value::<AnalysisConfig>(tree.clone())
+            .expect("migrated tree must deserialize as AnalysisConfig");
+    }
+
     #[test]
-    fn translates_tagged_enum_with_tunable_to_variant_subtree() {
+    fn translates_tagged_enum_with_tunable_to_tagged() {
         // Pre-2026 shape: per-stage tagged enum, tunable at stage level. The old
-        // `open_isi_amp_weighted_phasor` name also exercises the SNLC rename:
-        // both the `method` string and the subtree key migrate to the new name.
+        // `open_isi_amp_weighted_phasor` name also exercises the SNLC rename.
         let old = json!({
             "phase_smoothing": {
                 "method": "open_isi_amp_weighted_phasor",
@@ -245,15 +342,13 @@ mod tests {
             }
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // New shape: renamed variant, tunable nested under the renamed subtree.
+        // New shape: renamed variant, tunable FLAT at the stage level (tagged).
         assert_eq!(
             new["phase_smoothing"]["method"],
             json!("snlc_amp_weighted_phasor")
         );
-        assert_eq!(
-            new["phase_smoothing"]["snlc_amp_weighted_phasor"]["sigma_px"],
-            json!(2.5)
-        );
+        assert_eq!(new["phase_smoothing"]["sigma_px"], json!(2.5));
+        assert_current_schema(&new);
     }
 
     #[test]
@@ -265,22 +360,16 @@ mod tests {
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
         // PARAM_DEFS default for sigma_px is 1.0 (Allen phaseMapFilterSigma).
-        assert_eq!(
-            new["phase_smoothing"]["snlc_amp_weighted_phasor"]["sigma_px"],
-            json!(1.0)
-        );
+        assert_eq!(new["phase_smoothing"]["sigma_px"], json!(1.0));
+        assert_current_schema(&new);
     }
 
     #[test]
-    fn nested_current_tree_with_legacy_name_is_not_double_nested() {
-        // Regression: a file analyzed before this session's renames carries the
-        // CURRENT nested multi-variant schema but with a legacy variant NAME
-        // (here `open_isi_amp_weighted_phasor` as both the method and its subtree
-        // key), and a sibling stage with multiple variant subtrees. The detector
-        // flags it (legacy name), and migration must rename in place WITHOUT
-        // nesting the existing subtrees one level deeper — otherwise the reload
-        // (`from_json_tree`) rejects keys like
-        // `phase_smoothing.snlc….open_isi….sigma_px`.
+    fn nested_legacy_name_flattens_and_drops_inactive_variant() {
+        // A file analyzed before this session's renames carries the nested
+        // multi-variant schema with a legacy variant NAME. Migration renames,
+        // flattens the active variant to the stage level, and drops the inactive
+        // sibling subtree — yielding the tagged schema.
         let old = json!({
             "phase_smoothing": {
                 "method": "open_isi_amp_weighted_phasor",
@@ -294,50 +383,25 @@ mod tests {
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
 
-        // phase_smoothing: renamed, single (not double) nesting under SNLC name.
+        // phase_smoothing: renamed, tunable flat at stage level.
         assert_eq!(
             new["phase_smoothing"]["method"],
             json!("snlc_amp_weighted_phasor")
         );
-        assert_eq!(
-            new["phase_smoothing"]["snlc_amp_weighted_phasor"]["sigma_px"],
-            json!(2.0)
-        );
-        assert!(
-            new["phase_smoothing"]["snlc_amp_weighted_phasor"]
-                .get("open_isi_amp_weighted_phasor")
-                .is_none(),
-            "must not double-nest the legacy-named subtree"
-        );
+        assert_eq!(new["phase_smoothing"]["sigma_px"], json!(2.0));
 
-        // patch_threshold (no rename): both variant subtrees preserved flat at
-        // the stage level, NOT nested under the active variant.
-        assert_eq!(
-            new["patch_threshold"]["garrett2014_sigma_scaled"]["k"],
-            json!(1.5)
-        );
-        assert_eq!(
-            new["patch_threshold"]["allen_zhuang2017_fixed_sign_map_thr"]["value"],
-            json!(0.35)
-        );
-        assert!(
-            new["patch_threshold"]["garrett2014_sigma_scaled"]
-                .get("allen_zhuang2017_fixed_sign_map_thr")
-                .is_none(),
-            "sibling variant subtree must stay at stage level"
-        );
+        // patch_threshold: active (garrett) flattened; inactive (allen) dropped.
+        assert_eq!(new["patch_threshold"]["k"], json!(1.5));
+        assert!(new["patch_threshold"].get("value").is_none());
+        assert!(new["patch_threshold"]
+            .get("allen_zhuang2017_fixed_sign_map_thr")
+            .is_none());
 
-        // The migrated tree must reconstruct into an AnalysisParams without
-        // unknown-key errors — the failure mode this bug produced.
-        use openisi_params::{PersistTarget, RegistrySnapshot};
-        RegistrySnapshot::from_json_tree(PersistTarget::Analysis, &new)
-            .expect("migrated tree must reload cleanly");
+        assert_current_schema(&new);
     }
 
     #[test]
     fn eccentricity_legacy_garrett_name_migrates_to_open_isi() {
-        // The old `garrett2014_whole_cortex_v1` name overclaimed faithfulness
-        // (our recipe is an OpenISI composition). The rename map relabels it.
         let old = json!({
             "eccentricity": { "method": "garrett2014_whole_cortex_v1" }
         });
@@ -346,12 +410,11 @@ mod tests {
             new["eccentricity"]["method"],
             json!("open_isi_whole_cortex_v1")
         );
+        assert_current_schema(&new);
     }
 
     #[test]
     fn root_level_moved_fields_are_dropped() {
-        // Very-old shape: stimulus-geometry fields at root that have since
-        // moved to /experiment_params.
         let old = json!({
             "azi_angular_range": 120.0,
             "rotation_k": 2,
@@ -360,38 +423,30 @@ mod tests {
         let new = translate_pre_2026_analysis_params(&old).unwrap();
         assert!(new.get("azi_angular_range").is_none());
         assert!(new.get("rotation_k").is_none());
-        // Legacy variant string is renamed to its canonical equivalent
-        // (delay subtraction is Kalatsky 2003's contribution).
         assert_eq!(
             new["cycle_combine"]["method"],
             json!("kalatsky_stryker2003_delay_subtraction")
         );
+        assert_current_schema(&new);
     }
 
     #[test]
     fn stage_absent_from_old_keeps_param_defs_defaults() {
-        // Old tree contains only one stage; others must come from PARAM_DEFS.
         let old = json!({
             "sign_map_smoothing": { "method": "gaussian", "sigma_um": 90.0 }
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
-        assert_eq!(
-            new["sign_map_smoothing"]["gaussian"]["sigma_um"],
-            json!(90.0)
-        );
+        assert_eq!(new["sign_map_smoothing"]["sigma_um"], json!(90.0));
         assert_eq!(
             new["patch_threshold"]["method"],
             json!("garrett2014_sigma_scaled")
         );
-        assert_eq!(
-            new["patch_threshold"]["garrett2014_sigma_scaled"]["k"],
-            json!(1.5)
-        );
+        assert_eq!(new["patch_threshold"]["k"], json!(1.5));
+        assert_current_schema(&new);
     }
 
     #[test]
     fn multi_field_variant_migrates_all_tunables() {
-        // patch_refinement.allen_zhuang2017_split_merge — 8 tunables.
         let old = json!({
             "patch_refinement": {
                 "method": "allen_zhuang2017_split_merge",
@@ -400,12 +455,13 @@ mod tests {
             }
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
-        let subtree = &new["patch_refinement"]["allen_zhuang2017_split_merge"];
-        assert_eq!(subtree["split_overlap_thr"], json!(1.5));
-        assert_eq!(subtree["merge_overlap_thr"], json!(0.05));
+        let stage = &new["patch_refinement"];
+        assert_eq!(stage["split_overlap_thr"], json!(1.5));
+        assert_eq!(stage["merge_overlap_thr"], json!(0.05));
         // Unset fields take PARAM_DEFS defaults.
-        assert_eq!(subtree["split_local_min_cut_step"], json!(5.0));
-        assert_eq!(subtree["visual_space_close_iter"], json!(15));
-        assert_eq!(subtree["small_patch_thr"], json!(100));
+        assert_eq!(stage["split_local_min_cut_step"], json!(5.0));
+        assert_eq!(stage["visual_space_close_iter"], json!(15));
+        assert_eq!(stage["small_patch_thr"], json!(100));
+        assert_current_schema(&new);
     }
 }

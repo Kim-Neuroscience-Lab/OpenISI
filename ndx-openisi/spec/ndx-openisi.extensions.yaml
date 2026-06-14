@@ -1,0 +1,216 @@
+datasets:
+- neurodata_type_def: RetinotopyMap
+  neurodata_type_inc: Image
+  doc: A single 2-D (height x width) retinotopy result map with OpenISI render 
+    metadata. The data is the map; the attributes are the contract a renderer 
+    needs to reproduce the OpenISI figure.
+  attributes:
+  - name: palette
+    dtype: text
+    doc: Colormap name (e.g. hsv_circular, jet, binary).
+  - name: units
+    dtype: text
+    doc: Physical/semantic units (rad, deg, unitless, bool, label).
+  - name: display_min
+    dtype: float64
+    doc: Value mapped to the palette start.
+  - name: display_max
+    dtype: float64
+    doc: Value mapped to the palette end.
+  - name: wrap_period
+    dtype: float64
+    doc: Period for circular palettes (2*pi for rad, angular_range for deg, 0 if
+      non-circular).
+  - name: nan_means
+    dtype: text
+    doc: Semantic label for NaN pixels (e.g. outside_cortex); empty if NaN is 
+      not a sentinel.
+  - name: zero_means
+    dtype: text
+    doc: Semantic label for the literal-0.0 sentinel (e.g. outside_patch, 
+      below_threshold); empty if 0 is a real value.
+- neurodata_type_def: ComplexMap
+  neurodata_type_inc: Data
+  dtype: float64
+  dims:
+  - height
+  - width
+  - real_imag
+  shape:
+  - null
+  - null
+  - 2
+  doc: 'A per-direction complex Fourier response map stored as a (height, width, 2)
+    float64 array: [:, :, 0] = real, [:, :, 1] = imag. HDF5 has no portable native-complex
+    convention, so OpenISI uses this documented real/imag split.'
+  attributes:
+  - name: convention
+    dtype: text
+    value: last_axis_real_imag
+    doc: Storage convention for the trailing axis.
+groups:
+- neurodata_type_def: RetinotopyMaps
+  neurodata_type_inc: NWBDataInterface
+  doc: 'OpenISI retinotopy analysis result: the per-pixel maps (phase, amplitude,
+    VFS, eccentricity, cortical magnification, SNR, reliability), the complex Fourier
+    maps they derive from, the stimulus geometry that pins them to degrees of visual
+    angle, and the analysis provenance. Replaces the deprecated core ImagingRetinotopy.'
+  attributes:
+  - name: rotation_k
+    dtype: int32
+    doc: Camera-frame rotation applied to the maps (quarter turns).
+    required: false
+  - name: azi_angular_range
+    dtype: float64
+    doc: Azimuth sweep extent in degrees of visual angle.
+    required: false
+  - name: alt_angular_range
+    dtype: float64
+    doc: Altitude sweep extent in degrees of visual angle.
+    required: false
+  - name: offset_azi
+    dtype: float64
+    doc: Azimuth center offset in degrees.
+    required: false
+  - name: offset_alt
+    dtype: float64
+    doc: Altitude center offset in degrees.
+    required: false
+  - name: analysis_params
+    dtype: text
+    doc: JSON of the tagged AnalysisConfig that produced these maps (per-stage 
+      method + active tunables) — the reproducibility provenance.
+    required: false
+  - name: software_version
+    dtype: text
+    doc: OpenISI version that produced the analysis.
+    required: false
+  datasets:
+  - neurodata_type_inc: RetinotopyMap
+    doc: The retinotopy result maps (one RetinotopyMap per quantity, each named 
+      by its OpenISI map name e.g. azi_phase_degrees, vfs, eccentricity).
+    quantity: '*'
+  - neurodata_type_inc: ComplexMap
+    doc: The per-direction complex Fourier maps (azi_fwd, azi_rev, alt_fwd, 
+      alt_rev), each named by direction.
+    quantity: '*'
+- neurodata_type_def: TimingForensics
+  neurodata_type_inc: NWBDataInterface
+  doc: "Multi-clock acquisition timing record: the two physical clocks (camera hardware
+    clock and the system QPC clock, the latter shared with the stimulus vsync), their
+    reconciliation (offset + drift), and the per-frame interval / dropped-frame /
+    sequence-gap evidence that an ISI recording's timing is sound. Core NWB's single
+    timeline cannot represent two clocks and their offset."
+  attributes:
+  - name: t0_system_us
+    dtype: float64
+    doc: Epoch (system-clock microseconds) defining t=0 for the unified 
+      timeline.
+    required: false
+  - name: start_offset_us
+    dtype: float64
+    doc: system - hardware clock offset at acquisition start (microseconds).
+    required: false
+  - name: end_offset_us
+    dtype: float64
+    doc: system - hardware clock offset at acquisition end (microseconds).
+    required: false
+  - name: drift_us
+    dtype: float64
+    doc: Cumulative clock drift over the session = end_offset - start_offset 
+      (microseconds).
+    required: false
+  - name: camera_drops_total
+    dtype: uint32
+    doc: Total camera sequence-gap count.
+    required: false
+  - name: stimulus_drops_total
+    dtype: uint32
+    doc: Total stimulus drop count.
+    required: false
+  - name: stimulus_timing_validatable
+    dtype: uint8
+    doc: 1 if stimulus was on physical hardware scanout (real vsync), else 0.
+    required: false
+  - name: display_scanout
+    dtype: text
+    doc: physical or remote_virtual.
+    required: false
+  - name: acquisition_complete
+    dtype: uint8
+    doc: 1 if acquisition finished cleanly, 0 if interrupted.
+    required: false
+  datasets:
+  - name: camera_hardware_timestamps_us
+    dtype: int64
+    dims:
+    - frame
+    shape:
+    - null
+    doc: Camera internal-clock timestamps (microseconds).
+    quantity: '?'
+  - name: camera_system_timestamps_us
+    dtype: int64
+    dims:
+    - frame
+    shape:
+    - null
+    doc: System QPC timestamps at camera frame read (microseconds; same clock as
+      stimulus vsync).
+    quantity: '?'
+  - name: camera_sequence_numbers
+    dtype: int64
+    dims:
+    - frame
+    shape:
+    - null
+    doc: Camera hardware sequence counters (gap detection).
+    quantity: '?'
+  - name: camera_frame_deltas_us
+    dtype: int64
+    dims:
+    - frame_minus_1
+    shape:
+    - null
+    doc: Inter-frame intervals from camera hardware timestamps (microseconds).
+    quantity: '?'
+  - name: camera_sequence_gaps
+    dtype: uint32
+    dims:
+    - gap
+    shape:
+    - null
+    doc: Frame indices where the camera sequence number jumped (dropped frames).
+    quantity: '?'
+  - name: mean_frame_intensity
+    dtype: float32
+    dims:
+    - frame
+    shape:
+    - null
+    doc: Per-frame mean pixel intensity (illumination-drift diagnostic).
+    quantity: '?'
+  - name: stimulus_timestamps_us
+    dtype: int64
+    dims:
+    - stim_frame
+    shape:
+    - null
+    doc: Stimulus vsync timestamps (microseconds, QPC clock).
+    quantity: '?'
+  - name: stimulus_frame_deltas_us
+    dtype: int64
+    dims:
+    - stim_frame_minus_1
+    shape:
+    - null
+    doc: Stimulus inter-frame intervals (microseconds).
+    quantity: '?'
+  - name: stimulus_dropped_frame_indices
+    dtype: int64
+    dims:
+    - drop
+    shape:
+    - null
+    doc: Stimulus frame indices whose interval exceeded the drop threshold.
+    quantity: '?'

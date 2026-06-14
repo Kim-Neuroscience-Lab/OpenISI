@@ -1,196 +1,119 @@
-//! Registry-snapshot → `AnalysisParams` bridge.
+//! `AnalysisConfig` → `AnalysisParams` bridge.
 //!
-//! This module is the ONLY place that knows both the `openisi-params`
-//! marker types and the `crates/isi-analysis` method enums. Every
-//! value entering an `AnalysisParams` flows through one of the typed
-//! `snap.typed::<P>()` calls below, which structurally proves the
-//! value came from the SSoT param registry (no inline literals).
+//! After UNIFY the typed config's internally-tagged per-stage enums (in
+//! `openisi_params::config::analysis`) **are** the method types this crate's
+//! pipeline consumes (re-exported as `methods::*Method`). So the conversions here
+//! are field-wise clones, kept as named adapters so call sites read intent:
 //!
-//! Adding a parameter:
-//! 1. Add a `define_params!` entry in `definitions.rs`. The macro
-//!    emits the marker type automatically.
-//! 2. Add the field to the appropriate method enum variant.
-//! 3. Thread the new marker into the variant's constructor signature
-//!    (in `methods/<stage>.rs`).
-//! 4. Add the corresponding `snap.typed::<NewMarker>()` argument here.
-//!
-//! Steps 3 and 4 are mechanically enforced — the constructor's
-//! argument list and the bridge call must agree on the markers, or
-//! the compiler rejects the build.
+//! - [`From<&AnalysisConfig> for AnalysisParams`] — the live/load path
+//!   (a `ConfigStore`'s `AnalysisConfig` → pipeline params).
+//! - [`From<&AnalysisParams> for AnalysisConfig`] — the provenance path
+//!   (pipeline params → the `.oisi` `/analysis_params` serde form).
+//! - [`analysis_params_from_oisi_tree`] — reconstruct params from a stored
+//!   `/analysis_params` tree (fail-loud on a legacy schema).
 
-use openisi_params as p;
-use openisi_params::{CortexSourceKind, PatchRefinementKind, PatchThresholdKind, RegistrySnapshot};
-
-use crate::methods::{
-    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod, EccentricityMethod,
-    PatchExtractionMethod, PatchRefinementMethod, PatchThresholdMethod, PhaseSmoothingMethod,
-    SignMapSmoothingMethod, SplitMergeParams, VfsComputationMethod,
-};
 use crate::params::AnalysisParams;
 
-/// Build a fully-populated `AnalysisParams` from a `RegistrySnapshot`.
+/// Build `AnalysisParams` directly from the typed [`AnalysisConfig`].
 ///
-/// The implementation is forced by the type system into the shape
-/// `Method::variant(snap.typed::<Marker>())` — there is no other
-/// expression the constructors accept. If you add a parameter or a
-/// new method variant, the compiler will tell you exactly which line
-/// to update.
-pub fn analysis_params_from_snapshot(snap: &RegistrySnapshot) -> AnalysisParams {
-    let baseline = match snap.typed::<p::BaselineMethod>().into_inner() {
-        p::BaselineKind::AllenAllFrameMean => BaselineMethod::allen_all_frame_mean(),
-        p::BaselineKind::AllenAllFrameMedian => BaselineMethod::allen_all_frame_median(),
-        p::BaselineKind::OpenIsiInterSweepMean => BaselineMethod::open_isi_inter_sweep_mean(),
-        p::BaselineKind::OpenIsiInterSweepMedian => BaselineMethod::open_isi_inter_sweep_median(),
-    };
+/// The config's internally-tagged enums ARE the per-stage method types, so this
+/// is a field-wise clone — kept as a named conversion so call sites read intent.
+impl From<&openisi_params::config::AnalysisConfig> for AnalysisParams {
+    fn from(c: &openisi_params::config::AnalysisConfig) -> Self {
+        AnalysisParams::new(
+            c.baseline.clone(),
+            c.cycle_average.clone(),
+            c.cycle_combine.clone(),
+            c.phase_smoothing.clone(),
+            c.vfs_computation.clone(),
+            c.sign_map_smoothing.clone(),
+            c.cortex_source.clone(),
+            c.patch_threshold.clone(),
+            c.patch_extraction.clone(),
+            c.patch_refinement.clone(),
+            c.eccentricity.clone(),
+        )
+    }
+}
 
-    let cycle_average = match snap.typed::<p::CycleAverageMethod>().into_inner() {
-        p::CycleAverageKind::SimpleComplexAverage => CycleAverageMethod::simple_complex_average(),
-        p::CycleAverageKind::PhaseLockedAverage => CycleAverageMethod::phase_locked_average(),
-    };
+/// Build an [`AnalysisConfig`](openisi_params::config::AnalysisConfig) from an
+/// `AnalysisParams` — a field-wise clone, since after UNIFY the params' per-stage
+/// fields ARE the config's tagged enums. This is the canonical `.oisi`
+/// `/analysis_params` provenance form (serialized via serde).
+impl From<&AnalysisParams> for openisi_params::config::AnalysisConfig {
+    fn from(p: &AnalysisParams) -> Self {
+        openisi_params::config::AnalysisConfig {
+            baseline: p.baseline.clone(),
+            cycle_average: p.cycle_average.clone(),
+            cycle_combine: p.cycle_combine.clone(),
+            phase_smoothing: p.phase_smoothing.clone(),
+            vfs_computation: p.vfs_computation.clone(),
+            sign_map_smoothing: p.sign_map_smoothing.clone(),
+            cortex_source: p.cortex_source.clone(),
+            patch_threshold: p.patch_threshold.clone(),
+            patch_extraction: p.patch_extraction.clone(),
+            patch_refinement: p.patch_refinement.clone(),
+            eccentricity: p.eccentricity.clone(),
+        }
+    }
+}
 
-    let cycle_combine = match snap.typed::<p::CycleCombineMethod>().into_inner() {
-        p::CycleCombineKind::KalatskyStryker2003DelaySubtraction => {
-            CycleCombineMethod::kalatsky_stryker2003_delay_subtraction()
-        }
-        p::CycleCombineKind::UnweightedCycleAverage => {
-            CycleCombineMethod::unweighted_cycle_average()
-        }
-    };
-
-    let phase_smoothing = match snap.typed::<p::PhaseSmoothingMethod>().into_inner() {
-        p::PhaseSmoothingKind::SnlcAmpWeightedPhasor => {
-            PhaseSmoothingMethod::snlc_amp_weighted_phasor(
-                snap.typed::<p::PhaseSmoothingSnlcAmpWeightedPhasorSigmaPx>(),
-            )
-        }
-        p::PhaseSmoothingKind::AllenZhuang2017PositionGaussian => {
-            PhaseSmoothingMethod::allen_zhuang2017_position_gaussian(
-                snap.typed::<p::PhaseSmoothingAllenZhuang2017PositionGaussianSigmaPx>(),
-            )
-        }
-    };
-
-    let vfs_computation = match snap.typed::<p::VfsComputationMethod>().into_inner() {
-        p::VfsComputationKind::OpenIsiChainRulePhasorGradient => {
-            VfsComputationMethod::open_isi_chain_rule_phasor_gradient()
-        }
-    };
-
-    let sign_map_smoothing = match snap.typed::<p::SignMapSmoothingMethod>().into_inner() {
-        p::SignMapSmoothingKind::Gaussian => {
-            SignMapSmoothingMethod::gaussian(snap.typed::<p::SignMapSmoothingGaussianSigmaUm>())
-        }
-    };
-
-    let cortex_source = match snap.typed::<p::CortexSourceMethod>().into_inner() {
-        CortexSourceKind::Reliability => {
-            CortexSourceMethod::reliability(snap.typed::<p::CortexSourceReliabilityThreshold>())
-        }
-        CortexSourceKind::UserPolygon => CortexSourceMethod::user_polygon(),
-        CortexSourceKind::SnlcGarrett2014ImBound => CortexSourceMethod::snlc_garrett2014_im_bound(
-            snap.typed::<p::CortexSourceSnlcK>(),
-            snap.typed::<p::CortexSourceSnlcClose>(),
-            snap.typed::<p::CortexSourceSnlcDilate>(),
-        ),
-        CortexSourceKind::NoRestriction => CortexSourceMethod::no_restriction(),
-    };
-
-    let patch_threshold = match snap.typed::<p::PatchThresholdMethod>().into_inner() {
-        PatchThresholdKind::AllenZhuang2017FixedSignMapThr => {
-            PatchThresholdMethod::allen_zhuang2017_fixed_sign_map_thr(
-                snap.typed::<p::PatchThresholdAllenValue>(),
-            )
-        }
-        PatchThresholdKind::Garrett2014SigmaScaled => {
-            PatchThresholdMethod::garrett2014_sigma_scaled(
-                snap.typed::<p::PatchThresholdGarrettK>(),
-            )
-        }
-    };
-
-    let patch_extraction = match snap.typed::<p::PatchExtractionMethod>().into_inner() {
-        p::PatchExtractionKind::AllenZhuang2017LabelOpenCloseDilate => {
-            PatchExtractionMethod::allen_zhuang2017_label_open_close_dilate(
-                snap.typed::<p::PatchExtractionAllenOpenIter>(),
-                snap.typed::<p::PatchExtractionAllenCloseIter>(),
-                snap.typed::<p::PatchExtractionAllenDilationIter>(),
-                snap.typed::<p::PatchExtractionAllenBorderWidth>(),
-                snap.typed::<p::PatchExtractionAllenSmallPatchThr>(),
-            )
-        }
-    };
-
-    let patch_refinement = match snap.typed::<p::PatchRefinementMethod>().into_inner() {
-        PatchRefinementKind::None => PatchRefinementMethod::none(),
-        PatchRefinementKind::AllenZhuang2017SplitMerge => {
-            PatchRefinementMethod::allen_zhuang2017_split_merge(SplitMergeParams {
-                split_overlap_thr: snap.typed::<p::PatchRefinementAllenSplitOverlapThr>(),
-                split_local_min_cut_step: snap.typed::<p::PatchRefinementAllenSplitLocalMinCutStep>(),
-                merge_overlap_thr: snap.typed::<p::PatchRefinementAllenMergeOverlapThr>(),
-                visual_space_pixel_size: snap.typed::<p::PatchRefinementAllenVisualSpacePixelSize>(),
-                visual_space_close_iter: snap.typed::<p::PatchRefinementAllenVisualSpaceCloseIter>(),
-                ecc_map_filter_sigma: snap.typed::<p::PatchRefinementAllenEccMapFilterSigma>(),
-                border_width: snap.typed::<p::PatchRefinementAllenBorderWidth>(),
-                small_patch_thr: snap.typed::<p::PatchRefinementAllenSmallPatchThr>(),
-            })
-        }
-    };
-
-    let eccentricity = match snap.typed::<p::EccentricityMethod>().into_inner() {
-        p::EccentricityKind::OpenIsiWholeCortexV1 => EccentricityMethod::open_isi_whole_cortex_v1(),
-        p::EccentricityKind::SnlcGetAreaBordersV1Center => {
-            EccentricityMethod::snlc_get_area_borders_v1_center()
-        }
-    };
-
-    AnalysisParams::new(
-        baseline,
-        cycle_average,
-        cycle_combine,
-        phase_smoothing,
-        vfs_computation,
-        sign_map_smoothing,
-        cortex_source,
-        patch_threshold,
-        patch_extraction,
-        patch_refinement,
-        eccentricity,
-    )
+/// Reconstruct `AnalysisParams` from a `.oisi` `/analysis_params` tree in the
+/// current (tagged `AnalysisConfig`) schema. Registry-free — used for
+/// re-analysis of an already-analyzed file. A tree in the legacy registry/flat
+/// schema fails to deserialize here; callers gate on
+/// [`crate::io::is_pre_2026_analysis_params`] and migrate first.
+pub fn analysis_params_from_oisi_tree(
+    tree: &serde_json::Value,
+) -> Result<AnalysisParams, crate::AnalysisError> {
+    let config: openisi_params::config::AnalysisConfig =
+        serde_json::from_value(tree.clone()).map_err(|e| {
+            crate::AnalysisError::Validation(format!(
+                "/analysis_params does not match the current schema: {e}"
+            ))
+        })?;
+    Ok(AnalysisParams::from(&config))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openisi_params::Registry;
 
-    /// Default registry → bridge → AnalysisParams produces a value with
-    /// every stage populated from PARAM_DEFS defaults. Schema-coverage:
-    /// if a new method variant exists in PARAM_DEFS but its constructor
-    /// isn't wired into the bridge, this test fails to compile.
+    /// The default typed config bridges to a fully-populated `AnalysisParams`.
+    /// Field-wise clone, so this is mostly a smoke test that the unified enums
+    /// line up; the fingerprint of the default params is the stable reference the
+    /// `regression_oisi` gate ultimately backstops.
     #[test]
-    fn default_registry_roundtrips() {
-        let dir = std::path::Path::new("/tmp/openisi-bridge-test");
-        let reg = Registry::new(dir, dir);
-        let snap = reg.snapshot();
-        let _ap = analysis_params_from_snapshot(&snap);
-        // Constructor success is the assertion — if any stage failed to
-        // type-check (e.g., a variant added without bridge wiring), we
-        // wouldn't reach here.
+    fn default_config_bridges() {
+        let _ap = AnalysisParams::from(&openisi_params::config::AnalysisConfig::default());
     }
 
-    /// The drift guard for `config/analysis.toml`. The shipped config is this
-    /// lab's deliberately-tuned working state (it OVERRIDES PARAM_DEFS, by
-    /// design — so we do NOT assert it equals the defaults). What must hold is
-    /// that it still loads and bridges to a valid `AnalysisParams` end-to-end:
-    /// a method/param rename that left a stale key in the shipped config would
-    /// fail here (fail-loud load / unknown-key), instead of silently degrading
-    /// a real analysis run. This is the production load path.
+    /// The drift guard for the shipped `config/analysis.json`. The shipped config
+    /// is this lab's deliberately-tuned working state; what must hold is that it
+    /// still loads and bridges to a valid `AnalysisParams` end-to-end. A
+    /// method/param rename that left a stale key in the shipped config would fail
+    /// here (fail-loud load / unknown-key), instead of silently degrading a real
+    /// analysis run. This is the production load path.
     #[test]
-    fn shipped_analysis_config_loads_and_bridges() {
+    fn shipped_analysis_json_loads_and_bridges() {
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
-        let mut reg = Registry::new(&config, &config);
-        reg.load_analysis()
-            .expect("shipped config/analysis.toml must load cleanly (no stale/unknown keys)");
-        let _ap = analysis_params_from_snapshot(&reg.snapshot());
+        let cfg: openisi_params::config::AnalysisConfig =
+            openisi_params::config::load_target_from_dir(&config, None, "analysis.json")
+                .expect("shipped config/analysis.json must load cleanly (no stale/unknown keys)");
+        let _ap = AnalysisParams::from(&cfg);
+    }
+
+    /// A round-trip through the provenance form: params → `AnalysisConfig` (serde
+    /// form) → back to params must be identity (both adapters are field clones).
+    #[test]
+    fn provenance_round_trip_is_identity() {
+        let params = AnalysisParams::from(&openisi_params::config::AnalysisConfig::default());
+        let cfg = openisi_params::config::AnalysisConfig::from(&params);
+        let back = AnalysisParams::from(&cfg);
+        let acq = crate::AcquisitionProperties::default();
+        assert_eq!(
+            crate::pipeline::fingerprint::compute(&params, &acq, "rec", None),
+            crate::pipeline::fingerprint::compute(&back, &acq, "rec", None),
+        );
     }
 }

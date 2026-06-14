@@ -3,8 +3,9 @@
 use serde::Serialize;
 use tauri::State;
 
+use openisi_params::config::ExperimentConfig;
+
 use crate::error::{AppError, AppResult};
-use crate::params::{ParamId, ParamValue, RegistrySnapshot};
 
 use super::SharedState;
 
@@ -22,7 +23,7 @@ pub struct ExperimentSummary {
 /// List available saved experiment files.
 #[tauri::command]
 pub fn list_experiments(state: State<'_, SharedState>) -> AppResult<Vec<ExperimentSummary>> {
-    let exp_dir = state.registry.lock().experiments_dir();
+    let exp_dir = state.config.lock().experiments_dir();
 
     let mut summaries = Vec::new();
     if !exp_dir.exists() {
@@ -31,19 +32,21 @@ pub fn list_experiments(state: State<'_, SharedState>) -> AppResult<Vec<Experime
     if let Ok(entries) = std::fs::read_dir(&exp_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "toml") {
-                // Try to load via a temporary registry to read the experiment params.
-                let cfg_parent = path.parent().unwrap_or(std::path::Path::new("."));
-                let mut tmp_reg = crate::params::Registry::new(cfg_parent, cfg_parent);
-                if crate::params::toml_io::load_experiment(&mut tmp_reg, &path).is_ok() {
-                    let snap = tmp_reg.snapshot();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                // Deserialize the template to read its experiment params.
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                if let Ok(exp) =
+                    openisi_params::config::load_merged::<ExperimentConfig>(&text, None)
+                {
                     summaries.push(ExperimentSummary {
                         path: path.to_string_lossy().to_string(),
                         name: String::new(), // metadata not in params
                         description: String::new(),
-                        envelope: format!("{:?}", snap.stimulus_envelope()).to_lowercase(),
-                        conditions: snap.conditions().to_vec(),
-                        repetitions: snap.repetitions(),
+                        envelope: format!("{:?}", exp.stimulus.envelope).to_lowercase(),
+                        conditions: exp.presentation.conditions.clone(),
+                        repetitions: exp.presentation.repetitions,
                     });
                 }
             }
@@ -55,25 +58,22 @@ pub fn list_experiments(state: State<'_, SharedState>) -> AppResult<Vec<Experime
 /// Get the current experiment configuration as JSON.
 #[tauri::command]
 pub fn get_experiment(state: State<'_, SharedState>) -> AppResult<serde_json::Value> {
-    let snap = state.registry.lock().snapshot();
-    Ok(experiment_to_json(&snap))
+    let exp = state.config.lock().experiment().clone();
+    Ok(experiment_to_json(&exp))
 }
 
-/// Update experiment configuration. Persists to experiment.toml.
+/// Update experiment configuration. Persists to experiment.json.
 #[tauri::command]
 pub fn update_experiment(
     state: State<'_, SharedState>,
     config: serde_json::Value,
 ) -> AppResult<()> {
-    // Registry-scoped, brief: intentionally save while holding the registry lock.
-    let mut reg = state.registry.lock();
-
-    // Apply all experiment-related fields from the JSON.
-    apply_experiment_json(&mut reg, &config)?;
-
-    if let Err(e) = reg.save_experiment() {
+    // Config-scoped, brief: merge the sparse overlay + save while holding the lock.
+    let mut cfg = state.config.lock();
+    cfg.merge_experiment(&config)?;
+    if let Err(e) = cfg.save_all() {
         return Err(AppError::Config(format!(
-            "Failed to write experiment.toml: {e}"
+            "Failed to write experiment.json: {e}"
         )));
     }
     Ok(())
@@ -85,20 +85,17 @@ pub fn load_experiment(
     state: State<'_, SharedState>,
     path: String,
 ) -> AppResult<serde_json::Value> {
-    let mut reg = state.registry.lock();
-
-    crate::params::toml_io::load_experiment(&mut reg, std::path::Path::new(&path))
+    let mut cfg = state.config.lock();
+    cfg.load_experiment_template(std::path::Path::new(&path))
         .map_err(|e| AppError::Config(format!("Failed to load experiment from {path}: {e}")))?;
-
-    Ok(experiment_to_json(&reg.snapshot()))
+    Ok(experiment_to_json(cfg.experiment()))
 }
 
 /// Save the current experiment to a new file in the experiments directory.
 #[tauri::command]
 pub fn save_experiment_as(state: State<'_, SharedState>, name: String) -> AppResult<String> {
-    let exp_dir = state.registry.lock().experiments_dir();
-
-    let _ = std::fs::create_dir_all(&exp_dir);
+    let cfg = state.config.lock();
+    let exp_dir = cfg.experiments_dir();
 
     // Sanitize filename.
     let safe_name: String = name
@@ -111,11 +108,9 @@ pub fn save_experiment_as(state: State<'_, SharedState>, name: String) -> AppRes
             }
         })
         .collect();
-    let path = exp_dir.join(format!("{safe_name}.toml"));
+    let path = exp_dir.join(format!("{safe_name}.json"));
 
-    // Save experiment params to the target path.
-    let reg = state.registry.lock();
-    crate::params::toml_io::save_experiment(&reg, &path)
+    cfg.save_experiment_template(&path)
         .map_err(|e| AppError::Config(format!("Failed to save experiment: {e}")))?;
 
     let path_str = path.to_string_lossy().to_string();
@@ -145,47 +140,49 @@ pub fn get_duration_summary(state: State<'_, SharedState>) -> AppResult<Duration
             "No display selected — select a display to compute duration".into(),
         ))?;
 
-    let snap = state.registry.lock().snapshot();
+    let cfg = state.config.lock().snapshot();
+    let exp = &cfg.experiment;
+    let p = &exp.stimulus.params;
 
-    let n_conditions = snap.conditions().len();
-    let reps = snap.repetitions() as usize;
+    let n_conditions = exp.presentation.conditions.len();
+    let reps = exp.presentation.repetitions as usize;
     let sweep_count = n_conditions * reps;
 
     let geometry = DisplayGeometry::new(
-        snap.experiment_projection(),
-        snap.viewing_distance_cm(),
-        snap.horizontal_offset_deg(),
-        snap.vertical_offset_deg(),
-        snap.bisector_x_cm(),
-        snap.bisector_y_cm(),
-        snap.monitor_width_cm(),
-        snap.monitor_height_cm(),
+        exp.geometry.projection,
+        cfg.rig.geometry.viewing_distance_cm,
+        exp.geometry.horizontal_offset_deg,
+        exp.geometry.vertical_offset_deg,
+        cfg.rig.geometry.bisector_x_cm,
+        cfg.rig.geometry.bisector_y_cm,
+        cfg.rig.geometry.monitor_width_cm,
+        cfg.rig.geometry.monitor_height_cm,
         monitor.width_px,
         monitor.height_px,
     );
 
-    let sweep_duration_sec = match snap.stimulus_envelope() {
+    let sweep_duration_sec = match exp.stimulus.envelope {
         crate::params::Envelope::Bar => {
-            let total_travel = geometry.visual_field_width_deg() + snap.stimulus_width_deg();
-            total_travel / snap.sweep_speed_deg_per_sec()
+            let total_travel = geometry.visual_field_width_deg() + p.stimulus_width_deg;
+            total_travel / p.sweep_speed_deg_per_sec
         }
-        crate::params::Envelope::Wedge => 360.0 / snap.rotation_speed_deg_per_sec(),
+        crate::params::Envelope::Wedge => 360.0 / p.rotation_speed_deg_per_sec,
         crate::params::Envelope::Ring => {
-            let total_travel = geometry.get_max_eccentricity_deg() + snap.stimulus_width_deg();
-            total_travel / snap.expansion_speed_deg_per_sec()
+            let total_travel = geometry.get_max_eccentricity_deg() + p.stimulus_width_deg;
+            total_travel / p.expansion_speed_deg_per_sec
         }
         crate::params::Envelope::Fullfield => 0.0,
     };
 
     let total_sweep_time = sweep_count as f64 * sweep_duration_sec;
-    let total_baseline = snap.baseline_start_sec() + snap.baseline_end_sec();
+    let total_baseline = exp.timing.baseline_start_sec + exp.timing.baseline_end_sec;
     let total_inter = if sweep_count > 1 {
-        (sweep_count - 1) as f64 * snap.inter_stimulus_sec()
+        (sweep_count - 1) as f64 * exp.timing.inter_stimulus_sec
     } else {
         0.0
     };
     let total_inter_dir = if n_conditions > 1 {
-        (n_conditions - 1) as f64 * snap.inter_direction_sec() * reps as f64
+        (n_conditions - 1) as f64 * exp.timing.inter_direction_sec * reps as f64
     } else {
         0.0
     };
@@ -208,159 +205,50 @@ pub fn get_duration_summary(state: State<'_, SharedState>) -> AppResult<Duration
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn experiment_to_json(snap: &RegistrySnapshot) -> serde_json::Value {
+/// Project the typed `ExperimentConfig` to the flat JSON shape the frontend
+/// consumes. Deliberately a hand-written subset (not a blanket serde dump): it
+/// omits `stimulus_geometry` (an analysis-time fact the UI doesn't edit) and
+/// renders enums as lowercase strings, exactly as the old descriptor did.
+fn experiment_to_json(exp: &ExperimentConfig) -> serde_json::Value {
+    let g = &exp.geometry;
+    let s = &exp.stimulus;
+    let p = &s.params;
+    let pr = &exp.presentation;
+    let t = &exp.timing;
     serde_json::json!({
         "geometry": {
-            "horizontal_offset_deg": snap.horizontal_offset_deg(),
-            "vertical_offset_deg": snap.vertical_offset_deg(),
-            "projection": format!("{:?}", snap.experiment_projection()).to_lowercase(),
+            "horizontal_offset_deg": g.horizontal_offset_deg,
+            "vertical_offset_deg": g.vertical_offset_deg,
+            "projection": format!("{:?}", g.projection).to_lowercase(),
         },
         "stimulus": {
-            "envelope": format!("{:?}", snap.stimulus_envelope()).to_lowercase(),
-            "carrier": format!("{:?}", snap.stimulus_carrier()).to_lowercase(),
+            "envelope": format!("{:?}", s.envelope).to_lowercase(),
+            "carrier": format!("{:?}", s.carrier).to_lowercase(),
             "params": {
-                "contrast": snap.contrast(),
-                "mean_luminance": snap.mean_luminance(),
-                "background_luminance": snap.background_luminance(),
-                "check_size_deg": snap.check_size_deg(),
-                "check_size_cm": snap.check_size_cm(),
-                "strobe_frequency_hz": snap.strobe_frequency_hz(),
-                "stimulus_width_deg": snap.stimulus_width_deg(),
-                "sweep_speed_deg_per_sec": snap.sweep_speed_deg_per_sec(),
-                "rotation_speed_deg_per_sec": snap.rotation_speed_deg_per_sec(),
-                "expansion_speed_deg_per_sec": snap.expansion_speed_deg_per_sec(),
-                "rotation_deg": snap.rotation_deg(),
+                "contrast": p.contrast,
+                "mean_luminance": p.mean_luminance,
+                "background_luminance": p.background_luminance,
+                "check_size_deg": p.check_size_deg,
+                "check_size_cm": p.check_size_cm,
+                "strobe_frequency_hz": p.strobe_frequency_hz,
+                "stimulus_width_deg": p.stimulus_width_deg,
+                "sweep_speed_deg_per_sec": p.sweep_speed_deg_per_sec,
+                "rotation_speed_deg_per_sec": p.rotation_speed_deg_per_sec,
+                "expansion_speed_deg_per_sec": p.expansion_speed_deg_per_sec,
+                "rotation_deg": p.rotation_deg,
             }
         },
         "presentation": {
-            "conditions": snap.conditions(),
-            "repetitions": snap.repetitions(),
-            "structure": format!("{:?}", snap.presentation_structure()).to_lowercase(),
-            "order": format!("{:?}", snap.presentation_order()).to_lowercase(),
+            "conditions": pr.conditions,
+            "repetitions": pr.repetitions,
+            "structure": format!("{:?}", pr.structure).to_lowercase(),
+            "order": format!("{:?}", pr.order).to_lowercase(),
         },
         "timing": {
-            "baseline_start_sec": snap.baseline_start_sec(),
-            "baseline_end_sec": snap.baseline_end_sec(),
-            "inter_stimulus_sec": snap.inter_stimulus_sec(),
-            "inter_direction_sec": snap.inter_direction_sec(),
+            "baseline_start_sec": t.baseline_start_sec,
+            "baseline_end_sec": t.baseline_end_sec,
+            "inter_stimulus_sec": t.inter_stimulus_sec,
+            "inter_direction_sec": t.inter_direction_sec,
         }
     })
-}
-
-/// Apply experiment fields from a JSON value to the registry.
-fn apply_experiment_json(
-    reg: &mut crate::params::Registry,
-    json: &serde_json::Value,
-) -> AppResult<()> {
-    reg.batch(|r| -> AppResult<()> {
-        // Geometry
-        if let Some(g) = json.get("geometry") {
-            if let Some(v) = g.get("horizontal_offset_deg").and_then(|v| v.as_f64()) {
-                r.set(ParamId::HorizontalOffsetDeg, ParamValue::F64(v))?;
-            }
-            if let Some(v) = g.get("vertical_offset_deg").and_then(|v| v.as_f64()) {
-                r.set(ParamId::VerticalOffsetDeg, ParamValue::F64(v))?;
-            }
-            if let Some(v) = g.get("projection").and_then(|v| v.as_str())
-                && let Ok(p) =
-                    serde_json::from_value::<crate::params::Projection>(serde_json::json!(v))
-            {
-                r.set(ParamId::ExperimentProjection, ParamValue::Projection(p))?;
-            }
-        }
-        // Stimulus
-        if let Some(s) = json.get("stimulus") {
-            if let Some(v) = s.get("envelope").and_then(|v| v.as_str())
-                && let Ok(e) =
-                    serde_json::from_value::<crate::params::Envelope>(serde_json::json!(v))
-            {
-                r.set(ParamId::StimulusEnvelope, ParamValue::Envelope(e))?;
-            }
-            if let Some(v) = s.get("carrier").and_then(|v| v.as_str())
-                && let Ok(c) =
-                    serde_json::from_value::<crate::params::Carrier>(serde_json::json!(v))
-            {
-                r.set(ParamId::StimulusCarrier, ParamValue::Carrier(c))?;
-            }
-            if let Some(p) = s.get("params") {
-                if let Some(v) = p.get("contrast").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::Contrast, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("mean_luminance").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::MeanLuminance, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("background_luminance").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::BackgroundLuminance, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("check_size_deg").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::CheckSizeDeg, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("check_size_cm").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::CheckSizeCm, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("strobe_frequency_hz").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::StrobeFrequencyHz, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("stimulus_width_deg").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::StimulusWidthDeg, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("sweep_speed_deg_per_sec").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::SweepSpeedDegPerSec, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("rotation_speed_deg_per_sec").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::RotationSpeedDegPerSec, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p
-                    .get("expansion_speed_deg_per_sec")
-                    .and_then(|v| v.as_f64())
-                {
-                    r.set(ParamId::ExpansionSpeedDegPerSec, ParamValue::F64(v))?;
-                }
-                if let Some(v) = p.get("rotation_deg").and_then(|v| v.as_f64()) {
-                    r.set(ParamId::RotationDeg, ParamValue::F64(v))?;
-                }
-            }
-        }
-        // Presentation
-        if let Some(p) = json.get("presentation") {
-            if let Some(arr) = p.get("conditions").and_then(|v| v.as_array()) {
-                let conds: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-                r.set(ParamId::Conditions, ParamValue::StringVec(conds))?;
-            }
-            if let Some(v) = p.get("repetitions").and_then(|v| v.as_u64()) {
-                r.set(ParamId::Repetitions, ParamValue::U32(v as u32))?;
-            }
-            if let Some(v) = p.get("structure").and_then(|v| v.as_str())
-                && let Ok(s) =
-                    serde_json::from_value::<crate::params::Structure>(serde_json::json!(v))
-            {
-                r.set(ParamId::PresentationStructure, ParamValue::Structure(s))?;
-            }
-            if let Some(v) = p.get("order").and_then(|v| v.as_str())
-                && let Ok(o) = serde_json::from_value::<crate::params::Order>(serde_json::json!(v))
-            {
-                r.set(ParamId::PresentationOrder, ParamValue::Order(o))?;
-            }
-        }
-        // Timing
-        if let Some(t) = json.get("timing") {
-            if let Some(v) = t.get("baseline_start_sec").and_then(|v| v.as_f64()) {
-                r.set(ParamId::BaselineStartSec, ParamValue::F64(v))?;
-            }
-            if let Some(v) = t.get("baseline_end_sec").and_then(|v| v.as_f64()) {
-                r.set(ParamId::BaselineEndSec, ParamValue::F64(v))?;
-            }
-            if let Some(v) = t.get("inter_stimulus_sec").and_then(|v| v.as_f64()) {
-                r.set(ParamId::InterStimulusSec, ParamValue::F64(v))?;
-            }
-            if let Some(v) = t.get("inter_direction_sec").and_then(|v| v.as_f64()) {
-                r.set(ParamId::InterDirectionSec, ParamValue::F64(v))?;
-            }
-        }
-        Ok(())
-    })?;
-    Ok(())
 }

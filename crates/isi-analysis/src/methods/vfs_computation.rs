@@ -7,27 +7,23 @@
 use crate::compute;
 
 /// Method choice for computing the visual field sign.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum VfsComputationMethod {
-    /// OpenISI chain-rule phasor gradient. Computes phase gradients via
-    /// the chain rule on the smoothed phasor `z = c + i·s`:
-    /// `∂φ/∂x = (c·∂s/∂x − s·∂c/∂x) / |z|²`,
-    /// then VFS = `sin(θ_alt − θ_azi)` where
-    /// `θ = atan2(∂φ/∂y, ∂φ/∂x)`. Mathematically equivalent to Allen
-    /// `visualSignMap` (`RetinotopicMapping.py` L113–147) but more
-    /// numerically stable near phase wraps.
-    OpenIsiChainRulePhasorGradient,
+///
+/// Canonical type: [`openisi_params::config::analysis::VfsComputation`] (UNIFY);
+/// compute behavior is attached via [`VfsComputationExt`].
+pub use openisi_params::config::analysis::VfsComputation as VfsComputationMethod;
+
+/// Compute behavior for the VFS-computation stage (extension trait).
+pub trait VfsComputationExt {
+    /// Compute VFS and the four phase gradients (magnification consumes them).
+    fn apply(
+        &self,
+        azi_z_smoothed: &compute::Complex2,
+        alt_z_smoothed: &compute::Complex2,
+    ) -> (BurnTensor2, BurnTensor2, BurnTensor2, BurnTensor2, BurnTensor2);
 }
 
-impl VfsComputationMethod {
-    pub fn open_isi_chain_rule_phasor_gradient() -> Self {
-        Self::OpenIsiChainRulePhasorGradient
-    }
-
-    /// Compute VFS and the four phase gradients (magnification consumes
-    /// them).
-    pub fn apply(
+impl VfsComputationExt for VfsComputationMethod {
+    fn apply(
         &self,
         azi_z_smoothed: &compute::Complex2,
         alt_z_smoothed: &compute::Complex2,

@@ -48,13 +48,14 @@ use openisi_stimulus::sequencer::{Sequencer, SequencerConfig};
 use crate::error::AcquisitionError;
 #[cfg(windows)]
 use crate::messages::{
-    AcquisitionCommand, AcquisitionResult, StimulusCmd, StimulusEvt, StimulusFrameRecord,
-    StimulusPreviewFrame,
+    AcquisitionResult, StimulusCmd, StimulusEvt, StimulusFrameRecord, StimulusPreviewFrame,
 };
 #[cfg(windows)]
 use crate::monitor::find_dxgi_output;
 #[cfg(windows)]
-use crate::params::{Envelope, RegistrySnapshot};
+use crate::params::Envelope;
+#[cfg(windows)]
+use openisi_params::config::ConfigSnapshot;
 
 // =============================================================================
 // Shared configuration
@@ -420,150 +421,128 @@ fn capture_preview_frame(
 
 #[cfg(windows)]
 fn build_sequencer_config(
-    snap: &RegistrySnapshot,
+    cs: &ConfigSnapshot,
     monitor: &crate::session::MonitorInfo,
 ) -> SequencerConfig {
-    let sweep_duration_sec = compute_sweep_duration(snap, monitor);
+    let sweep_duration_sec = compute_sweep_duration(cs, monitor);
 
     SequencerConfig {
-        conditions: snap.conditions().to_vec(),
-        repetitions: snap.repetitions(),
-        order: snap.presentation_order(),
-        baseline_start_sec: snap.baseline_start_sec(),
-        baseline_end_sec: snap.baseline_end_sec(),
-        inter_stimulus_sec: snap.inter_stimulus_sec(),
-        inter_direction_sec: snap.inter_direction_sec(),
+        conditions: cs.experiment.presentation.conditions.clone(),
+        repetitions: cs.experiment.presentation.repetitions,
+        order: cs.experiment.presentation.order,
+        baseline_start_sec: cs.experiment.timing.baseline_start_sec,
+        baseline_end_sec: cs.experiment.timing.baseline_end_sec,
+        inter_stimulus_sec: cs.experiment.timing.inter_stimulus_sec,
+        inter_direction_sec: cs.experiment.timing.inter_direction_sec,
         sweep_duration_sec,
     }
 }
 
 #[cfg(windows)]
-fn compute_sweep_duration(snap: &RegistrySnapshot, monitor: &crate::session::MonitorInfo) -> f64 {
-    let envelope = snap.stimulus_envelope();
-
+fn compute_sweep_duration(cs: &ConfigSnapshot, monitor: &crate::session::MonitorInfo) -> f64 {
+    let p = &cs.experiment.stimulus.params;
     let geometry = DisplayGeometry::new(
-        snap.experiment_projection(),
-        snap.viewing_distance_cm(),
-        snap.horizontal_offset_deg(),
-        snap.vertical_offset_deg(),
-        snap.bisector_x_cm(),
-        snap.bisector_y_cm(),
-        // EDID (`monitor.width_cm`/`height_cm`) is the auto-detected ground
-        // truth. The registry's MonitorWidthCm/HeightCm params are reserved
-        // for explicit user calibration â€” wired through `effective_monitor_cm`
-        // so they win only when the user has set them.
-        // Effective panel cm: user-calibrated MonitorWidthCm/HeightCm if
-        // explicitly set in the UI/overlay, else the EDID hardware value
-        // already injected into the registry's HardwareContext at startup.
-        snap.effective_monitor_width_cm()
-            .unwrap_or(monitor.width_cm),
-        snap.effective_monitor_height_cm()
-            .unwrap_or(monitor.height_cm),
+        cs.experiment.geometry.projection,
+        cs.rig.geometry.viewing_distance_cm,
+        cs.experiment.geometry.horizontal_offset_deg,
+        cs.experiment.geometry.vertical_offset_deg,
+        cs.rig.geometry.bisector_x_cm,
+        cs.rig.geometry.bisector_y_cm,
+        // Effective panel cm: user-calibrated monitor cm if explicitly set,
+        // else the EDID hardware value.
+        cs.effective_monitor_width_cm().unwrap_or(monitor.width_cm),
+        cs.effective_monitor_height_cm().unwrap_or(monitor.height_cm),
         monitor.width_px,
         monitor.height_px,
     );
 
-    match envelope {
+    match cs.experiment.stimulus.envelope {
         Envelope::Fullfield => 0.0,
         Envelope::Bar => {
-            let vf_width = geometry.visual_field_width_deg();
-            let total_travel = vf_width + snap.stimulus_width_deg();
-            total_travel / snap.sweep_speed_deg_per_sec()
+            let total_travel = geometry.visual_field_width_deg() + p.stimulus_width_deg;
+            total_travel / p.sweep_speed_deg_per_sec
         }
-        Envelope::Wedge => 360.0 / snap.rotation_speed_deg_per_sec(),
+        Envelope::Wedge => 360.0 / p.rotation_speed_deg_per_sec,
         Envelope::Ring => {
-            let max_ecc = geometry.get_max_eccentricity_deg();
-            let total_travel = max_ecc + snap.stimulus_width_deg();
-            total_travel / snap.expansion_speed_deg_per_sec()
+            let total_travel = geometry.get_max_eccentricity_deg() + p.stimulus_width_deg;
+            total_travel / p.expansion_speed_deg_per_sec
         }
     }
 }
 
 #[cfg(windows)]
-fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
+fn build_dataset_config(
+    cs: &ConfigSnapshot,
+    monitor: &crate::session::MonitorInfo,
+    measured_refresh_hz: f64,
+) -> DatasetConfig {
     use std::collections::HashMap;
 
-    let snap = &cfg.snapshot;
-    let envelope = snap.stimulus_envelope();
-
+    let p = &cs.experiment.stimulus.params;
     let geometry = DisplayGeometry::new(
-        snap.experiment_projection(),
-        snap.viewing_distance_cm(),
-        snap.horizontal_offset_deg(),
-        snap.vertical_offset_deg(),
-        snap.bisector_x_cm(),
-        snap.bisector_y_cm(),
-        snap.effective_monitor_width_cm()
-            .unwrap_or(cfg.monitor.width_cm),
-        snap.effective_monitor_height_cm()
-            .unwrap_or(cfg.monitor.height_cm),
-        cfg.monitor.width_px,
-        cfg.monitor.height_px,
+        cs.experiment.geometry.projection,
+        cs.rig.geometry.viewing_distance_cm,
+        cs.experiment.geometry.horizontal_offset_deg,
+        cs.experiment.geometry.vertical_offset_deg,
+        cs.rig.geometry.bisector_x_cm,
+        cs.rig.geometry.bisector_y_cm,
+        cs.effective_monitor_width_cm().unwrap_or(monitor.width_cm),
+        cs.effective_monitor_height_cm().unwrap_or(monitor.height_cm),
+        monitor.width_px,
+        monitor.height_px,
     );
 
-    // Build stimulus params map from snapshot values.
+    // Build stimulus params map from the typed config values.
     let mut stimulus_params: HashMap<String, serde_json::Value> = HashMap::new();
-    stimulus_params.insert("contrast".into(), serde_json::json!(snap.contrast()));
-    stimulus_params.insert(
-        "mean_luminance".into(),
-        serde_json::json!(snap.mean_luminance()),
-    );
+    stimulus_params.insert("contrast".into(), serde_json::json!(p.contrast));
+    stimulus_params.insert("mean_luminance".into(), serde_json::json!(p.mean_luminance));
     stimulus_params.insert(
         "background_luminance".into(),
-        serde_json::json!(snap.background_luminance()),
+        serde_json::json!(p.background_luminance),
     );
-    stimulus_params.insert(
-        "check_size_deg".into(),
-        serde_json::json!(snap.check_size_deg()),
-    );
-    stimulus_params.insert(
-        "check_size_cm".into(),
-        serde_json::json!(snap.check_size_cm()),
-    );
+    stimulus_params.insert("check_size_deg".into(), serde_json::json!(p.check_size_deg));
+    stimulus_params.insert("check_size_cm".into(), serde_json::json!(p.check_size_cm));
     stimulus_params.insert(
         "strobe_frequency_hz".into(),
-        serde_json::json!(snap.strobe_frequency_hz()),
+        serde_json::json!(p.strobe_frequency_hz),
     );
     stimulus_params.insert(
         "stimulus_width_deg".into(),
-        serde_json::json!(snap.stimulus_width_deg()),
+        serde_json::json!(p.stimulus_width_deg),
     );
     stimulus_params.insert(
         "sweep_speed_deg_per_sec".into(),
-        serde_json::json!(snap.sweep_speed_deg_per_sec()),
+        serde_json::json!(p.sweep_speed_deg_per_sec),
     );
     stimulus_params.insert(
         "rotation_speed_deg_per_sec".into(),
-        serde_json::json!(snap.rotation_speed_deg_per_sec()),
+        serde_json::json!(p.rotation_speed_deg_per_sec),
     );
     stimulus_params.insert(
         "expansion_speed_deg_per_sec".into(),
-        serde_json::json!(snap.expansion_speed_deg_per_sec()),
+        serde_json::json!(p.expansion_speed_deg_per_sec),
     );
-    stimulus_params.insert(
-        "rotation_deg".into(),
-        serde_json::json!(snap.rotation_deg()),
-    );
+    stimulus_params.insert("rotation_deg".into(), serde_json::json!(p.rotation_deg));
 
     DatasetConfig {
-        envelope,
+        envelope: cs.experiment.stimulus.envelope,
         stimulus_params,
-        conditions: snap.conditions().to_vec(),
-        repetitions: snap.repetitions(),
-        order: snap.presentation_order(),
-        baseline_start_sec: snap.baseline_start_sec(),
-        baseline_end_sec: snap.baseline_end_sec(),
-        inter_stimulus_sec: snap.inter_stimulus_sec(),
-        inter_direction_sec: snap.inter_direction_sec(),
-        sweep_duration_sec: compute_sweep_duration(snap, &cfg.monitor),
+        conditions: cs.experiment.presentation.conditions.clone(),
+        repetitions: cs.experiment.presentation.repetitions,
+        order: cs.experiment.presentation.order,
+        baseline_start_sec: cs.experiment.timing.baseline_start_sec,
+        baseline_end_sec: cs.experiment.timing.baseline_end_sec,
+        inter_stimulus_sec: cs.experiment.timing.inter_stimulus_sec,
+        inter_direction_sec: cs.experiment.timing.inter_direction_sec,
+        sweep_duration_sec: compute_sweep_duration(cs, monitor),
         geometry,
-        display_physical_source: cfg.monitor.physical_source.clone(),
-        reported_refresh_hz: cfg.monitor.refresh_hz as f64,
-        measured_refresh_hz: cfg.measured_refresh_hz,
-        target_stimulus_fps: snap.target_stimulus_fps(),
-        drop_detection_warmup_frames: snap.drop_detection_warmup_frames(),
-        drop_detection_threshold: snap.drop_detection_threshold(),
-        fps_window_frames: snap.fps_window_frames(),
+        display_physical_source: monitor.physical_source.clone(),
+        reported_refresh_hz: monitor.refresh_hz as f64,
+        measured_refresh_hz,
+        target_stimulus_fps: cs.rig.display.target_stimulus_fps,
+        drop_detection_warmup_frames: cs.rig.system.drop_detection_warmup_frames,
+        drop_detection_threshold: cs.rig.system.drop_detection_threshold,
+        fps_window_frames: cs.rig.system.fps_window_frames,
     }
 }
 
@@ -571,7 +550,7 @@ fn build_dataset_config(cfg: &AcquisitionCommand) -> DatasetConfig {
 /// Build renderer config from a snapshot + monitor info.
 /// Used for both acquisition (with monitor rotation) and preview (without).
 fn build_renderer_config_from_snapshot(
-    snap: &RegistrySnapshot,
+    cs: &ConfigSnapshot,
     monitor: &crate::session::MonitorInfo,
     apply_rotation: bool,
 ) -> RendererConfig {
@@ -590,8 +569,8 @@ fn build_renderer_config_from_snapshot(
     // geometry + the WGSL shader) and validating the rendered angles *on the
     // physical display* — that on-hardware validation can't be faked, so the
     // feature is deferred with cause rather than shipped unvalidated.
-    let yaw_deg = snap.monitor_yaw_deg();
-    let pitch_deg = snap.monitor_pitch_deg();
+    let yaw_deg = cs.rig.geometry.monitor_yaw_deg;
+    let pitch_deg = cs.rig.geometry.monitor_pitch_deg;
     if yaw_deg.abs() > f64::EPSILON || pitch_deg.abs() > f64::EPSILON {
         tracing::warn!(
             yaw_deg,
@@ -604,24 +583,21 @@ fn build_renderer_config_from_snapshot(
     }
 
     let (w_cm, h_cm, w_px, h_px) = (
-        // Effective panel cm: user-calibrated MonitorWidthCm/HeightCm if
-        // explicitly set in the UI/overlay, else the EDID hardware value
-        // already injected into the registry's HardwareContext at startup.
-        snap.effective_monitor_width_cm()
-            .unwrap_or(monitor.width_cm),
-        snap.effective_monitor_height_cm()
-            .unwrap_or(monitor.height_cm),
+        // Effective panel cm: user-calibrated monitor cm if explicitly set,
+        // else the EDID hardware value.
+        cs.effective_monitor_width_cm().unwrap_or(monitor.width_cm),
+        cs.effective_monitor_height_cm().unwrap_or(monitor.height_cm),
         monitor.width_px,
         monitor.height_px,
     );
 
     let geometry = DisplayGeometry::new(
-        snap.experiment_projection(),
-        snap.viewing_distance_cm(),
-        snap.horizontal_offset_deg(),
-        snap.vertical_offset_deg(),
-        snap.bisector_x_cm(),
-        snap.bisector_y_cm(),
+        cs.experiment.geometry.projection,
+        cs.rig.geometry.viewing_distance_cm,
+        cs.experiment.geometry.horizontal_offset_deg,
+        cs.experiment.geometry.vertical_offset_deg,
+        cs.rig.geometry.bisector_x_cm,
+        cs.rig.geometry.bisector_y_cm,
         w_cm,
         h_cm,
         w_px,
@@ -629,26 +605,27 @@ fn build_renderer_config_from_snapshot(
     );
 
     let max_ecc = geometry.get_max_eccentricity_deg() as f32;
-    let strobe_hz = snap.strobe_frequency_hz();
-    let fov_mask = compute_fov_mask_bounds(&geometry, snap);
+    let p = &cs.experiment.stimulus.params;
+    let strobe_hz = p.strobe_frequency_hz;
+    let fov_mask = compute_fov_mask_bounds(&geometry, cs);
 
     RendererConfig {
         visual_field_width_deg: geometry.visual_field_width_deg() as f32,
         visual_field_height_deg: geometry.visual_field_height_deg() as f32,
-        projection_type: snap.experiment_projection().to_shader_int(),
-        viewing_distance_cm: snap.viewing_distance_cm() as f32,
+        projection_type: cs.experiment.geometry.projection.to_shader_int(),
+        viewing_distance_cm: cs.rig.geometry.viewing_distance_cm as f32,
         display_width_cm: w_cm as f32,
         display_height_cm: h_cm as f32,
-        center_azimuth_deg: snap.horizontal_offset_deg() as f32,
-        center_elevation_deg: snap.vertical_offset_deg() as f32,
+        center_azimuth_deg: cs.experiment.geometry.horizontal_offset_deg as f32,
+        center_elevation_deg: cs.experiment.geometry.vertical_offset_deg as f32,
 
-        carrier_type: snap.stimulus_carrier().to_shader_int(),
-        check_size_deg: snap.check_size_deg() as f32,
-        check_size_cm: snap.check_size_cm() as f32,
-        contrast: snap.contrast() as f32,
-        mean_luminance: snap.mean_luminance() as f32,
-        luminance_high: snap.luminance_high() as f32,
-        luminance_low: snap.luminance_low() as f32,
+        carrier_type: cs.experiment.stimulus.carrier.to_shader_int(),
+        check_size_deg: p.check_size_deg as f32,
+        check_size_cm: p.check_size_cm as f32,
+        contrast: p.contrast as f32,
+        mean_luminance: p.mean_luminance as f32,
+        luminance_high: cs.luminance_high() as f32,
+        luminance_low: cs.luminance_low() as f32,
 
         strobe_frequency_hz: if strobe_hz > 0.0 {
             strobe_hz as f32
@@ -656,14 +633,14 @@ fn build_renderer_config_from_snapshot(
             0.0
         },
 
-        envelope_type: snap.stimulus_envelope().to_shader_int(),
-        stimulus_width_deg: snap.stimulus_width_deg() as f32,
-        rotation_deg: snap.rotation_deg() as f32,
-        background_luminance: snap.background_luminance() as f32,
+        envelope_type: cs.experiment.stimulus.envelope.to_shader_int(),
+        stimulus_width_deg: p.stimulus_width_deg as f32,
+        rotation_deg: p.rotation_deg as f32,
+        background_luminance: p.background_luminance as f32,
         max_eccentricity_deg: max_ecc,
 
         monitor_rotation_deg: if apply_rotation {
-            snap.monitor_rotation_deg() as f32
+            cs.rig.display.monitor_rotation_deg as f32
         } else {
             0.0
         },
@@ -678,13 +655,13 @@ fn build_renderer_config_from_snapshot(
         // bar/wedge/ring pixel outside the declared (az, el) box. Center
         // comes from `OffsetAzi`/`OffsetAlt` so the masked region tracks
         // the experimenter-declared visual-field center.
-        swept_range_width_deg: snap.azi_angular_range() as f32,
-        swept_range_height_deg: snap.alt_angular_range() as f32,
-        swept_center_az_deg: snap.offset_azi() as f32,
-        swept_center_el_deg: snap.offset_alt() as f32,
+        swept_range_width_deg: cs.experiment.stimulus_geometry.azi_angular_range as f32,
+        swept_range_height_deg: cs.experiment.stimulus_geometry.alt_angular_range as f32,
+        swept_center_az_deg: cs.experiment.stimulus_geometry.offset_azi as f32,
+        swept_center_el_deg: cs.experiment.stimulus_geometry.offset_alt as f32,
 
-        bisector_x_cm: snap.bisector_x_cm() as f32,
-        bisector_y_cm: snap.bisector_y_cm() as f32,
+        bisector_x_cm: cs.rig.geometry.bisector_x_cm as f32,
+        bisector_y_cm: cs.rig.geometry.bisector_y_cm as f32,
 
         // Project the four FOV envelope corners (in visual deg) to
         // monitor cm via the inverse spherical transform, then take
@@ -707,11 +684,12 @@ struct FovMaskBounds {
 }
 
 #[cfg(windows)]
-fn compute_fov_mask_bounds(geometry: &DisplayGeometry, snap: &RegistrySnapshot) -> FovMaskBounds {
-    let half_az = snap.azi_angular_range() * 0.5;
-    let half_el = snap.alt_angular_range() * 0.5;
-    let cx = snap.offset_azi();
-    let cy = snap.offset_alt();
+fn compute_fov_mask_bounds(geometry: &DisplayGeometry, cs: &ConfigSnapshot) -> FovMaskBounds {
+    let sg = &cs.experiment.stimulus_geometry;
+    let half_az = sg.azi_angular_range * 0.5;
+    let half_el = sg.alt_angular_range * 0.5;
+    let cx = sg.offset_azi;
+    let cy = sg.offset_alt;
     let corners = [
         (cx - half_az, cy - half_el),
         (cx + half_az, cy - half_el),
@@ -1036,8 +1014,11 @@ fn run_inner(
                     tracing::info!("starting acquisition");
                     previewing = false;
 
-                    // Update background from snapshot.
-                    bg_luminance = acq_cfg.snapshot.background_luminance();
+                    // The acquisition command carries the typed config directly.
+                    let cs = acq_cfg.snapshot;
+
+                    // Update background from the typed config.
+                    bg_luminance = cs.experiment.stimulus.params.background_luminance;
                     bg_color = wgpu::Color {
                         r: bg_luminance,
                         g: bg_luminance,
@@ -1045,17 +1026,15 @@ fn run_inner(
                         a: 1.0,
                     };
 
-                    let seq_cfg = build_sequencer_config(&acq_cfg.snapshot, &acq_cfg.monitor);
+                    let seq_cfg = build_sequencer_config(&cs, &acq_cfg.monitor);
                     sequencer.start(&seq_cfg);
 
-                    let render_cfg = build_renderer_config_from_snapshot(
-                        &acq_cfg.snapshot,
-                        &acq_cfg.monitor,
-                        true,
-                    );
+                    let render_cfg =
+                        build_renderer_config_from_snapshot(&cs, &acq_cfg.monitor, true);
                     renderer.configure(&render_cfg);
 
-                    let ds_cfg = build_dataset_config(&acq_cfg);
+                    let ds_cfg =
+                        build_dataset_config(&cs, &acq_cfg.monitor, acq_cfg.measured_refresh_hz);
                     let mut ds = StimulusDataset::new(ds_cfg);
                     ds.start_recording();
                     let now_us = qpc_to_us(query_qpc(), qpc_freq);
@@ -1086,7 +1065,9 @@ fn run_inner(
                 }
                 Ok(StimulusCmd::Preview(preview_cfg)) => {
                     tracing::info!("starting preview");
-                    bg_luminance = preview_cfg.snapshot.background_luminance();
+                    // The preview command carries the typed config directly.
+                    let cs = preview_cfg.snapshot;
+                    bg_luminance = cs.experiment.stimulus.params.background_luminance;
                     bg_color = wgpu::Color {
                         r: bg_luminance,
                         g: bg_luminance,
@@ -1094,7 +1075,7 @@ fn run_inner(
                         a: 1.0,
                     };
                     let render_cfg = build_renderer_config_from_snapshot(
-                        &preview_cfg.snapshot,
+                        &cs,
                         &preview_cfg.monitor,
                         false, // Preview shows mouse's perspective â€” no monitor rotation.
                     );
@@ -1124,8 +1105,7 @@ fn run_inner(
                     // (or rotation_speed / expansion_speed for wedge/ring)
                     // are visible. Clamp to â‰¥ 0.5 s to keep the preview
                     // useful even at very fast configured speeds.
-                    let sweep_duration =
-                        compute_sweep_duration(&preview_cfg.snapshot, &preview_cfg.monitor);
+                    let sweep_duration = compute_sweep_duration(&cs, &preview_cfg.monitor);
                     preview_cycle_sec_actual = (sweep_duration.max(0.5)) as f32;
                     tracing::debug!(
                         cycle_sec = preview_cycle_sec_actual,

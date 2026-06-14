@@ -18,7 +18,7 @@ use burn_tensor::Tensor;
 use super::backend::Backend;
 use super::complex::Complex2;
 use super::conversions;
-use crate::methods::CycleAverageMethod;
+use crate::methods::{CycleAverageExt, CycleAverageMethod};
 use crate::{AnalysisError, ComplexMaps, RawProcessingResult, ReliabilityMaps, ResponsivenessMaps};
 
 /// Stimulus direction. Replaces the `(is_azi, is_fwd)` tuple that used to

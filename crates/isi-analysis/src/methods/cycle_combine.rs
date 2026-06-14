@@ -11,40 +11,26 @@ use crate::compute;
 
 /// Method choice for combining forward and reverse sweep complex maps
 /// into a per-orientation position phasor.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum CycleCombineMethod {
-    /// Per-cycle delay subtraction (Kalatsky & Stryker 2003,
-    /// Neuron 38:529-545). Implemented in
-    /// `crate::compute::position_phasor_delay_subtracted`. The position
-    /// phasor `z = sqrt(z_fwd / z_rev)` removes the hemodynamic delay
-    /// common to both directions while preserving the position phase.
-    /// Marshel 2011 and Garrett 2014 inherit and use this technique;
-    /// they do not introduce it. Reference MATLAB: SNLC `Gprocesskret.m`.
-    KalatskyStryker2003DelaySubtraction,
+///
+/// Canonical type: [`openisi_params::config::analysis::CycleCombine`] (UNIFY);
+/// compute behavior is attached via [`CycleCombineExt`].
+pub use openisi_params::config::analysis::CycleCombine as CycleCombineMethod;
 
-    /// Unweighted cycle average — take the per-direction averaged
-    /// complex map directly without any delay correction. The phase
-    /// carries the hemodynamic delay (~1.5-3 s offset for mouse
-    /// cortex); not a published method (Kalatsky's whole point was
-    /// that this is wrong without separate hemodynamic correction).
-    /// Kept as a fallback for debugging or when delay subtraction is
-    /// somehow unwanted.
-    UnweightedCycleAverage,
-}
-
-impl CycleCombineMethod {
-    pub fn kalatsky_stryker2003_delay_subtraction() -> Self {
-        Self::KalatskyStryker2003DelaySubtraction
-    }
-
-    pub fn unweighted_cycle_average() -> Self {
-        Self::UnweightedCycleAverage
-    }
-
+/// Compute behavior for the cycle-combine stage (extension trait).
+pub trait CycleCombineExt {
     /// Combine the four direction-averaged complex maps into per-orientation
     /// position phasors. Operates on [`compute::Complex2`].
-    pub fn apply(
+    fn apply(
+        &self,
+        azi_fwd: &compute::Complex2,
+        azi_rev: &compute::Complex2,
+        alt_fwd: &compute::Complex2,
+        alt_rev: &compute::Complex2,
+    ) -> (compute::Complex2, compute::Complex2);
+}
+
+impl CycleCombineExt for CycleCombineMethod {
+    fn apply(
         &self,
         azi_fwd: &compute::Complex2,
         azi_rev: &compute::Complex2,

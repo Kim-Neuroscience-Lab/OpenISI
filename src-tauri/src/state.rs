@@ -35,7 +35,7 @@ use parking_lot::Mutex;
 
 use crate::export::{AcquisitionAccumulator, HardwareSnapshot};
 use crate::messages::{AnalysisCmd, AnalysisEvt, CameraCmd, CameraEvt, StimulusCmd, StimulusEvt};
-use crate::params::{Registry, RegistrySnapshot};
+use openisi_params::config::{ConfigSnapshot, ConfigStore};
 use crate::session::{MonitorInfo, Session};
 use crate::timing::TimingCharacterization;
 
@@ -124,8 +124,8 @@ pub struct AcquisitionState {
     /// Accumulates camera frames tagged by stimulus cycle.
     pub accumulator: AcquisitionAccumulator,
     // ── Acquisition-time snapshots (frozen at start) ────────────────
-    /// All parameter values frozen at acquisition start.
-    pub snapshot: RegistrySnapshot,
+    /// All parameter values frozen at acquisition start (typed config).
+    pub snapshot: ConfigSnapshot,
     /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
     pub hardware_snapshot: Option<HardwareSnapshot>,
     /// Timing characterization frozen at acquisition start.
@@ -167,8 +167,8 @@ pub struct PendingSave {
     pub schedule: crate::export::SweepSchedule,
     pub completed_normally: bool,
     // ── Acquisition-time snapshots (frozen at start) ──────────────
-    /// All parameter values frozen at acquisition start.
-    pub snapshot: RegistrySnapshot,
+    /// All parameter values frozen at acquisition start (typed config).
+    pub snapshot: ConfigSnapshot,
     /// Hardware snapshot (monitor + camera identity) frozen at acquisition start.
     pub hardware_snapshot: Option<HardwareSnapshot>,
     /// Timing characterization frozen at acquisition start.
@@ -198,8 +198,8 @@ pub struct AppState {
     /// Detected monitors — write-once at launch, read-only afterward.
     pub monitors: Arc<Vec<MonitorInfo>>,
 
-    /// Persistent parameter registry (single source of truth for all config).
-    pub registry: Arc<Mutex<Registry>>,
+    /// Persistent typed configuration store (single source of truth for all config).
+    pub config: Arc<Mutex<ConfigStore>>,
     /// Volatile hardware/display/camera session state.
     pub session: Arc<Mutex<Session>>,
     /// Recording hot path: frame + timing ring + acquisition accumulator.
@@ -222,14 +222,18 @@ pub struct AppState {
 const CAMERA_RING_CAPACITY: usize = 500;
 
 impl AppState {
-    /// Create initial state from the loaded registry and the freshly-created
+    /// Create initial state from the loaded config store and the freshly-created
     /// thread channels + detected monitors. Setup mutates the (un-cloned)
     /// `Arc` contents before managing the state.
-    pub fn new(registry: Registry, threads: ThreadHandles, monitors: Vec<MonitorInfo>) -> Self {
+    pub fn new(
+        config: ConfigStore,
+        threads: ThreadHandles,
+        monitors: Vec<MonitorInfo>,
+    ) -> Self {
         Self {
             threads,
             monitors: Arc::new(monitors),
-            registry: Arc::new(Mutex::new(registry)),
+            config: Arc::new(Mutex::new(config)),
             session: Arc::new(Mutex::new(Session::new())),
             capture: Arc::new(Mutex::new(Capture {
                 latest_frame: None,
@@ -246,8 +250,8 @@ impl AppState {
     }
 
     /// Spawn the stimulus thread for the given monitor. Reads system tuning
-    /// from the registry, then spawns. The caller must NOT hold any other
-    /// lock — this takes the registry and stimulus-spawn locks internally.
+    /// from the config store, then spawns. The caller must NOT hold any other
+    /// lock — this takes the config and stimulus-spawn locks internally.
     pub fn spawn_stimulus_thread(&self, monitor: &MonitorInfo) {
         // Take the one-time spawn handles. If already spawned or missing, bail.
         let (cmd_rx, evt_tx) = {
@@ -273,23 +277,23 @@ impl AppState {
         let height = monitor.height_px;
         let position = monitor.position;
 
-        // Read system tuning and initial background from the registry into the
-        // stimulus thread's config. `drop_detection_threshold` is intentionally
-        // not passed — the live stimulus thread uses absolute DWM present-count
-        // gaps directly.
+        // Read system tuning and initial background into the stimulus thread's
+        // config from the typed config snapshot. `drop_detection_threshold` is
+        // intentionally not passed — the live stimulus thread uses absolute DWM
+        // present-count gaps.
         let config = {
-            let reg = self.registry.lock();
+            let cs = self.config.lock().snapshot();
             crate::stimulus_thread::StimulusConfig {
                 monitor_index,
                 monitor_width_px: width,
                 monitor_height_px: height,
                 monitor_position: position,
-                preview_width_px: reg.preview_width_px(),
-                preview_interval_ms: reg.preview_interval_ms(),
-                preview_cycle_sec: reg.preview_cycle_sec(),
-                idle_sleep_ms: reg.idle_sleep_ms(),
-                drop_detection_warmup_frames: reg.drop_detection_warmup_frames(),
-                initial_bg_luminance: reg.background_luminance(),
+                preview_width_px: cs.rig.system.preview_width_px,
+                preview_interval_ms: cs.rig.system.preview_interval_ms,
+                preview_cycle_sec: cs.rig.system.preview_cycle_sec,
+                idle_sleep_ms: cs.rig.system.idle_sleep_ms,
+                drop_detection_warmup_frames: cs.rig.system.drop_detection_warmup_frames,
+                initial_bg_luminance: cs.experiment.stimulus.params.background_luminance,
             }
         };
 

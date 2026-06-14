@@ -23,7 +23,7 @@ mod tests {
         gaussian_smooth, phase_gradients, position_amplitude, position_gaussian_smooth,
         position_phasor_delay_subtracted, real_gradients, tensor_to_array2_f64, Backend, Complex2,
     };
-    use crate::methods::patch_threshold::PatchThresholdMethod;
+    use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
     use crate::test_support::{count_differing, load_f32, load_f64};
     use burn_tensor::{Tensor, TensorData};
     use ndarray::Array2;

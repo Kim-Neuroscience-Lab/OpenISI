@@ -1,0 +1,10 @@
+# OpenISI -> NWB export bridge (export-time only; not needed for acquisition or
+# analysis, which are pure Rust). Pinned to the lower bounds validated against the
+# ndx-openisi spec + the conformance gate (tools/export_nwb/validate_export.py).
+pynwb>=3.1.0
+nwbinspector>=0.7.0
+h5py>=3.10.0
+numpy>=1.26.0
+# DANDI metadata-conformance validator (`dandi validate`) — local validation
+# only; no account needed (we validate for conformance, we do not upload).
+dandi>=0.60.0

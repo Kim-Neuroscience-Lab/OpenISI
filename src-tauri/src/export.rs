@@ -28,8 +28,6 @@ pub struct HardwareSnapshot {
     pub camera_height_px: u32,
 }
 
-use crate::params::RegistrySnapshot;
-
 /// Wrap a true HDF5-API failure during .oisi export. Used for dataset /
 /// group creation, attribute writes, and any libhdf5 call that produces
 /// an `hdf5::Error`. Frontend sees `category: "Analysis", code: "E_HDF5"`.
@@ -189,7 +187,7 @@ pub struct SessionMetadata {
 pub struct OisiBundle<'a> {
     pub stimulus_dataset: &'a StimulusDataset,
     pub camera_data: AccumulatedData,
-    pub snapshot: &'a RegistrySnapshot,
+    pub snapshot: &'a openisi_params::config::ConfigSnapshot,
     pub hardware: Option<&'a HardwareSnapshot>,
     pub schedule: &'a SweepSchedule,
     pub timing: Option<&'a crate::timing::TimingCharacterization>,
@@ -247,23 +245,19 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         .map_err(|e| hdf5_err(format!("Failed to serialize metadata: {e}")))?;
     write_str_attr(&file, "stimulus_metadata", &meta_json)?;
 
-    // Capture provenance — snapshot every Rig + Experiment parameter
-    // into the .oisi as `/rig_params` + `/experiment_params` JSON
-    // attributes. The tree is generated from the param-registry macro
-    // by `RegistrySnapshot::to_json_for_target` — no hand-maintained
-    // mirror of definitions.rs lives here. Adding a new Rig/Experiment
-    // param appears automatically in the captured provenance.
+    // Capture provenance — serialize the typed `RigConfig` + `ExperimentConfig`
+    // (derived from the acquisition snapshot) into the .oisi as `/rig_params` +
+    // `/experiment_params` JSON attributes. serde is the single source of the
+    // schema, so adding a config field appears automatically in the provenance.
+    // (This is the canonical, schema-bearing form — same keys + values as the
+    // former registry tree; readers navigate by key.)
     {
-        let rig_str = serde_json::to_string_pretty(
-            &snapshot.to_json_for_target(crate::params::PersistTarget::Rig),
-        )
-        .map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
+        let rig_str = serde_json::to_string_pretty(&snapshot.rig)
+            .map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
         write_str_attr(&file, "rig_params", &rig_str)?;
 
-        let exp_str = serde_json::to_string_pretty(
-            &snapshot.to_json_for_target(crate::params::PersistTarget::Experiment),
-        )
-        .map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
+        let exp_str = serde_json::to_string_pretty(&snapshot.experiment)
+            .map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
         write_str_attr(&file, "experiment_params", &exp_str)?;
     }
 
@@ -511,7 +505,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
 fn write_hardware_group(
     file: &hdf5::File,
     hw: &HardwareSnapshot,
-    snapshot: &RegistrySnapshot,
+    snapshot: &openisi_params::config::ConfigSnapshot,
 ) -> AppResult<()> {
     let group = file
         .create_group("hardware")
@@ -541,12 +535,12 @@ fn write_hardware_group(
     write_group_f64_attr(
         &group,
         "viewing_distance_cm",
-        snapshot.viewing_distance_cm(),
+        snapshot.rig.geometry.viewing_distance_cm,
     )?;
 
     // Camera acquisition config — exposure and binning at acquisition time.
-    write_group_u32_attr(&group, "camera_exposure_us", snapshot.camera_exposure_us())?;
-    let binning_val = snapshot.camera_binning();
+    write_group_u32_attr(&group, "camera_exposure_us", snapshot.rig.camera.exposure_us)?;
+    let binning_val = snapshot.rig.camera.binning;
     let attr = group
         .new_attr::<u16>()
         .create("camera_binning")
@@ -558,12 +552,12 @@ fn write_hardware_group(
     write_group_f64_attr(
         &group,
         "monitor_rotation_deg",
-        snapshot.monitor_rotation_deg(),
+        snapshot.rig.display.monitor_rotation_deg,
     )?;
     write_group_u32_attr(
         &group,
         "target_stimulus_fps",
-        snapshot.target_stimulus_fps(),
+        snapshot.rig.display.target_stimulus_fps,
     )?;
 
     Ok(())
@@ -986,10 +980,12 @@ mod tests {
             sweep_start_us: Vec::new(),
             sweep_end_us: Vec::new(),
         };
-        // Create a default registry snapshot for the test.
-        let snapshot =
-            crate::params::Registry::new(std::path::Path::new("."), std::path::Path::new("."))
-                .snapshot();
+        // Create a default typed config snapshot for the test.
+        let snapshot = openisi_params::config::ConfigStore::new(
+            std::path::Path::new("."),
+            std::path::Path::new("."),
+        )
+        .snapshot();
         let result = write_oisi(
             &tmp,
             OisiBundle {
