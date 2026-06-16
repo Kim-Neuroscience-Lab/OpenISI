@@ -1036,4 +1036,87 @@ mod tests {
 
         let _ = std::fs::remove_file(&tmp);
     }
+
+    /// A minimal valid `write_oisi` call — shared by the atomic-write integrity
+    /// tests below, which care about the file lifecycle, not the payload.
+    fn minimal_write_oisi(path: &std::path::Path) -> AppResult<String> {
+        let mut ds = test_stimulus_dataset();
+        ds.start_recording();
+        let data = AccumulatedData {
+            frames: vec![vec![7u16; 4 * 4]; 2],
+            hardware_timestamps_us: vec![1000, 2000],
+            system_timestamps_us: vec![1500, 2500],
+            sequence_numbers: vec![1, 2],
+            width: 4,
+            height: 4,
+        };
+        let schedule = SweepSchedule {
+            sweep_sequence: Vec::new(),
+            sweep_start_us: Vec::new(),
+            sweep_end_us: Vec::new(),
+        };
+        let snapshot = openisi_params::config::ConfigStore::new(
+            std::path::Path::new("."),
+            std::path::Path::new("."),
+        )
+        .snapshot();
+        write_oisi(
+            path,
+            OisiBundle {
+                stimulus_dataset: &ds,
+                camera_data: data,
+                snapshot: &snapshot,
+                hardware: None,
+                schedule: &schedule,
+                timing: None,
+                session_meta: None,
+                anatomical: None,
+                acquisition_complete: true,
+                stimulus_timing_validatable: true,
+            },
+        )
+    }
+
+    /// Atomic-write contract (see the protocol comment at the top of
+    /// `write_oisi`): a SUCCESSFUL write leaves the canonical `.oisi` and the
+    /// `.partial` is consumed by the rename — no leftover temp file is ever
+    /// observed next to a good file.
+    #[test]
+    fn write_oisi_success_leaves_no_partial() {
+        let tmp = std::env::temp_dir().join("openisi_integrity_success.oisi");
+        let partial = std::env::temp_dir().join("openisi_integrity_success.oisi.partial");
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&partial);
+
+        minimal_write_oisi(&tmp).expect("write should succeed");
+
+        assert!(tmp.exists(), "canonical .oisi must exist after success");
+        assert!(
+            !partial.exists(),
+            "the .partial must be consumed by the atomic rename, not left behind"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Atomic-write contract: a FAILED write must NEVER produce a canonical
+    /// `.oisi` at `path`. Here the parent directory does not exist, so file
+    /// creation fails. A reader that sees `<name>.oisi` can therefore trust it
+    /// is a complete file — an interrupted acquisition surfaces as a *missing*
+    /// `.oisi` (plus a forensic `.partial` when one got far enough to exist),
+    /// never as a half-written canonical file.
+    #[test]
+    fn write_oisi_failure_produces_no_canonical_file() {
+        let missing_dir = std::env::temp_dir().join("openisi_integrity_no_such_dir");
+        let _ = std::fs::remove_dir_all(&missing_dir);
+        let target = missing_dir.join("acq.oisi");
+
+        let result = minimal_write_oisi(&target);
+
+        assert!(result.is_err(), "write into a missing dir must fail");
+        assert!(
+            !target.exists(),
+            "no canonical .oisi may exist after a failed write"
+        );
+    }
 }
