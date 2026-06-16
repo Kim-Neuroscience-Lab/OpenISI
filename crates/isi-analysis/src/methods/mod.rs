@@ -13,7 +13,9 @@
 //! `UserPolygon`, `NoRestriction`, `None`) must explain why no citation
 //! applies — the variant is named for what it does (not what it cites).
 //!
-//! A citation-audit test (`tests/method_attribution_audit.rs`) enforces this.
+//! This is enforced by code review plus the per-method golden tests (see
+//! `docs/VALIDATION_SCORECARD.md`): a source-named variant that does not reach a
+//! golden against its reference is debt, tracked there.
 //!
 //! **What this module is NOT.** Stages whose math is universal across the
 //! published literature (per-cycle DFT, cycle-internal phase-locked

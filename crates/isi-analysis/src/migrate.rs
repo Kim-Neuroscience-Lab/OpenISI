@@ -12,7 +12,7 @@ use crate::AnalysisError;
 /// method plus *every* variant's default tunables, nested under variant subtrees.
 /// This is the historical "registry tree" shape the migration overlays onto and
 /// then collapses to the tagged schema. It is hardcoded here (rather than derived
-/// from a live registry) because migration is a fixed historical transform and
+/// from the live config) because migration is a fixed historical transform and
 /// this module is by design the one place legacy schema names + their fill-in
 /// defaults live. Values mirror `config/analysis.json`'s defaults exactly; the
 /// `*_falls_back_to_*_default` tests pin them.
@@ -114,7 +114,7 @@ pub fn translate_pre_2026_analysis_params(
     // Each carries a comment naming where (if anywhere) the value now lives.
     const LEGACY_ROOT_DROPS: &[&str] = &[
         // The pre-2026 fixed σ_px for sign-map smoothing. Re-derived from
-        // the registry default `sign_map_smoothing.gaussian.sigma_um` at
+        // the config default `sign_map_smoothing.gaussian.sigma_um` at
         // runtime (μm × camera_um_per_pixel). Forward-migrating the px
         // value would require knowing the capture-time `um_per_pixel`,
         // which pre-2026 files don't carry — best-effort would silently
@@ -122,7 +122,7 @@ pub fn translate_pre_2026_analysis_params(
         // default apply.
         "smoothing_sigma",
         // Stimulus geometry — now in `.oisi /experiment_params`, captured
-        // at acquisition time from the live registry.
+        // at acquisition time from the live config.
         "rotation_k",
         "azi_angular_range",
         "alt_angular_range",
@@ -167,7 +167,7 @@ pub fn translate_pre_2026_analysis_params(
         };
 
         // Build or replace new[stage]; fields missing from old fall through
-        // to the PARAM_DEFS defaults already present in new_tree.
+        // to the typed-config defaults already present in new_tree.
         let stage_entry = new_obj
             .entry((*stage).to_string())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -359,7 +359,7 @@ mod tests {
             "phase_smoothing": { "method": "open_isi_amp_weighted_phasor" }
         });
         let new = translate_pre_2026_analysis_params(&old).unwrap();
-        // PARAM_DEFS default for sigma_px is 1.0 (Allen phaseMapFilterSigma).
+        // The typed-config default for sigma_px is 1.0 (Allen phaseMapFilterSigma).
         assert_eq!(new["phase_smoothing"]["sigma_px"], json!(1.0));
         assert_current_schema(&new);
     }
@@ -458,7 +458,7 @@ mod tests {
         let stage = &new["patch_refinement"];
         assert_eq!(stage["split_overlap_thr"], json!(1.5));
         assert_eq!(stage["merge_overlap_thr"], json!(0.05));
-        // Unset fields take PARAM_DEFS defaults.
+        // Unset fields take the typed-config defaults.
         assert_eq!(stage["split_local_min_cut_step"], json!(5.0));
         assert_eq!(stage["visual_space_close_iter"], json!(15));
         assert_eq!(stage["small_patch_thr"], json!(100));

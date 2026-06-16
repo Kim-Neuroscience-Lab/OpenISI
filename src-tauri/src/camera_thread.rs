@@ -13,7 +13,7 @@ use crate::messages::{
 };
 
 /// System tuning values passed to the camera thread at startup.
-/// These are snapshot values from the registry — immutable for the thread's lifetime.
+/// These are snapshot values from the config — immutable for the thread's lifetime.
 struct CameraTuning {
     camera_first_frame_timeout_ms: u32,
     camera_first_frame_poll_ms: u32,

@@ -101,7 +101,7 @@ pub fn set_active_oisi(state: State<'_, SharedState>, path: String) -> AppResult
 }
 
 /// Migrate a pre-2026 `.oisi`'s `/analysis_params` to the current
-/// registry-tree schema, in place. Safe to call on any file: a no-op
+/// config-tree schema, in place. Safe to call on any file: a no-op
 /// message is returned when there's nothing to migrate. This is the
 /// in-app counterpart to the `oisi migrate` CLI, so a GUI-only user can
 /// bring an old file forward (e.g. when `run_analysis` refuses it).
@@ -165,7 +165,7 @@ pub fn get_analysis_params(state: State<'_, SharedState>) -> AppResult<serde_jso
 }
 
 pub fn get_analysis_params_impl(state: &SharedState) -> AppResult<serde_json::Value> {
-    // Capture the active path and a registry snapshot, dropping each guard
+    // Capture the active path and a config snapshot, dropping each guard
     // before any I/O.
     let path = state.active_oisi.lock().clone();
 

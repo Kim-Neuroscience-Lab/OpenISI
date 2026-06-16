@@ -12,8 +12,8 @@ use crate::state::AcquisitionState;
 use super::SharedState;
 
 /// Validate experiment parameters before acquisition or preview. Reads the typed
-/// [`ExperimentConfig`](openisi_params::config::ExperimentConfig) (derived from the
-/// live registry snapshot by the caller).
+/// [`ExperimentConfig`](openisi_params::config::ExperimentConfig) (taken from the
+/// live config snapshot by the caller).
 fn validate_experiment(exp: &openisi_params::config::ExperimentConfig) -> AppResult<()> {
     use crate::params::Envelope;
     let p = &exp.stimulus.params;

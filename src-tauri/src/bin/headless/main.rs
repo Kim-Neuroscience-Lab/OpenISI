@@ -830,7 +830,7 @@ fn select_stimulus_monitor(
     }
 }
 
-/// Open the first PCO camera, apply the registry-snapshot configuration (max
+/// Open the first PCO camera, apply the config-snapshot configuration (max
 /// pixel rate, binning, hardware binary timestamps, exposure) and arm it.
 ///
 /// This is the single shared camera-setup path for every headless hardware
@@ -951,7 +951,7 @@ fn cmd_camera_check(duration_sec: Option<f64>) -> AppResult<()> {
     }
     let _ = recorder.stop();
 
-    // Assess against the rig's drop-detection policy (registry SSoT), so the
+    // Assess against the rig's drop-detection policy (config SSoT), so the
     // test and the live acquisition path agree on what "dropped" and "too long
     // an interval" mean.
     let thr = QualityThresholds {
@@ -1658,7 +1658,7 @@ fn cmd_analyze(
 
     println!("Analyzing {}...", path.display());
     isi_analysis::analyze(path, &params, &progress, &cancel)?;
-    // Stamp the registry tree into /analysis_params for provenance.
+    // Stamp the config tree into /analysis_params for provenance.
     isi_analysis::io::write_analysis_params_attr(path, &params_tree)?;
     println!("Analysis complete");
     // Export figures (`--figures [dir]`). `Some(None)` = flag with no value →

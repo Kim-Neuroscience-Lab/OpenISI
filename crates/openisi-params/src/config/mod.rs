@@ -1,13 +1,11 @@
-//! Typed configuration (Phase 3) — the serde + schemars + garde replacement for
-//! the `define_params!` macro registry, built strangler-fig alongside it.
+//! Typed configuration — the serde + schemars + garde parameter system.
 //!
-//! Each `PersistTarget` becomes a typed struct tree: `RigConfig` (here),
-//! `ExperimentConfig`, `AnalysisConfig`. serde handles (de)serialization to JSON,
-//! schemars derives the UI/validation schema, garde validates. The analysis
-//! tagged enums (where `active_when` collapses into the variant structure) are
-//! the canonical method+tunable types, shared with `isi-analysis` (no bridge).
-//!
-//! Migrated domain-by-domain; not yet wired into the live registry/IPC.
+//! Each persist target is a typed struct tree: `RigConfig`, `ExperimentConfig`,
+//! `AnalysisConfig`. serde handles (de)serialization to JSON, schemars derives the
+//! UI/validation schema, garde validates. The analysis tagged enums — where a
+//! method's tunables exist only inside its selected variant, so variant activation
+//! is a type-level guarantee — are the canonical method+tunable types, shared
+//! directly with `isi-analysis` (no bridge).
 
 pub mod analysis;
 pub mod experiment;

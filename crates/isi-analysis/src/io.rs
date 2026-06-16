@@ -1561,10 +1561,10 @@ mod tests {
 
         // write_results no longer writes /analysis_params (the
         // orchestrator owns that via write_analysis_params_attr with
-        // the Registry tree). Confirm the attribute is absent here.
+        // the config tree). Confirm the attribute is absent here.
         assert!(read_analysis_params_attr(tmp.path()).unwrap().is_none());
 
-        // Then stamp a registry tree and verify it round-trips.
+        // Then stamp a config tree and verify it round-trips.
         let tree = serde_json::json!({"cycle_combine": {"method": "kalatsky_stryker2003_delay_subtraction"}});
         write_analysis_params_attr(tmp.path(), &tree).unwrap();
         let loaded = read_analysis_params_attr(tmp.path()).unwrap().unwrap();
@@ -1577,7 +1577,7 @@ mod tests {
 
     #[test]
     fn write_analysis_params_attr_round_trips_via_read() {
-        // Write a registry-tree JSON value, read it back, verify equality.
+        // Write a config-tree JSON value, read it back, verify equality.
         let tmp = TempFile::new("write_analysis_params");
         create(tmp.path(), "test").unwrap();
 

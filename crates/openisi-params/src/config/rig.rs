@@ -1,11 +1,7 @@
-//! Typed **Rig** configuration — the serde + schemars + garde replacement for the
-//! macro registry's `PersistTarget::Rig` parameters (Phase 3, strangler-fig).
-//!
-//! This is built ALONGSIDE the existing `Registry`/`define_params!` and is not
-//! yet wired into persistence or the IPC surface — that happens as consumers
-//! migrate. Field **defaults** (`impl Default`) and **validation bounds**
-//! (`#[garde(...)]`) mirror `definitions.rs` exactly; the bit-identical
-//! regression gate is the proof that nothing drifted.
+//! Typed **Rig** configuration — the serde + schemars + garde struct tree for the
+//! rig parameters. Field **defaults** (`impl Default`) and **validation bounds**
+//! (`#[garde(...)]`) are the canonical values; the bit-identical regression gate
+//! is the proof that the analysis pipeline reads them unchanged.
 //!
 //! Three tools, three jobs (no hand-rolling):
 //! - **serde** — load/save (nested objects from the dotted paths come for free).

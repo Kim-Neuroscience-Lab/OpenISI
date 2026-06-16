@@ -1406,7 +1406,7 @@ pub(crate) fn write_meta_json(
 
     // Source the analysis_params tree from the .oisi (the canonical
     // record). If the file hasn't been analyzed yet, fall back to the
-    // current registry tree.
+    // current config tree.
     let analysis_params_tree = isi_analysis::io::read_analysis_params_attr(oisi_path)
         .ok()
         .flatten()

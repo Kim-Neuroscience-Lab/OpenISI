@@ -1,13 +1,11 @@
 //! Typed **UI-state** configuration — the serde + schemars + garde home for the
-//! macro registry's `PersistTarget::UiState` parameters (Phase 3).
+//! UI-state parameters.
 //!
 //! These are view-only display toggles (the retinotopy SNR-threshold overlay):
-//! NOT analysis math and NOT persisted into the `.oisi`. They were the one
-//! `PersistTarget` without a typed config; this gives the SSoT cut a typed home
-//! for them alongside [`RigConfig`](super::RigConfig) /
+//! NOT analysis math and NOT persisted into the `.oisi`. They have a typed home
+//! alongside [`RigConfig`](super::RigConfig) /
 //! [`ExperimentConfig`](super::ExperimentConfig) /
-//! [`AnalysisConfig`](super::AnalysisConfig). Defaults/bounds mirror
-//! `definitions.rs` exactly.
+//! [`AnalysisConfig`](super::AnalysisConfig).
 
 use garde::Validate;
 use schemars::JsonSchema;

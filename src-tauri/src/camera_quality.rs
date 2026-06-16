@@ -16,7 +16,7 @@
 //! - **Timing anomalies** — an inter-frame interval far above the median flags
 //!   a late frame even when none was lost (USB stall, scheduler hiccup).
 //!
-//! The thresholds are passed in (sourced from the registry / sensible defaults)
+//! The thresholds are passed in (sourced from the config / sensible defaults)
 //! so the policy lives with the caller, not buried here.
 
 /// One captured frame's identity + arrival time, from the camera hardware.
@@ -28,7 +28,7 @@ pub struct FrameStamp {
     pub hardware_timestamp_us: i64,
 }
 
-/// Pass/fail thresholds for a capture, sourced from the registry by the caller.
+/// Pass/fail thresholds for a capture, sourced from the config by the caller.
 #[derive(Debug, Clone, Copy)]
 pub struct QualityThresholds {
     /// An inter-frame interval above `median × this` is a timing anomaly.

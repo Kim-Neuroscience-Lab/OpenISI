@@ -210,7 +210,7 @@ fn device_stability_vs_embedded_results() {
     println!("           construction; on a different device, drift reflects real");
     println!("           cross-device f32 ordering differences. See module docstring.");
 
-    // Use canonical default analysis params (PARAM_DEFS). This test
+    // Use canonical default analysis params (the typed-config defaults). This test
     // validates the *compute substrate* (Burn DFT + Burn retinotopy)
     // against the file's embedded `/results`, not param round-tripping.
     // The DFT (`compute_complex_maps_from_raw`) ignores params entirely;

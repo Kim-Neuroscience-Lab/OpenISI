@@ -1,16 +1,13 @@
-//! `ConfigStore` — the live, typed parameter store (Phase 3 `Registry` replacement).
+//! `ConfigStore` — the single live, typed parameter store.
 //!
 //! Holds the three typed configs (`RigConfig`/`ExperimentConfig`/`AnalysisConfig`)
-//! live, plus the runtime `HardwareContext`. Replaces the `define_params!`
-//! registry: serde/schemars/garde own (de)serialization, schema, and the *static*
-//! per-field bounds; the only hand-rolled logic here is the **dynamic hardware
-//! constraints** (the 5 edges from the old `constraints.rs`), which cross
-//! rig/experiment struct boundaries and need live hardware — the one justified
-//! domain predicate the tools can't supply (see `docs/TOOL_LEDGER.md`).
-//!
-//! Built ALONGSIDE the registry (additive); consumers migrate in later slices
-//! (`docs/PHASE3_PARAM_MIGRATION.md`). [`ConfigSnapshot`] is the frozen payload that
-//! will replace `RegistrySnapshot` on thread channels and in `.oisi` provenance.
+//! live, plus the runtime `HardwareContext`. serde/schemars/garde own
+//! (de)serialization, schema, and the *static* per-field bounds; the only
+//! hand-rolled logic here is the **dynamic hardware constraints** (in
+//! `constraints.rs`), which cross rig/experiment struct boundaries and need live
+//! hardware — the one justified domain predicate the tools can't supply (see
+//! `docs/TOOL_LEDGER.md`). [`ConfigSnapshot`] is the frozen payload carried on
+//! thread channels and written into `.oisi` provenance.
 
 use std::path::{Path, PathBuf};
 
@@ -316,8 +313,8 @@ impl ConfigStore {
     }
 }
 
-/// Frozen configuration — the thread-channel + `.oisi`-provenance payload that
-/// replaces `RegistrySnapshot`. All fields are `Clone + Send + Sync + Serialize`.
+/// Frozen configuration — the thread-channel + `.oisi`-provenance payload.
+/// All fields are `Clone + Send + Sync + Serialize`.
 #[derive(Debug, Clone)]
 pub struct ConfigSnapshot {
     pub rig: RigConfig,

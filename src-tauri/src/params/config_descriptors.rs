@@ -1,18 +1,15 @@
-//! Descriptor generation from the typed [`ConfigStore`] (Phase 3 SSoT cut).
+//! Descriptor generation from the typed [`ConfigStore`].
 //!
-//! Reproduces the exact `ParamDescriptorJson[]` the frontend consumes — but
-//! sourced from the typed configs instead of the `define_params!` registry, so
-//! the frontend's descriptor contract is preserved while the registry is
-//! deleted. Three proper sources, one per kind of data:
+//! Produces the `ParamDescriptorJson[]` the frontend consumes, sourced from the
+//! typed configs. Three proper sources, one per kind of data:
 //! - **values** ← the typed config (serialized, navigated by dotted path);
 //! - **types / ranges / enum-options** ← `kind` + `constraint` here (which the
 //!   garde attrs on the structs also enforce — these are the UI *hints*);
 //! - **labels / units / groups** ← the [`UiMeta`] catalog below (genuine UI
 //!   presentation copy — `label`/`unit`/`GroupId`, which schemars does not supply).
 //!
-//! Fidelity is locked by golden-snapshot tests (`*_descriptors_golden`), whose
-//! goldens were captured from output proven byte-identical to the former
-//! `define_params!` registry before that registry was deleted.
+//! Fidelity to the frontend's descriptor contract is locked by golden-snapshot
+//! tests (`*_descriptors_golden`).
 
 use openisi_params::config::{
     AnalysisConfig, ConfigStore, ExperimentConfig, RigConfig, UiStateConfig,
@@ -194,7 +191,7 @@ fn constraint_for(kind: Kind, bound: Bound) -> ConstraintJson {
 }
 
 /// Analysis descriptors. Unlike the plain configs, the tagged `AnalysisConfig`
-/// stores only the *active* variant's tunables, and `active_when` is now the
+/// stores only the *active* variant's tunables, so activation follows the
 /// selected method: a stage's method param is always active; a tunable is active
 /// iff its variant is the selected method (its value then comes from the config),
 /// otherwise it's inactive and carries its canonical default from the
@@ -261,8 +258,8 @@ fn all_descriptors(store: &ConfigStore) -> Vec<ParamDescriptorJson> {
     out
 }
 
-/// Descriptors served by `get_param_descriptors`, with the same filter semantics
-/// as the registry version: a target keyword (`"rig"`/`"experiment"`/
+/// Descriptors served by `get_param_descriptors`. Filter semantics: a target
+/// keyword (`"rig"`/`"experiment"`/
 /// `"analysis"`/`"ui_state"`) returns that persist target's params; otherwise the
 /// arg is a `GroupId` and filters by group; an unknown arg returns empty; `None`
 /// returns everything.
@@ -559,9 +556,7 @@ mod tests {
     }
 
     /// Compare the generated descriptors to the committed golden snapshot — the
-    /// frontend's descriptor contract. The goldens were captured from the output
-    /// that was equivalence-proven byte-identical to the former `define_params!`
-    /// registry; they are the durable guard now that the registry is gone. Set
+    /// frontend's descriptor contract, and the durable guard against drift. Set
     /// `OISI_REGEN_DESCRIPTOR_GOLDEN=1` to rewrite them after an intentional change.
     fn assert_matches_golden(name: &str, descs: &[ParamDescriptorJson]) {
         let got = to_golden_json(descs);

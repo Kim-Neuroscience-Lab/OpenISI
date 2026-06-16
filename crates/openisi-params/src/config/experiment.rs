@@ -1,10 +1,9 @@
-//! Typed **Experiment** configuration — the serde + schemars + garde replacement
-//! for the macro registry's `PersistTarget::Experiment` parameters (Phase 3).
+//! Typed **Experiment** configuration — the serde + schemars + garde struct tree
+//! for the experiment parameters.
 //!
 //! Same discipline as [`super::rig`]: defaults (`Default`) and bounds
-//! (`#[garde(...)]`) mirror `definitions.rs` exactly; serde does I/O, schemars
-//! derives the schema, garde validates. Built alongside the registry; not yet
-//! wired in. Note `geometry` here is *experiment* geometry (rendering offsets +
+//! (`#[garde(...)]`) are the canonical values; serde does I/O, schemars derives the
+//! schema, garde validates. Note `geometry` here is *experiment* geometry (rendering offsets +
 //! projection), distinct from the rig's `geometry`; `stimulus_geometry` is the
 //! sweep extent that feeds `AcquisitionProperties` at analysis time.
 

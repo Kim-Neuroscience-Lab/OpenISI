@@ -6,8 +6,8 @@
 //!
 //! On-device tensors are `f32`; complex fields are [`Complex2`] pairs.
 //! The host→device direction narrows `f64`/`Complex64` to `f32` — a
-//! deliberate, documented precision boundary
-//! (`docs/UNIFIED_COMPUTE_ARCHITECTURE.md` §1.3: the device pipeline is
+//! deliberate, documented precision boundary (`docs/COMPUTE.md` dtype
+//! conventions: the device pipeline is
 //! `f32` throughout). The device→host direction promotes `f32`→`f64` so
 //! downstream segmentation/HDF5 code sees uniform precision.
 

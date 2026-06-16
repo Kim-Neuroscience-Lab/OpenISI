@@ -40,7 +40,7 @@ pub struct ParamDescriptorJson {
 /// The frontend checks: if `values` exists → enum, if `min`/`max` exist → range, else → unconstrained.
 ///
 /// `values` is a list of `{ value, label }` objects — `value` is the
-/// wire string the registry persists (snake_case), `label` is the
+/// wire string the config persists (snake_case), `label` is the
 /// human-facing string the UI renders inside `<option>`. Both come
 /// from the same enum declaration in `openisi-params` (serde for the
 /// wire string, `strum::Display` for the label), so they cannot drift.
@@ -115,7 +115,7 @@ pub fn get_analysis_stages() -> Vec<AnalysisStageJson> {
 
 /// Return descriptors for all parameters, optionally filtered by group/target.
 /// Sourced from the typed [`ConfigStore`] via the descriptor generator (whose
-/// output is equivalence-tested against the former registry version).
+/// output is locked to the frontend's contract by golden tests).
 #[tauri::command]
 pub fn get_param_descriptors(
     state: State<'_, SharedState>,

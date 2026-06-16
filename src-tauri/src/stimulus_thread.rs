@@ -243,7 +243,8 @@ fn pump_messages() -> bool {
 }
 
 // =============================================================================
-// Rendering (Phase 2: solid color only)
+// Solid-color surface clears (blanking / background; the sweep stimulus itself
+// is rendered by the `openisi-stimulus` WGSL renderer)
 // =============================================================================
 
 #[cfg(windows)]
@@ -555,12 +556,12 @@ fn build_renderer_config_from_snapshot(
     apply_rotation: bool,
 ) -> RendererConfig {
     // EDID gives reliable pixel dimensions and a usable auto-detected
-    // cm size. The registry's MonitorWidthCm/MonitorHeightCm only override
+    // cm size. The config's MonitorWidthCm/MonitorHeightCm only override
     // the EDID value when the user has explicitly calibrated them via UI.
     //
     // Monitor yaw/pitch: the projection currently assumes the monitor normal
     // is the eye-perpendicular axis (yaw = pitch = 0). `MonitorYawDeg` /
-    // `MonitorPitchDeg` are registry params, so a configured non-zero value
+    // `MonitorPitchDeg` are config params, so a configured non-zero value
     // would otherwise be *silently ignored* — a no-op setting with real
     // scientific consequences (the presented visual angles would be wrong for
     // a physically-tilted monitor). We refuse to be silent about it: a

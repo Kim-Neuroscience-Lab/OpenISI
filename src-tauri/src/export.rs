@@ -249,8 +249,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // (derived from the acquisition snapshot) into the .oisi as `/rig_params` +
     // `/experiment_params` JSON attributes. serde is the single source of the
     // schema, so adding a config field appears automatically in the provenance.
-    // (This is the canonical, schema-bearing form — same keys + values as the
-    // former registry tree; readers navigate by key.)
+    // (This is the canonical, schema-bearing form; readers navigate by key.)
     {
         let rig_str = serde_json::to_string_pretty(&snapshot.rig)
             .map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;

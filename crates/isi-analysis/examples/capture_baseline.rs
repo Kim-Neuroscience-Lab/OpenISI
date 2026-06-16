@@ -10,9 +10,9 @@
 //!
 //!   1. Copy `input.oisi` → `output.baseline.oisi`.
 //!   2. If `output.baseline.oisi` has a pre-2026 `/analysis_params` schema,
-//!      translate it to the current registry-tree shape and write it back.
+//!      translate it to the current (tagged `AnalysisConfig`) schema and write it back.
 //!   3. Build an `AnalysisParams` from the file's `/analysis_params` (if
-//!      present after migration) or from registry defaults.
+//!      present after migration) or from the typed-config defaults.
 //!   4. Run `isi_analysis::analyze` on the copy. `analyze` writes
 //!      `/complex_maps/*` (cached after the first run) and `/results/*` in
 //!      place. The output file is the baseline — it has the same on-disk

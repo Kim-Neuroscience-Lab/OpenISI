@@ -16,8 +16,9 @@ use crate::RawAcquisition;
 ///
 /// The canonical type is [`openisi_params::config::analysis::Baseline`] (the
 /// garde-validated, internally-tagged config enum; variants documented there).
-/// `isi-analysis` consumes it directly (UNIFY); compute behavior is attached via
-/// [`BaselineExt`]. `BaselineMethod` is a transitional alias (renamed in cleanup).
+/// `isi-analysis` consumes it directly; compute behavior is attached via
+/// [`BaselineExt`]. `BaselineMethod` is this crate's local name for it — the same
+/// `<Stage>Method` aliasing every stage in `methods/` uses.
 pub use openisi_params::config::analysis::Baseline as BaselineMethod;
 
 /// Compute behavior for the ΔF/F-baseline stage (extension trait).

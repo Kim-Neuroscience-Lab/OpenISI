@@ -1,4 +1,4 @@
-//! Hardware context — runtime hardware capabilities injected into the registry.
+//! Hardware context — runtime hardware capabilities injected into the config store.
 //!
 //! Not persisted. Camera capabilities arrive on camera connect, monitor info
 //! on display select, measured refresh on display validate.
@@ -25,17 +25,17 @@ pub struct HardwareContext {
 
 /// Resolve the effective value of a hardware-influenced param.
 ///
-/// Precedence (single source of truth — both `RegistrySnapshot` and
-/// `Registry` delegate here, never reimplement):
+/// Precedence (single source of truth — both `ConfigSnapshot` and
+/// `ConfigStore` delegate here, never reimplement):
 ///
 ///   1. **user override** — if the user has explicitly set a value via
-///      the UI or a TOML overlay, that wins unconditionally.
+///      the UI or a JSON overlay, that wins unconditionally.
 ///   2. **hardware-detected** — EDID / camera SDK / wgpu surface value,
 ///      gated through a sanity predicate (typically "value > 0").
 ///   3. **None** — no override and no usable hardware reading; the caller
 ///      decides whether that's an error or a fall-back-to-shipped.
 ///
-/// `raw_user_value` is the registry's current value for the param (the
+/// `raw_user_value` is the config's current value for the param (the
 /// shipped default plus any user override, but *not* hardware data).
 /// `is_user_override` is true iff the user has actively set this param.
 /// `hardware_value` is the raw EDID/SDK reading. `is_valid` filters it

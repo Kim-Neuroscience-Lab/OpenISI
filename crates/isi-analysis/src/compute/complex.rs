@@ -1,8 +1,8 @@
 //! Complex tensors as paired real/imaginary `f32` tensors.
 //!
 //! Burn has no native complex dtype (neither does Candle — it's an ML
-//! gap, since ML doesn't carry complex numbers). Per
-//! `docs/UNIFIED_COMPUTE_ARCHITECTURE.md` §1.3 we represent a complex
+//! gap, since ML doesn't carry complex numbers). Per the dtype
+//! conventions in `docs/COMPUTE.md` we represent a complex
 //! field as a `Complex2` pair of `Tensor<Backend, 2>` — one real plane,
 //! one imaginary plane — with the complex operations the analysis
 //! pipeline needs: `from_phase`, `real`, `imag`, `abs`, `angle`,

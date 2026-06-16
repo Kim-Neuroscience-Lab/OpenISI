@@ -11,7 +11,7 @@
 use serde::Serialize;
 use strum::IntoEnumIterator;
 
-/// One enum variant projected into both the wire string the registry
+/// One enum variant projected into both the wire string the config
 /// persists and the human-facing label the UI shows.
 #[derive(Debug, Clone, Serialize)]
 pub struct EnumOption {

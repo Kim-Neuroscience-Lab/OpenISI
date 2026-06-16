@@ -1,22 +1,20 @@
-//! Typed **Analysis** configuration — the serde + schemars + garde replacement
-//! for the macro registry's `PersistTarget::Analysis` parameters (Phase 3).
+//! Typed **Analysis** configuration — the serde + schemars + garde struct tree for
+//! the analysis parameters.
 //!
-//! This is where the old `active_when` predicates **collapse into the type
-//! system**: each pipeline stage is an internally-tagged enum
-//! (`#[serde(tag = "method")]`), so a tunable *cannot exist* unless its method
-//! variant is selected — stronger than a runtime "is this control visible"
-//! check. The wire form is `{"method": "snlc_amp_weighted_phasor", "sigma_px":
-//! 1.0}`; `rename_all = "snake_case"` reproduces the exact method strings the
-//! registry used.
+//! Method selection lives in the type system: each pipeline stage is an
+//! internally-tagged enum (`#[serde(tag = "method")]`), so a tunable *cannot exist*
+//! unless its method variant is selected — stronger than a runtime "is this control
+//! visible" check. The wire form is `{"method": "snlc_amp_weighted_phasor",
+//! "sigma_px": 1.0}`; `rename_all = "snake_case"` fixes the method strings.
 //!
-//! These tagged enums are intended as the **canonical** method+tunable types,
-//! shared with `isi-analysis` directly (the bridge is deleted when consumers
-//! migrate) — config tunables and compute tunables are the same parameters.
+//! These tagged enums are the **canonical** method+tunable types, shared with
+//! `isi-analysis` directly (no bridge) — config tunables and compute tunables are
+//! the same parameters.
 //!
-//! Behavior note vs the old registry: only the **active** variant's tunables are
-//! stored (the config = exactly what produced the result, which is what the
-//! `.oisi` provenance needs). Per-method "remembered" tunables, if wanted, are a
-//! frontend-state concern, not persisted analysis config.
+//! Only the **active** variant's tunables are stored, so the config is exactly what
+//! produced the result — which is what the `.oisi` provenance needs. Per-method
+//! "remembered" tunables, if wanted, are a frontend-state concern, not persisted
+//! analysis config.
 //!
 //! `deny_unknown_fields` is on the outer `AnalysisConfig` (catches unknown stage
 //! keys); serde's internally-tagged enums don't support it on the variants.
@@ -285,9 +283,9 @@ mod tests {
         assert_eq!(cfg, back);
     }
 
-    /// The method strings on the wire match the registry's snake_case names.
+    /// The method strings on the wire are the canonical snake_case method names.
     #[test]
-    fn tagged_wire_format_uses_registry_method_strings() {
+    fn tagged_wire_format_uses_canonical_method_strings() {
         let json = serde_json::to_value(PhaseSmoothing::default()).unwrap();
         assert_eq!(json["method"], "snlc_amp_weighted_phasor");
         assert_eq!(json["sigma_px"], 1.0);
@@ -296,7 +294,7 @@ mod tests {
         assert_eq!(cs["close"], 10);
     }
 
-    /// active_when is now a TYPE guarantee: a tunable only exists in its variant.
+    /// A tunable only exists in its selected variant — a type-level guarantee.
     /// Selecting a variant carries exactly that variant's tunables — no others.
     #[test]
     fn tunables_only_exist_in_their_variant() {

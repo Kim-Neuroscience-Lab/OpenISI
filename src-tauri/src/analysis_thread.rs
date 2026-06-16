@@ -4,7 +4,7 @@
 //! ## Why a dedicated thread
 //!
 //! `isi_analysis::analyze` is CPU-bound, runs for seconds to minutes per
-//! invocation, and serialises through the registry lock during snapshot
+//! invocation, and serialises through the config lock during snapshot
 //! creation. Running it inside the `run_analysis` Tauri command (the
 //! previous shape) tied each call to a Tauri runtime worker for its full
 //! duration: rapid param edits in the UI piled up multiple synchronous
@@ -80,9 +80,7 @@ fn spawn_inner(
 
             match result {
                 Ok(()) => {
-                    // Stamp the registry tree into /analysis_params for
-                    // provenance — same shape as the old synchronous
-                    // command did.
+                    // Stamp the config tree into /analysis_params for provenance.
                     if let Err(e) =
                         isi_analysis::io::write_analysis_params_attr(&req.path, &req.params_tree)
                     {

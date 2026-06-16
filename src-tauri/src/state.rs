@@ -5,10 +5,11 @@
 //! behind its own `parking_lot::Mutex`, grouped by *co-access* (fields
 //! always written together in one critical section share a lock; fields
 //! touched in isolation get their own). The grouping is derived from the
-//! measured command/event access map — see `docs/UNIFIED_COMPUTE_ARCHITECTURE.md` §3.
+//! measured command/event access map — see the state-decomposition
+//! section of `docs/COMPUTE.md`.
 //!
 //! Lock groups:
-//! - `registry`  — persistent config (single source of truth for all params)
+//! - `config`    — persistent config (single source of truth for all params)
 //! - `session`   — volatile hardware/display/camera session state
 //! - `capture`   — the recording hot path: latest frame + timing ring +
 //!   in-flight acquisition accumulator (the 60–100 fps

@@ -453,5 +453,5 @@ pub fn retinotopy(params: &AnalysisParams, acq: &AcquisitionProperties, raw_iden
 }
 
 // Fingerprint stability/sensitivity is exercised in `tests/incremental.rs`,
-// where a registry snapshot (the real source of an `AnalysisParams`) is
+// where a typed config snapshot (the real source of an `AnalysisParams`) is
 // available — `AnalysisParams` has no standalone `Default`.

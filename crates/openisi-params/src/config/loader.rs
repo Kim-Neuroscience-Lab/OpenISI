@@ -18,8 +18,8 @@ use crate::error::{ParamsError, ParamsResult};
 
 /// Load a typed config from files: `<shipped_dir>/<filename>` (the baseline,
 /// required) merged with `<user_dir>/<filename>` (a sparse overlay, optional).
-/// Thin file wrapper over [`load_merged`] — the two-layer shipped+user path the
-/// registry's `load_*` used, now typed.
+/// Thin file wrapper over [`load_merged`] — the two-layer shipped+user load path,
+/// typed.
 pub fn load_target_from_dir<T>(
     shipped_dir: &Path,
     user_dir: Option<&Path>,
