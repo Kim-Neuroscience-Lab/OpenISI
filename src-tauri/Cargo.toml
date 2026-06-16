@@ -41,6 +41,7 @@ ureq = "3"
 # the xz/lzma codecs and keep the common ones.
 zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "zstd"] }
 thiserror = "2"
+strum = { version = "0.26", features = ["derive"] }
 paste = "1"
 
 [target.'cfg(windows)'.dependencies]

@@ -16,6 +16,27 @@
 
 use std::path::{Path, PathBuf};
 
+/// Errors from config-directory resolution. Typed (via `thiserror`) rather than
+/// stringly so callers can match on the cause; still `Display`s the same
+/// fail-loud message naming exactly what was missing.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigPathError {
+    #[error("OPENISI_PROFILE must be 'dev' or 'user', got '{0}'")]
+    UnknownProfile(String),
+
+    #[error("dev run: could not locate the repo `config` directory")]
+    MissingRepoConfig,
+
+    #[error("installed build: could not resolve the bundle resource `config` directory")]
+    MissingResourceConfig,
+
+    #[error("dev profile: could not locate the repo `config` directory for the committed dev overlay")]
+    MissingDevOverlay,
+
+    #[error("user profile: could not resolve the platform app-config directory")]
+    MissingAppConfig,
+}
+
 /// Which writable config overlay is active on top of the shipped baseline.
 /// Selected explicitly (env var or build-mode default) so it is never
 /// ambiguous which configuration is in use.
@@ -33,13 +54,16 @@ impl Profile {
     /// wins; otherwise default to the build/run mode (`dev` in a dev run,
     /// `user` in an installed build). An unrecognized value is a hard
     /// error — never a silent fall-through to a guessed profile.
-    pub fn resolve(default_is_dev: bool) -> Result<Profile, String> {
+    pub fn resolve(default_is_dev: bool) -> Result<Profile, ConfigPathError> {
         let env = std::env::var("OPENISI_PROFILE").ok();
         Self::from_env_value(env.as_deref(), default_is_dev)
     }
 
     /// Pure core of [`Profile::resolve`], factored out for testing.
-    pub fn from_env_value(value: Option<&str>, default_is_dev: bool) -> Result<Profile, String> {
+    pub fn from_env_value(
+        value: Option<&str>,
+        default_is_dev: bool,
+    ) -> Result<Profile, ConfigPathError> {
         match value {
             None => Ok(if default_is_dev {
                 Profile::Dev
@@ -49,9 +73,7 @@ impl Profile {
             Some(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "dev" => Ok(Profile::Dev),
                 "user" => Ok(Profile::User),
-                other => Err(format!(
-                    "OPENISI_PROFILE must be 'dev' or 'user', got '{other}'"
-                )),
+                other => Err(ConfigPathError::UnknownProfile(other.to_string())),
             },
         }
     }
@@ -64,7 +86,7 @@ impl Profile {
     }
 }
 
-/// Resolved directories for the two-layer registry.
+/// Resolved directories for the two-layer config (shipped baseline + user overlay).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLayout {
     /// Read-only shipped baseline holding `rig.json` / `experiment.json` /
@@ -88,33 +110,16 @@ pub fn resolve_layout(
     repo_config: Option<&Path>,
     resource_config: Option<&Path>,
     app_config: Option<&Path>,
-) -> Result<ConfigLayout, String> {
+) -> Result<ConfigLayout, ConfigPathError> {
     let shipped_dir = if is_dev {
-        repo_config
-            .ok_or_else(|| "dev run: could not locate the repo `config` directory".to_string())?
-            .to_path_buf()
+        repo_config.ok_or(ConfigPathError::MissingRepoConfig)?.to_path_buf()
     } else {
-        resource_config
-            .ok_or_else(|| {
-                "installed build: could not resolve the bundle resource `config` directory"
-                    .to_string()
-            })?
-            .to_path_buf()
+        resource_config.ok_or(ConfigPathError::MissingResourceConfig)?.to_path_buf()
     };
 
     let user_dir = match profile {
-        Profile::Dev => repo_config
-            .ok_or_else(|| {
-                "dev profile: could not locate the repo `config` directory for the \
-                 committed dev overlay"
-                    .to_string()
-            })?
-            .join("dev"),
-        Profile::User => app_config
-            .ok_or_else(|| {
-                "user profile: could not resolve the platform app-config directory".to_string()
-            })?
-            .to_path_buf(),
+        Profile::Dev => repo_config.ok_or(ConfigPathError::MissingDevOverlay)?.join("dev"),
+        Profile::User => app_config.ok_or(ConfigPathError::MissingAppConfig)?.to_path_buf(),
     };
 
     Ok(ConfigLayout {
@@ -163,8 +168,9 @@ mod tests {
     #[test]
     fn profile_unrecognized_is_fatal() {
         let err = Profile::from_env_value(Some("prod"), true).unwrap_err();
-        assert!(err.contains("must be 'dev' or 'user'"), "got: {err}");
-        assert!(err.contains("prod"));
+        assert!(matches!(&err, ConfigPathError::UnknownProfile(s) if s == "prod"), "got: {err}");
+        // Display still names the constraint + the bad value.
+        assert!(err.to_string().contains("must be 'dev' or 'user'") && err.to_string().contains("prod"));
     }
 
     #[test]
@@ -197,14 +203,14 @@ mod tests {
         // installed build but no resource_dir resolved.
         let err =
             resolve_layout(false, Profile::User, None, None, Some(Path::new("/x"))).unwrap_err();
-        assert!(err.contains("bundle resource"), "got: {err}");
+        assert!(matches!(err, ConfigPathError::MissingResourceConfig), "got: {err}");
     }
 
     #[test]
     fn layout_user_profile_missing_app_config_is_fatal() {
         let repo = PathBuf::from("/repo/config");
         let err = resolve_layout(true, Profile::User, Some(&repo), None, None).unwrap_err();
-        assert!(err.contains("app-config"), "got: {err}");
+        assert!(matches!(err, ConfigPathError::MissingAppConfig), "got: {err}");
     }
 
     #[test]

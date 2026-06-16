@@ -10,6 +10,15 @@
 // interpolates `e` into a user-facing message. The previous
 // `alert("Error: " + e)` pattern produced `"Error: [object Object]"`
 // with the structured payload — that regression is closed here.
+//
+// The stable `code`/`category` vocabularies are GENERATED from the Rust error
+// enums (`error-codes.generated.js`, the single source of truth). Branch on
+// `ERROR_CODES.E_…` / `ERROR_CATEGORIES.…`, never on a bare string literal, so
+// the frontend cannot drift from the backend.
+
+import { ERROR_CODES, ERROR_CATEGORIES } from './error-codes.generated.js';
+
+export { ERROR_CODES, ERROR_CATEGORIES };
 
 /**
  * Render a Tauri/JS error as a human-readable string.
@@ -32,7 +41,7 @@ export function errorToString(e) {
  * Extract the stable machine-readable error code from a Tauri error
  * payload, or `null` if the error isn't a structured `AppErrorWire`.
  * Useful for branching on known error classes
- * (e.g. `if (errorCode(e) === 'E_INVALID_PACKAGE') { … }`).
+ * (e.g. `if (errorCode(e) === ERROR_CODES.E_INVALID_PACKAGE) { … }`).
  *
  * @param {unknown} e
  * @returns {string | null}

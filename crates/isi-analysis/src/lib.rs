@@ -507,24 +507,42 @@ fn polygon_identity(polygon: &Array2<bool>) -> String {
 // Error type
 // =============================================================================
 
-#[derive(Debug, thiserror::Error)]
+/// Analysis-pipeline errors.
+///
+/// Each variant carries its **stable machine-readable code** (`E_*`) as a
+/// `strum` attribute on the variant itself — the single source of truth for the
+/// code, co-located with the variant (no separate mapping table). The companion
+/// fieldless [`AnalysisCode`] enum (derived by `EnumDiscriminants`) gives both the
+/// runtime lookup ([`AnalysisError::code`]) and compile-time enumeration of every
+/// code (for the cross-language error catalog), from that one declaration.
+#[derive(Debug, thiserror::Error, strum::EnumDiscriminants)]
+#[strum_discriminants(
+    name(AnalysisCode),
+    vis(pub),
+    derive(strum::IntoStaticStr, strum::EnumIter),
+)]
 pub enum AnalysisError {
     #[error("I/O error: {0}")]
+    #[strum_discriminants(strum(serialize = "E_IO"))]
     Io(#[from] std::io::Error),
 
     #[error("HDF5 error: {0}")]
+    #[strum_discriminants(strum(serialize = "E_HDF5"))]
     Hdf5(String),
 
     #[error("Invalid .oisi file: {0}")]
+    #[strum_discriminants(strum(serialize = "E_INVALID_PACKAGE"))]
     InvalidPackage(String),
 
     #[error("Missing data: {0}")]
+    #[strum_discriminants(strum(serialize = "E_MISSING_DATA"))]
     MissingData(String),
 
     /// Compute-layer errors — tensor shape/kind/device, ndarray-tensor
     /// conversion, GPU device init/selection. Surfaces as a clean error
     /// to the UI instead of a panic from the compute backend.
     #[error("Compute: {0}")]
+    #[strum_discriminants(strum(serialize = "E_COMPUTE"))]
     Compute(String),
 
     /// Validation failures inside the analysis crate that aren't I/O,
@@ -534,10 +552,20 @@ pub enum AnalysisError {
     /// user "the value you entered isn't valid" vs "the file is
     /// broken."
     #[error("Validation: {0}")]
+    #[strum_discriminants(strum(serialize = "E_VALIDATION"))]
     Validation(String),
 
     #[error("Analysis cancelled")]
+    #[strum_discriminants(strum(serialize = "E_CANCELLED"))]
     Cancelled,
+}
+
+impl AnalysisError {
+    /// The stable machine-readable error code (e.g. `"E_HDF5"`), derived from the
+    /// variant's `strum` attribute — the SSoT the IPC wire + frontend rely on.
+    pub fn code(&self) -> &'static str {
+        AnalysisCode::from(self).into()
+    }
 }
 
 impl From<hdf5::Error> for AnalysisError {

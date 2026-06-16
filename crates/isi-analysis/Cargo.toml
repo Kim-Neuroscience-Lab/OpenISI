@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = "1"
 thiserror = "2"
+strum = { version = "0.26", features = ["derive"] }
 
 # ── Tensor / GPU compute substrate (Burn) ──────────────────────────────
 #
@@ -51,8 +52,8 @@ burn-cuda = { version = "=0.21", optional = true }
 # doc — no separate DAG runner crate.
 petgraph = "0.8"
 
-# Faster + smaller-footprint Mutex than std::sync::Mutex. Adopted per
-# the audit recommendation in `docs/UNIFIED_COMPUTE_ARCHITECTURE.md` §8.
+# Faster + smaller-footprint Mutex than std::sync::Mutex. See the
+# concurrency-primitives table in `docs/COMPUTE.md`.
 parking_lot = "0.12"
 
 # Structured logging + per-stage timing.
