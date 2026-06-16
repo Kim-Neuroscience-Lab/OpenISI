@@ -90,18 +90,23 @@ rtol = 3.05e-5   # 256·ε; observed ≤ 7.9e-6
 atol = 3.05e-5
 
 # ── Magnification = 1/|det J| — ill-conditioned reciprocal ─────────────
-# `det` is a catastrophic-cancellation difference; its condition number κ
-# amplifies f32 error, so this map's relative bound is *legitimately* larger —
-# this is the one map whose grounding is κ·ε, not a small constant·ε.
-# MEASURED worst cross-backend drift (CUDA vs ndarray, R43): max_rel = 1.019e-2
-# at the single most near-singular pixel (det ≈ the 1e-12 floor ⇒ κ ≈ 85 000).
-# rtol = κ_max·2·ε with κ_max=85 000 ⇒ K≈131072 ⇒ rtol≈1.56e-2.
-# NOTE: this looseness is a *science* signal, not just numerics — a magnification
-# of ~1e7 px²/deg² at a degenerate pixel is unphysical. The proper tightening is a
-# larger, physically-motivated det floor in math.rs `cortical_magnification_factor`
-# (caps the CMF at a plausible max), which bounds κ and needs a baseline regen.
+# `det J` is a catastrophic-cancellation difference; at near-singular pixels its
+# condition number κ amplifies f32 error, so this map's relative bound is
+# *legitimately* larger — the one map grounded as κ·ε, not a small constant·ε.
+# MEASURED on R43 (in-ROI): min |det J| ≈ 2.5e-6 — the 1e-12 EPS floor in
+# `cortical_magnification_factor` is NEVER reached — and the magnification tail
+# reaches ≈ 3.99e5 px²/deg² (not ~1e7) at ~0.1% of ROI pixels. Worst cross-backend
+# drift (CUDA vs ndarray) = max_rel ≈ 1.019e-2 at that most near-singular pixel,
+# where κ ≈ 85 000 arises from the cancellation in `det` itself (NOT from the floor).
+# rtol = κ_max·2·ε with κ_max ≈ 85 000 ⇒ K ≈ 131072 ⇒ rtol ≈ 1.56e-2.
+# NOTE: this looseness is inherent ill-conditioning at a handful of numerically
+# degenerate pixels — the values are mathematically correct (1/det), and the
+# renderer's 2–98 percentile scaling already ignores the tail. A *physical* cap is
+# NOT cleanly grounded: it would need a max cortical magnification, i.e. V1's
+# extent — itself a literature constant requiring V1 to be identified. Whether to
+# apply a data-driven or numerically-grounded det floor instead is an open question.
 [results.magnification]
-rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max≈85 000 (det-floor-bounded)
+rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max ≈ 85 000 (cancellation in det)
 atol = 3.05e-5
 
 # ── Optional responsiveness / reliability (raw-acquisition inputs only) ─
