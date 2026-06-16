@@ -10,6 +10,7 @@ Definition of Done). Everything else is the *how* for one concern:
 
 | Concern | Source of truth |
 |---|---|
+| **Getting productive** — build/run/test, the map, where-to-add, gotchas | [`ONBOARDING.md`](ONBOARDING.md) |
 | **Contract** — what it is, invariants, Definition of Done | [`PRINCIPLES.md`](PRINCIPLES.md) |
 | Tool-vs-domain enforcement (the contract's appendix) | [`TOOL_LEDGER.md`](TOOL_LEDGER.md) |
 | **System architecture** — crates, the self-contained-core ↔ standard-at-the-boundary model, data flow | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
