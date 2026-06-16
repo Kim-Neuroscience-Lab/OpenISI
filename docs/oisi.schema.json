@@ -7,12 +7,33 @@
   "properties": {
     "version": {
       "type": "string",
-      "description": "Schema version. Bump when adding new top-level keys."
+      "description": "The .oisi format-version HDF5 root attribute (io::create writes FORMAT_VERSION, currently \"1.0\"); gates whole-file reads via io::verify_format_version. Bump when the on-disk layout changes incompatibly. Also surfaced under root_attributes.version below."
     },
     "root_attributes": {
       "type": "object",
-      "description": "HDF5 root attributes — capture provenance + analysis params.",
+      "description": "HDF5 root attributes — file identity + capture provenance + analysis params.",
       "properties": {
+        "version": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "Format version (FORMAT_VERSION, currently \"1.0\"). Written by io::create on every file; enforced by io::verify_format_version." }
+          }
+        },
+        "source_type": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "How the file originated: \"raw_acquisition\" (write_oisi capture path) or the importer's source tag (complex-map import). Written by io::create." }
+          }
+        },
+        "created_at": {
+          "type": "object",
+          "properties": {
+            "dtype": { "const": "VarLenUnicode" },
+            "description": { "const": "ISO-8601 UTC timestamp of file creation (chrono_now). Written by io::create." }
+          }
+        },
         "software_version": {
           "type": "object",
           "properties": {
@@ -156,12 +177,12 @@
             },
             "/acquisition/clock_sync": {
               "type": "object",
-              "description": "Camera↔QPC clock offset at start/end of acquisition (drift detection).",
+              "description": "Camera↔QPC clock offset at start/end of acquisition (drift detection). t0_system_us is always present; the three offset attributes are present_when the acquisition has ≥2 frames carrying BOTH hardware and system timestamps (export.rs computes them only then).",
               "attributes": {
                 "t0_system_us": "f64",
-                "start_offset_us": "f64",
-                "end_offset_us": "f64",
-                "drift_us": "f64"
+                "start_offset_us": "f64 (present_when ≥2 dual-clock frames)",
+                "end_offset_us": "f64 (present_when ≥2 dual-clock frames)",
+                "drift_us": "f64 (present_when ≥2 dual-clock frames; = end_offset_us − start_offset_us)"
               }
             },
             "/acquisition/timing": {
@@ -185,7 +206,7 @@
                 "stim_sample_count": "u32",
                 "cam_jitter_sec": "f64",
                 "stim_jitter_sec": "f64",
-                "warnings": "VarLenUnicode (JSON array)"
+                "warnings": "VarLenUnicode (JSON array) — present_when the TimingCharacterization carried ≥1 warning."
               }
             },
             "/acquisition/quality": {
@@ -194,7 +215,9 @@
               "attributes": {
                 "camera_drops_total": "u32",
                 "stimulus_drops_total": "u32",
-                "acquisition_complete": "u8 (0/1)"
+                "acquisition_complete": "u8 (0/1)",
+                "stimulus_timing_validatable": "u32 (0/1) — 1 if presented on a physical hardware scanout (vblank). On a remote/virtual display there is no hardware vsync, so stimulus_drops_total is not a physically meaningful measurement.",
+                "display_scanout": "VarLenUnicode (\"physical\" | \"remote_virtual\") — paired with stimulus_timing_validatable."
               },
               "properties": {
                 "camera_frame_deltas_us": { "dtype": "i64", "shape": "(T-1,)" },
