@@ -215,7 +215,7 @@ Legend: ✅ golden · 🟡 partial · ⬜ gap · — n/a (trivial / our own).
 | phase_smoothing | `OpenIsiAmpWeightedPhasor` | ours; ≈ Allen `phaseFilter` @σ=1 (RM.py 269-296) | Python / A | ⬜ equivalence untested |
 | vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≈ Allen `visualSignMap` (RM.py 446-478) | Python / A | ✅ 1.3e-5 + wrap |
 | sign_map_smoothing | `Gaussian` | Allen `_getSignMap` (RM.py 1016) | scipy / A | ⬜ **keystone** |
-| cortex_source | `Reliability` | Allen Brain Obs (Zhuang 2017) | ?/A-or-B | ⬜ resolve tier |
+| cortex_source | `Reliability` | OpenISI's own (NO oracle for the mask). Coherence *metric* = Engel 1994 / Zhuang 2017, but Zhuang `RetinotopicMapping.py` does NO cortex restriction (full-frame, verified from source) | regression-lock only | ✅ resolved: OpenISI method; `>=` per ref threshold convention |
 | cortex_source | `UserPolygon` | user input | — | — |
 | cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | Octave / A | ✅ 0 diff (5 ops + e2e) |
 | cortex_source | `NoRestriction` | Allen default (trivial) | — | — |

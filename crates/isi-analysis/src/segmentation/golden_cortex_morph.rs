@@ -474,11 +474,12 @@ mod tests {
     /// UNVALIDATED (regression-lock only). The cross-cycle reliability
     /// *coherence* `|Σ Z_k| / Σ|Z_k|` is Engel 1994 / Zhuang 2017, but the
     /// specific cortex-MASK derivation here (min-over-directions threshold →
-    /// largest-CC → fill-holes) has NO published code oracle in our reference
-    /// set — Allen `RetinotopicMapping.py` has no cortex restriction (it runs
-    /// full-frame). So this test only PINS our current behaviour (the `min >
-    /// threshold` + `is_finite` rule); it does not establish faithfulness to
-    /// any external method. Primary (no-tie) case only. Fixtures from
+    /// largest-CC → fill-holes) has NO oracle: Zhuang's `RetinotopicMapping.py`
+    /// uses no power/coherence ROI mask and segments full-frame (verified from
+    /// source). So this test only PINS our own behaviour (the `min >= threshold`
+    /// and `is_finite` rule); it does not establish faithfulness to any external
+    /// method. The `>=` (inclusive) follows the reference's threshold convention
+    /// (`signMapf >= signMapThr`). Primary (no-tie) case only. Fixtures from
     /// `gen_cortexrel_golden.py`.
     #[test]
     fn cortex_from_reliability_pins_current_threshold_rule() {
@@ -495,10 +496,10 @@ mod tests {
 
         let got = crate::segmentation::cortex_from_reliability(&af, &ar, &lf, &lr, 0.5);
         let d = count_differing(&got, exp);
-        eprintln!("cortex_from_reliability (regression-lock, `>` rule): differing px = {d}");
+        eprintln!("cortex_from_reliability (regression-lock, `>=` rule): differing px = {d}");
         assert_eq!(
             d, 0,
-            "cortex_from_reliability changed (NB: `>` vs KimLabISI `>=` is an open decision)"
+            "cortex_from_reliability changed (`>=` rule; OpenISI method, no oracle for the mask)"
         );
     }
 

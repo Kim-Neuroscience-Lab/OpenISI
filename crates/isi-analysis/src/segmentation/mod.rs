@@ -88,19 +88,26 @@ impl Patch {
 // =============================================================================
 
 /// Build the cortex mask from per-direction reliability maps: the largest
-/// connected component of `min_k(reliability_k) > threshold` — pixels where
+/// connected component of `min_k(reliability_k) >= threshold` — pixels where
 /// *every* direction has a phasor repeatable across cycles — then `fill_holes`.
 ///
-/// **Oracle status (honest — do not overstate).** The per-direction *coherence
+/// **Oracle status (verified against source).** The per-direction *coherence
 /// metric* `reliability_k` is golden-pinned to Engel 1994 / Zhuang 2017
 /// (`reliability_matches_coherence_formula`). The cortex-MASK derivation on top
-/// (min-over-directions threshold → largest-CC → fill) is **OpenISI's, with no
-/// published code oracle**: Allen `RetinotopicMapping.py` applies *no* cortex
-/// restriction (it runs full-frame). So `cortex_from_reliability_pins_current_
-/// threshold_rule` only regression-locks our behaviour; it does not establish
-/// faithfulness to any external method, and the strict `>` (vs KimLabISI `>=`)
-/// is an OPEN decision. The default cortex source is `SnlcGarrett2014ImBound`
+/// (min-over-directions threshold → largest-CC → fill) is **OpenISI's own — there
+/// is NO oracle for it**: Zhuang's `RetinotopicMapping.py` (the segmentation
+/// reference) uses no power- or coherence-based ROI mask and segments the FULL
+/// frame (confirmed by reading the source). So `cortex_from_reliability_pins_
+/// current_threshold_rule` is a regression-lock on our own behaviour, not a
+/// faithfulness claim. The default cortex source is `SnlcGarrett2014ImBound`
 /// (which *is* oracle-validated), not this.
+///
+/// **Threshold `>=` (inclusive).** With no oracle for the mask itself, the choice
+/// is grounded in the reference's own threshold *convention*: Zhuang's one
+/// threshold is `signMapf >= signMapThr` (inclusive) — the verbatim source of
+/// OpenISI's patch threshold (`v.abs() >= threshold`). `threshold` is the minimum
+/// acceptable reliability, so a pixel exactly at the cutoff passes. (Differs from
+/// strict `>` only at exact equality — measure-zero on continuous reliability.)
 ///
 /// Cleanup is `largest_cc → fill_holes` only — no boundary-expanding morphology,
 /// so the mask is an exact subset of the quality-passing region, minus orphan
@@ -118,7 +125,7 @@ pub fn cortex_from_reliability(
             .min(rel_azi_rev[[r, c]])
             .min(rel_alt_fwd[[r, c]])
             .min(rel_alt_rev[[r, c]]);
-        min_rel.is_finite() && min_rel > threshold
+        min_rel.is_finite() && min_rel >= threshold
     });
     // Reliability-derived cortex: minimal cleanup (largest_cc +
     // fill_holes). Reliability is already a coherent quality metric;
