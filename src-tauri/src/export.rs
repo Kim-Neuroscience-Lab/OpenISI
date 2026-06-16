@@ -1038,9 +1038,29 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// A minimal valid `write_oisi` call — shared by the atomic-write integrity
-    /// tests below, which care about the file lifecycle, not the payload.
-    fn minimal_write_oisi(path: &std::path::Path) -> AppResult<String> {
+    fn sample_hardware() -> HardwareSnapshot {
+        HardwareSnapshot {
+            monitor_name: "TestMonitor".into(),
+            monitor_width_px: 1920,
+            monitor_height_px: 1080,
+            monitor_width_cm: 88.0,
+            monitor_height_cm: 50.0,
+            monitor_refresh_hz: 60.0,
+            measured_refresh_hz: 59.9,
+            gamma_corrected: true,
+            camera_model: "pco.panda".into(),
+            camera_width_px: 800,
+            camera_height_px: 600,
+        }
+    }
+
+    /// A minimal valid `write_oisi` call. `hardware` lets a caller exercise the
+    /// `/hardware` group; the atomic-write integrity tests pass `None` (they care
+    /// about the file lifecycle, not the payload).
+    fn minimal_write_oisi(
+        path: &std::path::Path,
+        hardware: Option<&HardwareSnapshot>,
+    ) -> AppResult<String> {
         let mut ds = test_stimulus_dataset();
         ds.start_recording();
         let data = AccumulatedData {
@@ -1067,7 +1087,7 @@ mod tests {
                 stimulus_dataset: &ds,
                 camera_data: data,
                 snapshot: &snapshot,
-                hardware: None,
+                hardware,
                 schedule: &schedule,
                 timing: None,
                 session_meta: None,
@@ -1076,6 +1096,28 @@ mod tests {
                 stimulus_timing_validatable: true,
             },
         )
+    }
+
+    /// The acquisition writer's output must conform to the `.oisi` SCHEMA — the
+    /// same single source of truth the analysis-write side is checked against in
+    /// the isi-analysis crate. This locks the acquisition side (/acquisition/*,
+    /// /hardware, provenance root attrs) against schema drift.
+    #[test]
+    fn written_oisi_conforms_to_schema() {
+        let hw = sample_hardware();
+        let tmp = std::env::temp_dir().join("openisi_contract_acq.oisi");
+        let _ = std::fs::remove_file(&tmp);
+        minimal_write_oisi(&tmp, Some(&hw)).expect("write");
+
+        let file = hdf5::File::open(&tmp).expect("open written .oisi");
+        let violations = isi_analysis::oisi_schema::contract_violations(&file);
+        assert!(
+            violations.is_empty(),
+            "the acquisition writer produced a .oisi that violates oisi_schema::SCHEMA:\n  {}",
+            violations.join("\n  ")
+        );
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
     }
 
     /// Atomic-write contract (see the protocol comment at the top of
@@ -1089,7 +1131,7 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&partial);
 
-        minimal_write_oisi(&tmp).expect("write should succeed");
+        minimal_write_oisi(&tmp, None).expect("write should succeed");
 
         assert!(tmp.exists(), "canonical .oisi must exist after success");
         assert!(
@@ -1112,7 +1154,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing_dir);
         let target = missing_dir.join("acq.oisi");
 
-        let result = minimal_write_oisi(&target);
+        let result = minimal_write_oisi(&target, None);
 
         assert!(result.is_err(), "write into a missing dir must fail");
         assert!(

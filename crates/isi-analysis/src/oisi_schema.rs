@@ -15,6 +15,8 @@
 //! update the writer, run `OISI_REGEN_SCHEMA=1 cargo test -p isi-analysis
 //! --test oisi_schema_contract` to regenerate the JSON, and commit both.
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Map, Value};
 
 /// Whether an entity is always present (given its parent is) or conditional.
@@ -533,6 +535,164 @@ fn group_json(g: &Group) -> Value {
         m.insert("subgroups".into(), Value::Object(sub));
     }
     Value::Object(m)
+}
+
+// ---------------------------------------------------------------------------
+// Contract checking: does a real .oisi conform to SCHEMA?
+// ---------------------------------------------------------------------------
+
+fn add_group_names(g: &Group, s: &mut BTreeSet<String>) {
+    s.insert(g.path.rsplit('/').next().unwrap_or(g.path).to_string());
+    for a in g.attrs {
+        s.insert(a.name.to_string());
+    }
+    for d in g.datasets {
+        s.insert(d.name.to_string());
+        for a in d.attrs {
+            s.insert(a.name.to_string());
+        }
+    }
+    for sub in g.subgroups {
+        add_group_names(sub, s);
+    }
+}
+
+/// Every entity name (basename) SCHEMA documents.
+fn documented_basenames() -> BTreeSet<String> {
+    let mut s = BTreeSet::new();
+    for a in SCHEMA.root_attrs {
+        s.insert(a.name.to_string());
+    }
+    for d in SCHEMA.root_datasets {
+        s.insert(d.name.to_string());
+    }
+    for g in SCHEMA.groups {
+        add_group_names(g, &mut s);
+    }
+    s
+}
+
+/// Paths of groups whose attributes are dynamically named (e.g. `/analysis_state`).
+fn dynamic_attr_paths() -> BTreeSet<String> {
+    fn rec(g: &Group, s: &mut BTreeSet<String>) {
+        if g.dynamic_attrs.is_some() {
+            s.insert(g.path.to_string());
+        }
+        for sub in g.subgroups {
+            rec(sub, s);
+        }
+    }
+    let mut s = BTreeSet::new();
+    for g in SCHEMA.groups {
+        rec(g, &mut s);
+    }
+    s
+}
+
+fn collect_undocumented(
+    path: &str,
+    group: &hdf5::Group,
+    documented: &BTreeSet<String>,
+    dynamic: &BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    if !dynamic.contains(path) {
+        for a in group.attr_names().unwrap_or_default() {
+            if !documented.contains(&a) {
+                out.push(format!("UNDOCUMENTED attribute {path}@{a}"));
+            }
+        }
+    }
+    for nm in group.member_names().unwrap_or_default() {
+        let child = if path == "/" {
+            format!("/{nm}")
+        } else {
+            format!("{path}/{nm}")
+        };
+        if let Ok(sub) = group.group(&nm) {
+            if !documented.contains(&nm) {
+                out.push(format!("UNDOCUMENTED group {child}"));
+            }
+            collect_undocumented(&child, &sub, documented, dynamic, out);
+        } else if let Ok(ds) = group.dataset(&nm) {
+            if !documented.contains(&nm) {
+                out.push(format!("UNDOCUMENTED dataset {child}"));
+            }
+            for a in ds.attr_names().unwrap_or_default() {
+                if !documented.contains(&a) {
+                    out.push(format!("UNDOCUMENTED attribute {child}@{a}"));
+                }
+            }
+        }
+    }
+}
+
+fn is_always(p: Presence) -> bool {
+    matches!(p, Presence::Always)
+}
+
+fn check_group_present(file: &hdf5::File, g: &Group, out: &mut Vec<String>) {
+    let Ok(grp) = file.group(g.path.trim_start_matches('/')) else {
+        return; // absent group → its own (conditional) presence not checked here
+    };
+    let attrs: BTreeSet<String> = grp.attr_names().unwrap_or_default().into_iter().collect();
+    for a in g.attrs {
+        if is_always(a.presence) && !attrs.contains(a.name) {
+            out.push(format!("MISSING attribute {}@{}", g.path, a.name));
+        }
+    }
+    let members: BTreeSet<String> = grp.member_names().unwrap_or_default().into_iter().collect();
+    for d in g.datasets {
+        if is_always(d.presence) && !members.contains(d.name) {
+            out.push(format!("MISSING dataset {}/{}", g.path, d.name));
+        }
+    }
+    for sub in g.subgroups {
+        let present = file.group(sub.path.trim_start_matches('/')).is_ok();
+        if is_always(sub.presence) && !present {
+            out.push(format!("MISSING subgroup {}", sub.path));
+        }
+        if present {
+            check_group_present(file, sub, out);
+        }
+    }
+}
+
+/// Check a real `.oisi` against [`SCHEMA`] in both directions and return all
+/// contract violations (empty ⇒ the file conforms):
+///
+/// * **undocumented** — a group/dataset/attribute present in the file that
+///   `SCHEMA` does not declare (catches "code grew a field, schema didn't");
+/// * **missing** — an always-present `SCHEMA` entity absent from a group that
+///   *is* present (catches "schema declares a field the code stopped writing").
+///
+/// `present_when` (conditional) entities are not required to be present.
+/// `dynamic_attrs` group attributes (e.g. `/analysis_state` stage keys) are not
+/// name-checked. Shared by the contract tests on both writer sides.
+pub fn contract_violations(file: &hdf5::File) -> Vec<String> {
+    let documented = documented_basenames();
+    let dynamic = dynamic_attr_paths();
+    let mut out = Vec::new();
+
+    // Direction A — nothing present is undocumented (root attrs + the tree).
+    for a in file.attr_names().unwrap_or_default() {
+        if !documented.contains(&a) {
+            out.push(format!("UNDOCUMENTED root attribute @{a}"));
+        }
+    }
+    collect_undocumented("/", file, &documented, &dynamic, &mut out);
+
+    // Direction B — every always-present documented entity exists.
+    let root_attrs: BTreeSet<String> = file.attr_names().unwrap_or_default().into_iter().collect();
+    for a in SCHEMA.root_attrs {
+        if is_always(a.presence) && !root_attrs.contains(a.name) {
+            out.push(format!("MISSING root attribute @{}", a.name));
+        }
+    }
+    for g in SCHEMA.groups {
+        check_group_present(file, g, &mut out);
+    }
+    out
 }
 
 /// Render [`SCHEMA`] to the canonical `docs/oisi.schema.json` value. This is the
