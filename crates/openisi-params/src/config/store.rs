@@ -148,8 +148,7 @@ impl ConfigStore {
 
     /// Load a named experiment template (a full `ExperimentConfig` JSON document)
     /// from `path`, replacing the live experiment config. Validates statically
-    /// (garde) and against live hardware bounds before committing. Mirrors the old
-    /// `toml_io::load_experiment` into the live store, now JSON.
+    /// (garde) and against live hardware bounds before committing.
     pub fn load_experiment_template(&mut self, path: &Path) -> ParamsResult<()> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ParamsError::Config(format!("reading experiment template: {e}")))?;

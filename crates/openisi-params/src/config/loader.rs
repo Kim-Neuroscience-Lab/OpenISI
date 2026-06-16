@@ -4,9 +4,8 @@
 //! Tools, not hand-rolling: **serde** does (de)serialization, **`json-patch`**
 //! does the RFC 7386 merge of the overlay onto the baseline, **garde** validates
 //! the result. Generic over the config type, so `RigConfig`/`ExperimentConfig`/
-//! `AnalysisConfig` share one path. (Replaces `toml_io`'s hand-walked tree
-//! merge + `collect_unknown_leaves` typo guard — `deny_unknown_fields` on the
-//! structs catches typos now.)
+//! `AnalysisConfig` share one path. `deny_unknown_fields` on the structs catches
+//! overlay typos at deserialize time.
 
 use std::path::Path;
 
