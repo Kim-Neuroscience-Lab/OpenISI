@@ -87,6 +87,14 @@ won't have a live camera feed or be able to acquire data.
 cargo test --workspace
 ```
 
+## Documentation
+
+Developer and design documentation lives in [`docs/`](docs/README.md), organized one
+source of truth per concern. Start with [`docs/PRINCIPLES.md`](docs/PRINCIPLES.md) —
+what OpenISI is, the invariants it upholds, and its Definition of Done — then
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system map. Contributors
+should read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
+
 ## License
 
-MIT
+[MIT](LICENSE) © Kim Neuroscience Lab
