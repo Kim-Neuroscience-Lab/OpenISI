@@ -87,18 +87,24 @@ impl Patch {
 // Cortex mask derivation from cross-cycle reliability — Allen / Engel
 // =============================================================================
 
-/// Build the cortex mask from per-direction reliability maps. The
-/// cortex is the largest connected component of the intersection
-/// `min_k(reliability_k) > threshold` — i.e., pixels where *every*
-/// direction has a phasor that's repeatable across cycles. This is
-/// the Allen Brain Observatory criterion (Zhuang 2017) and is
-/// conceptually identical to Engel 1994's coherence threshold from
-/// fMRI retinotopy.
+/// Build the cortex mask from per-direction reliability maps: the largest
+/// connected component of `min_k(reliability_k) > threshold` — pixels where
+/// *every* direction has a phasor repeatable across cycles — then `fill_holes`.
 ///
-/// Cleanup is `largest_cc → fill_holes` only — no morphology that
-/// expands the boundary past quality-passing pixels. The cortex
-/// mask is therefore an exact subset of the quality-passing region,
-/// minus orphan blobs and with small interior holes filled.
+/// **Oracle status (honest — do not overstate).** The per-direction *coherence
+/// metric* `reliability_k` is golden-pinned to Engel 1994 / Zhuang 2017
+/// (`reliability_matches_coherence_formula`). The cortex-MASK derivation on top
+/// (min-over-directions threshold → largest-CC → fill) is **OpenISI's, with no
+/// published code oracle**: Allen `RetinotopicMapping.py` applies *no* cortex
+/// restriction (it runs full-frame). So `cortex_from_reliability_pins_current_
+/// threshold_rule` only regression-locks our behaviour; it does not establish
+/// faithfulness to any external method, and the strict `>` (vs KimLabISI `>=`)
+/// is an OPEN decision. The default cortex source is `SnlcGarrett2014ImBound`
+/// (which *is* oracle-validated), not this.
+///
+/// Cleanup is `largest_cc → fill_holes` only — no boundary-expanding morphology,
+/// so the mask is an exact subset of the quality-passing region, minus orphan
+/// blobs and with small interior holes filled.
 pub fn cortex_from_reliability(
     rel_azi_fwd: &Array2<f64>,
     rel_azi_rev: &Array2<f64>,

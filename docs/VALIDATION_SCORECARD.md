@@ -69,7 +69,8 @@ variants (`PIPELINE_METHODS.md` §2). Agreement is the asserted bound.
 | 8 patch-refine | `patch_visual_space` / center | Allen `getVisualSpace` (verbatim) | `patch_visual_space_matches_allen...`, `eccentricity_full_image_and_center_match_allen` | 1e-15 |
 | 9 ecc | `OpenIsiWholeCortexV1` per-pixel formula | Allen `eccentricityMap` (RM.py 729-760) | `garrett_eccentricity_matches_allen_eccentricitymap` | 1e-9 |
 | 9 ecc | `SnlcGetAreaBordersV1Center` | SNLC `getAreaBorders`/`getV1id`/`getPatchCoM` (verbatim) | `compute_eccentricity_snlc_matches_get_area_borders` | machine-precision (f64) |
-| — magnification | `compute_magnification_jacobian` | Allen `_getDeterminantMap` (\|det J\|) + CMF | `magnification_jacobian_matches_allen_determinant_map` | 1e-3 / 1e-2 |
+| — magnification | `compute_magnification_jacobian` (\|det J\| = `magnification_raw`) | Allen `_getDeterminantMap` (\|det J\|) — Allen stops here, it NEVER inverts | `magnification_jacobian_matches_allen_determinant_map` (\|det J\| vs Allen) | 1e-3 |
+| — magnification (display) | `magnification` leaf = `1/max(\|det J\|, eps)` | **OpenISI display transform, no oracle** — the physiological CMF direction; tail at near-singular px is an inversion artifact handled by the renderer (no cap — see `math.rs::cortical_magnification_factor`) | same test, CMF-vs-own-golden branch | 1e-2 (own golden) |
 | — amplitude | `position_amplitude` | SNLC `Gprocesskret.m` `magS` | `position_amplitude_matches_snlc_mags` | 1e-5 |
 | — reliability | `responsiveness::reliability` (coherence) | Engel 1994 / Zhuang 2017 `\|ΣZ\|/Σ\|Z\|` | `reliability_matches_coherence_formula` | 1e-5 |
 | — responsiveness | `allen_spectral_power_snr_mask` | Allen `corticalmapping` `generatePhaseMap` (power) | `allen_power_snr_mask_matches_corticalmapping` (+`..._thresholded...`, `..._device...`) | 0 / f32 |
