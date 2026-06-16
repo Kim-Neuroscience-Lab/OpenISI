@@ -1,310 +1,1342 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openisi.dev/schema/oisi.schema.json",
-  "title": "OpenISI .oisi file structure (HDF5)",
-  "description": "Machine-parseable description of every group, dataset, and attribute an .oisi file can contain. Each leaf carries `path` (HDF5 location), `dtype` (HDF5 type), and `shape` semantics. Source of truth: `src-tauri/src/export.rs::write_oisi` (capture) and `crates/isi-analysis/src/io.rs::write_results` (analysis). A note on optionality: a key marked `present_when` is conditional on the stage that produced it; analyzing a raw acquisition produces everything, analyzing an import (complex maps only) skips `/acquisition/*` and `snr`/`reliability_*`.",
-  "type": "object",
-  "properties": {
-    "version": {
-      "type": "string",
-      "description": "The .oisi format-version HDF5 root attribute (io::create writes FORMAT_VERSION, currently \"1.0\"); gates whole-file reads via io::verify_format_version. Bump when the on-disk layout changes incompatibly. Also surfaced under root_attributes.version below."
-    },
-    "root_attributes": {
-      "type": "object",
-      "description": "HDF5 root attributes — file identity + capture provenance + analysis params.",
-      "properties": {
-        "version": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "Format version (FORMAT_VERSION, currently \"1.0\"). Written by io::create on every file; enforced by io::verify_format_version." }
-          }
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "GENERATED from crates/isi-analysis/src/oisi_schema.rs (SCHEMA) — do not hand-edit. Regenerate with OISI_REGEN_SCHEMA=1 cargo test -p isi-analysis --test oisi_schema_contract. Documents every group, dataset, and attribute an .oisi file can contain; `present_when` marks conditional entities.",
+  "format_version": "1.0",
+  "groups": {
+    "/acquisition": {
+      "doc": "Raw acquisition payload — camera frames, per-frame stimulus state, schedule, quality.",
+      "present_when": "raw acquisition path",
+      "subgroups": {
+        "/acquisition/camera": {
+          "datasets": {
+            "frames": {
+              "doc": "Raw sensor frames; gzip+fletcher32 chunked (1, H, W).",
+              "dtype": "u16",
+              "shape": "(T, H, W)"
+            },
+            "hardware_timestamps_us": {
+              "doc": "Camera internal-clock timestamps.",
+              "dtype": "i64",
+              "shape": "(T,)"
+            },
+            "sequence_numbers": {
+              "doc": "Camera sequence numbers.",
+              "dtype": "i64",
+              "shape": "(T,)"
+            },
+            "system_timestamps_us": {
+              "doc": "QPC timestamps at frame read.",
+              "dtype": "i64",
+              "shape": "(T,)"
+            },
+            "timestamps_sec": {
+              "doc": "Unified seconds from t0 (first frame system timestamp).",
+              "dtype": "f64",
+              "shape": "(T,)"
+            }
+          },
+          "doc": "Raw camera frames + per-frame timestamps.",
+          "present_when": "≥1 camera frame captured"
         },
-        "source_type": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "How the file originated: \"raw_acquisition\" (write_oisi capture path) or the importer's source tag (complex-map import). Written by io::create." }
-          }
+        "/acquisition/clock_sync": {
+          "attributes": {
+            "drift_us": {
+              "doc": "end_offset − start_offset.",
+              "dtype": "f64",
+              "present_when": "≥2 frames carrying both hardware and system timestamps"
+            },
+            "end_offset_us": {
+              "doc": "system − hardware at last frame.",
+              "dtype": "f64",
+              "present_when": "≥2 frames carrying both hardware and system timestamps"
+            },
+            "start_offset_us": {
+              "doc": "system − hardware at first frame.",
+              "dtype": "f64",
+              "present_when": "≥2 frames carrying both hardware and system timestamps"
+            },
+            "t0_system_us": {
+              "doc": "System timestamp of the first camera frame.",
+              "dtype": "f64"
+            }
+          },
+          "doc": "Camera↔QPC clock offset at start/end (drift detection)."
         },
-        "created_at": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "ISO-8601 UTC timestamp of file creation (chrono_now). Written by io::create." }
-          }
+        "/acquisition/quality": {
+          "attributes": {
+            "acquisition_complete": {
+              "doc": "Whether the acquisition ran to completion.",
+              "dtype": "u8 (0/1)"
+            },
+            "camera_drops_total": {
+              "doc": "Total camera drops.",
+              "dtype": "u32"
+            },
+            "display_scanout": {
+              "doc": "\"physical\" | \"remote_virtual\" — paired with stimulus_timing_validatable.",
+              "dtype": "VarLenUnicode"
+            },
+            "stimulus_drops_total": {
+              "doc": "Total stimulus drops.",
+              "dtype": "u32"
+            },
+            "stimulus_timing_validatable": {
+              "doc": "1 iff presented on a physical hardware scanout (vblank); else stimulus_drops_total is not physically meaningful.",
+              "dtype": "u32 (0/1)"
+            }
+          },
+          "datasets": {
+            "camera_frame_deltas_us": {
+              "doc": "Camera inter-frame deltas.",
+              "dtype": "i64",
+              "shape": "(T-1,)"
+            },
+            "camera_sequence_gaps": {
+              "doc": "Indices of camera sequence gaps.",
+              "dtype": "u32",
+              "shape": "(G,)"
+            },
+            "mean_frame_intensity": {
+              "doc": "Mean pixel intensity per camera frame.",
+              "dtype": "f32",
+              "shape": "(T,)"
+            },
+            "stimulus_dropped_indices": {
+              "doc": "Stimulus dropped-frame indices.",
+              "dtype": "u32",
+              "shape": "(D,)"
+            },
+            "stimulus_frame_deltas_us": {
+              "doc": "Stimulus inter-frame deltas.",
+              "dtype": "i64",
+              "shape": "(N-1,)"
+            }
+          },
+          "doc": "Per-acquisition timing/drop quality metrics computed at export."
         },
-        "software_version": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "OpenISI CARGO_PKG_VERSION at capture time." }
-          }
+        "/acquisition/schedule": {
+          "attributes": {
+            "sweep_sequence": {
+              "doc": "Sweep direction names, JSON array.",
+              "dtype": "VarLenUnicode (JSON array)"
+            }
+          },
+          "datasets": {
+            "sweep_end_sec": {
+              "doc": "Sweep end (unified s from t0).",
+              "dtype": "f64",
+              "shape": "(K,)"
+            },
+            "sweep_end_us": {
+              "doc": "Sweep end (raw µs).",
+              "dtype": "i64",
+              "shape": "(K,)"
+            },
+            "sweep_start_sec": {
+              "doc": "Sweep start (unified s from t0).",
+              "dtype": "f64",
+              "shape": "(K,)"
+            },
+            "sweep_start_us": {
+              "doc": "Sweep start (raw µs).",
+              "dtype": "i64",
+              "shape": "(K,)"
+            }
+          },
+          "doc": "Realized sweep schedule."
         },
-        "stimulus_metadata": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "JSON-serialized StimulusDataset metadata (conditions, sweep_sequence, ...). Source: openisi_stimulus::dataset::StimulusDataset::export_metadata." }
-          }
+        "/acquisition/stimulus": {
+          "datasets": {
+            "condition_indices": {
+              "doc": "Per-frame condition index.",
+              "dtype": "u8",
+              "shape": "(N,)"
+            },
+            "dropped_frame_indices": {
+              "doc": "Indices of frames flagged as drops at capture.",
+              "dtype": "u32",
+              "shape": "(D,)"
+            },
+            "frame_deltas_us": {
+              "doc": "Inter-frame deltas.",
+              "dtype": "i64",
+              "shape": "(N,)"
+            },
+            "progress": {
+              "doc": "Per-frame sweep progress.",
+              "dtype": "f32",
+              "shape": "(N,)"
+            },
+            "state_ids": {
+              "doc": "Per-frame stimulus state id.",
+              "dtype": "u8",
+              "shape": "(N,)"
+            },
+            "sweep_indices": {
+              "doc": "Per-frame sweep index.",
+              "dtype": "u32",
+              "shape": "(N,)"
+            },
+            "timestamps_sec": {
+              "doc": "Unified seconds from t0.",
+              "dtype": "f64",
+              "shape": "(N,)"
+            },
+            "timestamps_us": {
+              "doc": "Stimulus QPC timestamps.",
+              "dtype": "i64",
+              "shape": "(N,)"
+            }
+          },
+          "doc": "Per-frame stimulus state arrays."
         },
-        "rig_params": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "serde JSON of the typed RigConfig, captured at acquisition. Read by AcquisitionProperties::from_oisi_attrs at analyze time (camera.um_per_pixel)." },
-            "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
-          }
-        },
-        "experiment_params": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "serde JSON of the typed ExperimentConfig. Carries stimulus_geometry.{azi_angular_range, alt_angular_range, offset_azi, offset_alt, rotation_k}." },
-            "present_when": { "const": "captured by write_oisi (raw acquisition path)" }
-          }
-        },
-        "analysis_params": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode (JSON)" },
-            "description": { "const": "serde JSON of the tagged AnalysisConfig — per-stage {method, active tunables}. Updated on every `analyze` run via io::write_analysis_params_attr." },
-            "present_when": { "const": "after first analysis run" }
-          }
-        },
-        "animal_id": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "Free-form animal identifier (SessionMetadata.animal_id)." }
-          }
-        },
-        "notes": {
-          "type": "object",
-          "properties": {
-            "dtype": { "const": "VarLenUnicode" },
-            "description": { "const": "Free-form session notes (SessionMetadata.notes)." }
-          }
+        "/acquisition/timing": {
+          "attributes": {
+            "beat_period_sec": {
+              "doc": "Beat period.",
+              "dtype": "f64"
+            },
+            "cam_jitter_sec": {
+              "doc": "Camera jitter (s).",
+              "dtype": "f64"
+            },
+            "cam_sample_count": {
+              "doc": "Camera sample count.",
+              "dtype": "u32"
+            },
+            "expected_phase_samples": {
+              "doc": "Expected phase samples.",
+              "dtype": "f64"
+            },
+            "f_cam_hz": {
+              "doc": "Camera frame rate.",
+              "dtype": "f64"
+            },
+            "f_stim_hz": {
+              "doc": "Stimulus frame rate.",
+              "dtype": "f64"
+            },
+            "onset_uncertainty_fraction": {
+              "doc": "Onset uncertainty (fraction).",
+              "dtype": "f64"
+            },
+            "onset_uncertainty_sec": {
+              "doc": "Onset uncertainty (s).",
+              "dtype": "f64"
+            },
+            "phase_coverage": {
+              "doc": "Phase coverage.",
+              "dtype": "f64"
+            },
+            "phase_increment": {
+              "doc": "Per-frame phase increment.",
+              "dtype": "f64"
+            },
+            "rate_ratio": {
+              "doc": "Camera/stimulus rate ratio.",
+              "dtype": "f64"
+            },
+            "regime": {
+              "doc": "Timing regime.",
+              "dtype": "VarLenUnicode"
+            },
+            "stim_jitter_sec": {
+              "doc": "Stimulus jitter (s).",
+              "dtype": "f64"
+            },
+            "stim_sample_count": {
+              "doc": "Stimulus sample count.",
+              "dtype": "u32"
+            },
+            "t_cam_sec": {
+              "doc": "Camera period.",
+              "dtype": "f64"
+            },
+            "t_stim_sec": {
+              "doc": "Stimulus period.",
+              "dtype": "f64"
+            },
+            "warnings": {
+              "doc": "Timing warnings, JSON array.",
+              "dtype": "VarLenUnicode (JSON array)",
+              "present_when": "the TimingCharacterization carried ≥1 warning"
+            }
+          },
+          "doc": "Timing characterization (frame-rate ratios, jitter, phase coverage).",
+          "present_when": "a TimingCharacterization was attached to the acquisition"
         }
       }
     },
-    "groups": {
-      "type": "object",
-      "properties": {
-        "/anatomical": {
-          "type": "object",
-          "description": "Anatomical (vasculature) image, captured at session start.",
-          "properties": {
-            "dtype": { "const": "u8" },
-            "shape": { "const": "(H, W)" },
-            "present_when": { "const": "user captured an anatomical image" },
-            "subdatasets": {
-              "type": "object",
-              "properties": {
-                "/anatomical/cortex_roi": {
-                  "type": "object",
-                  "properties": {
-                    "dtype": { "const": "u8 (bool encoded)" },
-                    "shape": { "const": "(H, W)" },
-                    "present_when": { "const": "user drew a cortex polygon in the UI" }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "/hardware": {
-          "type": "object",
-          "description": "Per-acquisition hardware snapshot (monitor + camera identity + viewing geometry).",
-          "attributes": {
-            "monitor_name": "VarLenUnicode",
-            "monitor_width_px": "u32",
-            "monitor_height_px": "u32",
-            "monitor_width_cm": "f64",
-            "monitor_height_cm": "f64",
-            "monitor_refresh_hz": "f64",
-            "measured_refresh_hz": "f64",
-            "gamma_corrected": "u8 (0/1)",
-            "camera_model": "VarLenUnicode",
-            "camera_width_px": "u32",
-            "camera_height_px": "u32",
-            "viewing_distance_cm": "f64",
-            "camera_exposure_us": "u32",
-            "camera_binning": "u16",
-            "monitor_rotation_deg": "f64",
-            "target_stimulus_fps": "u32"
-          }
-        },
-        "/acquisition": {
-          "type": "object",
-          "description": "Raw acquisition payload — camera frames, per-frame stimulus state, schedule, quality metrics.",
-          "present_when": "captured by write_oisi (raw acquisition path only)",
-          "subgroups": {
-            "/acquisition/camera": {
-              "type": "object",
-              "properties": {
-                "frames": { "dtype": "u16", "shape": "(T, H, W)", "description": "Raw sensor frames; gzip+fletcher32 chunked (1, H, W)." },
-                "timestamps_sec": { "dtype": "f64", "shape": "(T,)", "description": "Unified seconds from t0 (first frame system timestamp)." },
-                "hardware_timestamps_us": { "dtype": "i64", "shape": "(T,)", "description": "Camera internal-clock timestamps." },
-                "system_timestamps_us": { "dtype": "i64", "shape": "(T,)", "description": "QPC timestamps at frame read." },
-                "sequence_numbers": { "dtype": "i64", "shape": "(T,)" }
-              }
-            },
-            "/acquisition/stimulus": {
-              "type": "object",
-              "properties": {
-                "timestamps_us": { "dtype": "i64", "shape": "(N,)" },
-                "timestamps_sec": { "dtype": "f64", "shape": "(N,)" },
-                "state_ids": { "dtype": "u8", "shape": "(N,)" },
-                "condition_indices": { "dtype": "u8", "shape": "(N,)" },
-                "sweep_indices": { "dtype": "u32", "shape": "(N,)" },
-                "progress": { "dtype": "f32", "shape": "(N,)" },
-                "frame_deltas_us": { "dtype": "i64", "shape": "(N,)" },
-                "dropped_frame_indices": { "dtype": "u32", "shape": "(D,)", "description": "Indices of stimulus frames flagged as drops at capture." }
-              }
-            },
-            "/acquisition/schedule": {
-              "type": "object",
-              "attributes": {
-                "sweep_sequence": "VarLenUnicode (JSON array of direction names)"
-              },
-              "properties": {
-                "sweep_start_us": { "dtype": "i64", "shape": "(K,)" },
-                "sweep_end_us": { "dtype": "i64", "shape": "(K,)" },
-                "sweep_start_sec": { "dtype": "f64", "shape": "(K,)" },
-                "sweep_end_sec": { "dtype": "f64", "shape": "(K,)" }
-              }
-            },
-            "/acquisition/clock_sync": {
-              "type": "object",
-              "description": "Camera↔QPC clock offset at start/end of acquisition (drift detection). t0_system_us is always present; the three offset attributes are present_when the acquisition has ≥2 frames carrying BOTH hardware and system timestamps (export.rs computes them only then).",
-              "attributes": {
-                "t0_system_us": "f64",
-                "start_offset_us": "f64 (present_when ≥2 dual-clock frames)",
-                "end_offset_us": "f64 (present_when ≥2 dual-clock frames)",
-                "drift_us": "f64 (present_when ≥2 dual-clock frames; = end_offset_us − start_offset_us)"
-              }
-            },
-            "/acquisition/timing": {
-              "type": "object",
-              "description": "Timing characterization (frame-rate ratios, jitter, phase coverage).",
-              "present_when": "captured when a TimingCharacterization was attached to the acquisition.",
-              "attributes": {
-                "f_cam_hz": "f64",
-                "f_stim_hz": "f64",
-                "t_cam_sec": "f64",
-                "t_stim_sec": "f64",
-                "rate_ratio": "f64",
-                "beat_period_sec": "f64",
-                "phase_increment": "f64",
-                "regime": "VarLenUnicode",
-                "expected_phase_samples": "f64",
-                "phase_coverage": "f64",
-                "onset_uncertainty_sec": "f64",
-                "onset_uncertainty_fraction": "f64",
-                "cam_sample_count": "u32",
-                "stim_sample_count": "u32",
-                "cam_jitter_sec": "f64",
-                "stim_jitter_sec": "f64",
-                "warnings": "VarLenUnicode (JSON array) — present_when the TimingCharacterization carried ≥1 warning."
-              }
-            },
-            "/acquisition/quality": {
-              "type": "object",
-              "description": "Per-acquisition timing/drop quality metrics computed at export.",
-              "attributes": {
-                "camera_drops_total": "u32",
-                "stimulus_drops_total": "u32",
-                "acquisition_complete": "u8 (0/1)",
-                "stimulus_timing_validatable": "u32 (0/1) — 1 if presented on a physical hardware scanout (vblank). On a remote/virtual display there is no hardware vsync, so stimulus_drops_total is not a physically meaningful measurement.",
-                "display_scanout": "VarLenUnicode (\"physical\" | \"remote_virtual\") — paired with stimulus_timing_validatable."
-              },
-              "properties": {
-                "camera_frame_deltas_us": { "dtype": "i64", "shape": "(T-1,)" },
-                "camera_sequence_gaps": { "dtype": "u32", "shape": "(G,)" },
-                "stimulus_frame_deltas_us": { "dtype": "i64", "shape": "(N-1,)" },
-                "stimulus_dropped_indices": { "dtype": "u32", "shape": "(D,)" },
-                "mean_frame_intensity": { "dtype": "f32", "shape": "(T,)" }
-              }
-            }
-          }
-        },
-        "/complex_maps": {
-          "type": "object",
-          "description": "Per-orientation forward/reverse complex maps (output of cycle averaging + DFT). HDF5 carries no portable native-complex type, so each map is stored as a real/imag split: f64 (H, W, 2) with [:,:,0]=real, [:,:,1]=imag.",
-          "present_when": "after first analysis run OR if file was imported from complex-map data.",
-          "properties": {
-            "azi_fwd": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
-            "azi_rev": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
-            "alt_fwd": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." },
-            "alt_rev": { "dtype": "f64", "shape": "(H, W, 2)", "description": "Real/imag split; [:,:,0]=real, [:,:,1]=imag." }
-          }
-        },
-        "/results": {
-          "type": "object",
-          "description": "Analysis outputs. Each f64 dataset carries MapMeta attrs (palette, units, display_min, display_max, wrap_period, nan_means, zero_means) so renderers do zero inference. Bool masks (cortex_mask, area_borders, contours_*) are stored as u8. area_labels is i32. area_signs is i8 (1D, N patches).",
-          "present_when": "after first analysis run",
-          "datasets": {
-            "azi_phase": { "dtype": "f64", "shape": "(H, W)", "units": "rad", "palette": "hsv_circular", "display_range": "[-π, π]", "wrap_period": "2π" },
-            "alt_phase": { "dtype": "f64", "shape": "(H, W)", "units": "rad", "palette": "hsv_circular", "display_range": "[-π, π]", "wrap_period": "2π" },
-            "azi_phase_degrees": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "hsv_circular", "display_range": "[offset_azi-half, offset_azi+half]", "wrap_period": "azi_angular_range" },
-            "alt_phase_degrees": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "hsv_circular", "display_range": "[offset_alt-half, offset_alt+half]", "wrap_period": "alt_angular_range" },
-            "azi_amplitude": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "hot", "display_range": "finite [min, max]" },
-            "alt_amplitude": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "hot", "display_range": "finite [min, max]" },
-            "vfs": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]", "description": "Raw visual field sign." },
-            "vfs_smoothed": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]" },
-            "vfs_smoothed_thresholded": { "dtype": "f64", "shape": "(H, W)", "units": "unitless", "palette": "jet", "display_range": "[-1, 1]", "zero_means": "below_threshold" },
-            "cortex_mask": { "dtype": "u8 (bool)", "shape": "(H, W)" },
-            "area_labels": { "dtype": "i32", "shape": "(H, W)" },
-            "area_signs": { "dtype": "i8", "shape": "(N,)", "description": "Per-patch sign in [-1, +1] order-matched to area_labels values 1..N." },
-            "area_borders": { "dtype": "u8 (bool)", "shape": "(H, W)" },
-            "eccentricity": { "dtype": "f64", "shape": "(H, W)", "units": "deg", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch" },
-            "magnification": { "dtype": "f64", "shape": "(H, W)", "units": "px^2/deg^2", "palette": "jet", "display_range": "2-98% percentile of non-zero finite", "zero_means": "outside_patch", "description": "Cortical magnification (ROI-masked); area per degree² of visual angle." },
-            "magnification_raw": { "dtype": "f64", "shape": "(H, W)", "units": "deg^2/px^2", "palette": "jet", "display_range": "finite [min, max]", "description": "Unmasked Jacobian determinant |det J| (full frame, no ROI gating); the split-criterion input." },
-            "contours_azi": { "dtype": "u8 (bool)", "shape": "(H, W)" },
-            "contours_alt": { "dtype": "u8 (bool)", "shape": "(H, W)" },
-            "spectral_snr_azi": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "spectral_snr_alt": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "allen_power_snr_azi": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "allen_power_snr_alt": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "reliability_azi_fwd": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "reliability_azi_rev": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "reliability_alt_fwd": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" },
-            "reliability_alt_rev": { "dtype": "f64", "shape": "(H, W)", "present_when": "raw acquisition path" }
-          },
-          "per_dataset_attributes": {
-            "description": "Every f64 /results/<name> dataset carries these MapMeta attributes. Renderers consume them exclusively — adding a new map name needs only an arm in `meta_for_f64` (analysis crate).",
-            "attributes": {
-              "palette": "VarLenUnicode (hsv_circular | jet | hot | binary | categorical)",
-              "units": "VarLenUnicode (rad | deg | unitless | bool | label)",
-              "display_min": "f64",
-              "display_max": "f64",
-              "wrap_period": "f64 (0 = non-circular)",
-              "nan_means": "VarLenUnicode (semantic of NaN, empty if no NaN)",
-              "zero_means": "VarLenUnicode (sentinel meaning for literal 0, empty if 0 is just a value)"
-            }
-          }
-        },
-        "/analysis_state": {
-          "type": "object",
-          "description": "Incremental-cache fingerprints — one attribute per pipeline stage, keyed by the stage's fingerprint_key, holding the BLAKE3 Merkle key of the inputs that produced that stage's currently stored output. Source: isi-analysis io.rs (read/write_stage_fingerprint). Ignored by external readers. See INCREMENTAL_ANALYSIS_DESIGN.md.",
-          "present_when": "after first analysis run (incremental cache populated)",
-          "attributes": {
-            "<stage fingerprint_key>": "VarLenUnicode (BLAKE3 hex; one attribute per cacheable stage)"
-          }
-        },
-        "/cache": {
-          "type": "object",
-          "description": "Non-result intermediates the incremental cache restores but which are not /results data: the binary candidate-patch mask and the applied |VFS| threshold that PatchThreshold produces and later stages consume. Regenerable from /results + params; safe to delete. See INCREMENTAL_ANALYSIS_DESIGN.md.",
-          "present_when": "after an analysis run that persisted the patch-threshold tail",
-          "datasets": {
-            "imseg": { "dtype": "u8 (bool)", "shape": "(H, W)", "description": "Binary candidate-patch mask (PatchThreshold output)." }
-          },
-          "attributes": {
-            "threshold_applied": "f64 (the scalar |VFS| threshold PatchThreshold applied)"
-          }
+    "/analysis_state": {
+      "doc": "Incremental-cache fingerprints: one attribute per pipeline stage, BLAKE3 Merkle key of that stage's inputs.",
+      "dynamic_attributes": "one VarLenUnicode attribute per cacheable stage, keyed by the stage's fingerprint_key (BLAKE3 hex)",
+      "present_when": "after first analysis run (incremental cache populated)"
+    },
+    "/cache": {
+      "attributes": {
+        "threshold_applied": {
+          "doc": "The scalar |VFS| threshold PatchThreshold applied.",
+          "dtype": "f64"
         }
-      }
+      },
+      "datasets": {
+        "imseg": {
+          "doc": "Binary candidate-patch mask (PatchThreshold output).",
+          "dtype": "u8 (bool)",
+          "shape": "(H, W)"
+        }
+      },
+      "doc": "Non-result intermediates the incremental cache restores (regenerable; safe to delete).",
+      "present_when": "an analysis run persisted the patch-threshold tail"
+    },
+    "/complex_maps": {
+      "datasets": {
+        "alt_fwd": {
+          "doc": "Real/imag split.",
+          "dtype": "f64",
+          "shape": "(H, W, 2)"
+        },
+        "alt_rev": {
+          "doc": "Real/imag split.",
+          "dtype": "f64",
+          "shape": "(H, W, 2)"
+        },
+        "azi_fwd": {
+          "doc": "Real/imag split; [:,:,0]=real, [:,:,1]=imag.",
+          "dtype": "f64",
+          "shape": "(H, W, 2)"
+        },
+        "azi_rev": {
+          "doc": "Real/imag split.",
+          "dtype": "f64",
+          "shape": "(H, W, 2)"
+        }
+      },
+      "doc": "Per-orientation fwd/rev complex maps (real/imag split: f64 (H,W,2)).",
+      "present_when": "after first analysis run OR a complex-map import"
+    },
+    "/hardware": {
+      "attributes": {
+        "camera_binning": {
+          "doc": "Camera binning factor.",
+          "dtype": "u16"
+        },
+        "camera_exposure_us": {
+          "doc": "Camera exposure (µs).",
+          "dtype": "u32"
+        },
+        "camera_height_px": {
+          "doc": "Camera height (px).",
+          "dtype": "u32"
+        },
+        "camera_model": {
+          "doc": "Camera model.",
+          "dtype": "VarLenUnicode"
+        },
+        "camera_width_px": {
+          "doc": "Camera width (px).",
+          "dtype": "u32"
+        },
+        "gamma_corrected": {
+          "doc": "Gamma-correction flag.",
+          "dtype": "u8 (0/1)"
+        },
+        "measured_refresh_hz": {
+          "doc": "Measured refresh (Hz).",
+          "dtype": "f64"
+        },
+        "monitor_height_cm": {
+          "doc": "Monitor height (cm).",
+          "dtype": "f64"
+        },
+        "monitor_height_px": {
+          "doc": "Monitor height (px).",
+          "dtype": "u32"
+        },
+        "monitor_name": {
+          "doc": "Monitor name.",
+          "dtype": "VarLenUnicode"
+        },
+        "monitor_refresh_hz": {
+          "doc": "Nominal refresh (Hz).",
+          "dtype": "f64"
+        },
+        "monitor_rotation_deg": {
+          "doc": "Monitor rotation (deg).",
+          "dtype": "f64"
+        },
+        "monitor_width_cm": {
+          "doc": "Monitor width (cm).",
+          "dtype": "f64"
+        },
+        "monitor_width_px": {
+          "doc": "Monitor width (px).",
+          "dtype": "u32"
+        },
+        "target_stimulus_fps": {
+          "doc": "Target stimulus FPS.",
+          "dtype": "u32"
+        },
+        "viewing_distance_cm": {
+          "doc": "Viewing distance (cm).",
+          "dtype": "f64"
+        }
+      },
+      "doc": "Per-acquisition hardware snapshot (monitor + camera identity + viewing geometry).",
+      "present_when": "raw acquisition with a hardware snapshot"
+    },
+    "/results": {
+      "datasets": {
+        "allen_power_snr_alt": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude Allen power SNR.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "allen_power_snr_azi": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth Allen power SNR.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "alt_amplitude": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude response amplitude.",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "alt_phase": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude phase (rad).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "alt_phase_degrees": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude phase (deg).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "area_borders": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Area border mask.",
+          "dtype": "u8 (bool)",
+          "shape": "(H, W)"
+        },
+        "area_labels": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Per-area integer labels (0 = none).",
+          "dtype": "i32",
+          "shape": "(H, W)"
+        },
+        "area_signs": {
+          "doc": "Per-patch sign in [-1, +1], order-matched to area_labels 1..N.",
+          "dtype": "i8",
+          "shape": "(N,)"
+        },
+        "azi_amplitude": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth response amplitude.",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "azi_phase": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth phase (rad).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "azi_phase_degrees": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth phase (deg).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "contours_alt": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude iso-contour mask.",
+          "dtype": "u8 (bool)",
+          "shape": "(H, W)"
+        },
+        "contours_azi": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth iso-contour mask.",
+          "dtype": "u8 (bool)",
+          "shape": "(H, W)"
+        },
+        "cortex_mask": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Cortex ROI mask.",
+          "dtype": "u8 (bool)",
+          "shape": "(H, W)"
+        },
+        "eccentricity": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Visual-field eccentricity (deg).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "magnification": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Cortical magnification (px²/deg², ROI-masked).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "magnification_raw": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Unmasked |det J| (deg²/px²); split-criterion input.",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "reliability_alt_fwd": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude fwd cross-cycle reliability.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "reliability_alt_rev": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude rev cross-cycle reliability.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "reliability_azi_fwd": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth fwd cross-cycle reliability.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "reliability_azi_rev": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth rev cross-cycle reliability.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "spectral_snr_alt": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude spectral SNR.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "spectral_snr_azi": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth spectral SNR.",
+          "dtype": "f64",
+          "present_when": "raw acquisition path",
+          "shape": "(H, W)"
+        },
+        "vfs": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Raw visual field sign.",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "vfs_smoothed": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Smoothed VFS (segmentation input).",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "vfs_smoothed_thresholded": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Thresholded smoothed VFS.",
+          "dtype": "f64",
+          "shape": "(H, W)"
+        }
+      },
+      "doc": "Analysis output maps. Every dataset except area_signs carries MapMeta attrs.",
+      "present_when": "after first analysis run"
     }
-  }
+  },
+  "root_attributes": {
+    "analysis_params": {
+      "doc": "serde JSON of the tagged AnalysisConfig.",
+      "dtype": "VarLenUnicode (JSON)",
+      "present_when": "after first analysis run"
+    },
+    "animal_id": {
+      "doc": "Free-form animal identifier.",
+      "dtype": "VarLenUnicode",
+      "present_when": "session metadata with a non-empty animal id"
+    },
+    "created_at": {
+      "doc": "ISO-8601 UTC creation timestamp.",
+      "dtype": "VarLenUnicode"
+    },
+    "experiment_params": {
+      "doc": "serde JSON of the typed ExperimentConfig.",
+      "dtype": "VarLenUnicode (JSON)",
+      "present_when": "raw acquisition capture"
+    },
+    "notes": {
+      "doc": "Free-form session notes.",
+      "dtype": "VarLenUnicode",
+      "present_when": "session metadata with non-empty notes"
+    },
+    "rig_params": {
+      "doc": "serde JSON of the typed RigConfig.",
+      "dtype": "VarLenUnicode (JSON)",
+      "present_when": "raw acquisition capture"
+    },
+    "software_version": {
+      "doc": "OpenISI CARGO_PKG_VERSION at capture.",
+      "dtype": "VarLenUnicode",
+      "present_when": "raw acquisition capture"
+    },
+    "source_type": {
+      "doc": "Origin: \"raw_acquisition\" or an importer source tag.",
+      "dtype": "VarLenUnicode"
+    },
+    "stimulus_metadata": {
+      "doc": "StimulusDataset export metadata, JSON.",
+      "dtype": "VarLenUnicode (JSON)",
+      "present_when": "raw acquisition capture"
+    },
+    "version": {
+      "doc": "Format version (FORMAT_VERSION); gated by verify_format_version.",
+      "dtype": "VarLenUnicode"
+    }
+  },
+  "root_datasets": {
+    "/anatomical": {
+      "doc": "Anatomical (vasculature) image captured at session start.",
+      "dtype": "u8",
+      "present_when": "an anatomical image was captured",
+      "shape": "(H, W)"
+    }
+  },
+  "title": "OpenISI .oisi file structure (HDF5)"
 }

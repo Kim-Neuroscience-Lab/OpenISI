@@ -1,97 +1,109 @@
-//! Enforced `.oisi` ↔ `docs/oisi.schema.json` contract.
+//! Enforced `.oisi` ↔ schema contract, against the Rust single source of truth
+//! ([`isi_analysis::oisi_schema::SCHEMA`]).
 //!
-//! `oisi.schema.json` is a hand-maintained catalog of every group, dataset, and
-//! attribute an `.oisi` file may contain. Hand-maintained docs drift from code
-//! silently — that is exactly how `/analysis_state` was once written by the code
-//! but missing from the schema. This test makes that drift a CI failure instead
-//! of a latent lie.
+//! Two guarantees are locked here:
 //!
-//! Direction checked here: **no undocumented entity** — every group, dataset,
-//! and attribute physically present in a real analyzed `.oisi` must be named in
-//! the schema. That is the direction that catches "code grew a field, nobody
-//! updated the doc". (The reverse — every documented item is present — needs a
-//! fixture that exercises every `present_when` branch, including the raw
-//! `/acquisition` tree this analyzed fixture lacks; the acquisition-write side
-//! is contract-checked next to `write_oisi` in the `openisi` crate.)
+//! 1. **The doc is generated, not hand-maintained.** `docs/oisi.schema.json` must
+//!    equal [`oisi_schema::to_json_schema`]. Regenerate after editing `SCHEMA`:
+//!    `OISI_REGEN_SCHEMA=1 cargo test -p isi-analysis --test oisi_schema_contract`.
+//! 2. **The schema matches reality.** A real analyzed `.oisi` is checked against
+//!    `SCHEMA` in both directions: no present entity is undocumented (catches
+//!    "code grew a field"), and every always-present documented entity in a
+//!    present group exists (catches "schema documents a field the code dropped").
 //!
-//! The schema is a *descriptive* catalog with an irregular shape (its named
-//! children live under `properties` / `datasets` / `subgroups` / `subdatasets` /
-//! `attributes`), so the documented-name set is collected by recursively
-//! gathering the keys of those containers. Over-collecting schema-meta keys
-//! (`dtype`, `shape`, …) only ever *over-permits*, so it cannot cause a false
-//! drift failure — only the present⊆documented direction is asserted.
+//! The acquisition-write side (`/acquisition`, `/hardware`) is contract-checked
+//! against the same `SCHEMA` next to `write_oisi` in the `openisi` crate, since
+//! only that crate can produce a raw capture file.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use serde_json::Value;
+use isi_analysis::oisi_schema::{self, Group, Presence, SCHEMA};
 
-/// Containers in the schema whose object keys name an HDF5 entity.
-const NAME_CONTAINERS: &[&str] = &[
-    "properties",
-    "datasets",
-    "subgroups",
-    "subdatasets",
-    "attributes",
-];
-
-/// Recursively collect every entity name the schema documents (basename only;
-/// `/complex_maps` → `complex_maps`, `/acquisition/camera` → `camera`).
-fn documented_names(schema: &Value) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    fn walk(v: &Value, names: &mut BTreeSet<String>) {
-        match v {
-            Value::Object(map) => {
-                for (key, child) in map {
-                    if NAME_CONTAINERS.contains(&key.as_str()) {
-                        if let Value::Object(children) = child {
-                            for name in children.keys() {
-                                let base = name.rsplit('/').next().unwrap_or(name);
-                                names.insert(base.to_string());
-                            }
-                        }
-                    }
-                    walk(child, names);
-                }
-            }
-            Value::Array(arr) => arr.iter().for_each(|i| walk(i, names)),
-            _ => {}
-        }
-    }
-    walk(schema, &mut names);
-    names
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Walk a real `.oisi` group tree, recording every present entity NOT documented.
+fn schema_doc_path() -> PathBuf {
+    manifest_dir().join("../../docs/oisi.schema.json")
+}
+
+/// Every entity name (basename) the schema documents.
+fn documented_basenames() -> BTreeSet<String> {
+    fn add_group(g: &Group, s: &mut BTreeSet<String>) {
+        s.insert(g.path.rsplit('/').next().unwrap_or(g.path).to_string());
+        for a in g.attrs {
+            s.insert(a.name.to_string());
+        }
+        for d in g.datasets {
+            s.insert(d.name.to_string());
+            for a in d.attrs {
+                s.insert(a.name.to_string());
+            }
+        }
+        for sub in g.subgroups {
+            add_group(sub, s);
+        }
+    }
+    let mut s = BTreeSet::new();
+    for a in SCHEMA.root_attrs {
+        s.insert(a.name.to_string());
+    }
+    for d in SCHEMA.root_datasets {
+        s.insert(d.name.to_string());
+    }
+    for g in SCHEMA.groups {
+        add_group(g, &mut s);
+    }
+    s
+}
+
+/// Paths of groups whose attributes are dynamically named (e.g. `/analysis_state`).
+fn dynamic_attr_paths() -> BTreeSet<String> {
+    fn rec(g: &Group, s: &mut BTreeSet<String>) {
+        if g.dynamic_attrs.is_some() {
+            s.insert(g.path.to_string());
+        }
+        for sub in g.subgroups {
+            rec(sub, s);
+        }
+    }
+    let mut s = BTreeSet::new();
+    for g in SCHEMA.groups {
+        rec(g, &mut s);
+    }
+    s
+}
+
+// --- Direction A: nothing present is undocumented ---------------------------
+
 fn collect_undocumented(
     path: &str,
     group: &hdf5::Group,
     documented: &BTreeSet<String>,
+    dynamic: &BTreeSet<String>,
     out: &mut Vec<String>,
 ) {
-    // `/analysis_state` attributes are dynamic per-stage fingerprint keys
-    // (e.g. `retinotopy`); the schema documents the *pattern*
-    // (`<stage fingerprint_key>`), not each name, so don't check them.
-    if path != "/analysis_state" {
+    if !dynamic.contains(path) {
         for a in group.attr_names().unwrap_or_default() {
             if !documented.contains(&a) {
                 out.push(format!("attribute {path}@{a}"));
             }
         }
     }
-    for name in group.member_names().unwrap_or_default() {
+    for nm in group.member_names().unwrap_or_default() {
         let child = if path == "/" {
-            format!("/{name}")
+            format!("/{nm}")
         } else {
-            format!("{path}/{name}")
+            format!("{path}/{nm}")
         };
-        if let Ok(sub) = group.group(&name) {
-            if !documented.contains(&name) {
+        if let Ok(sub) = group.group(&nm) {
+            if !documented.contains(&nm) {
                 out.push(format!("group {child}"));
             }
-            collect_undocumented(&child, &sub, documented, out);
-        } else if let Ok(ds) = group.dataset(&name) {
-            if !documented.contains(&name) {
+            collect_undocumented(&child, &sub, documented, dynamic, out);
+        } else if let Ok(ds) = group.dataset(&nm) {
+            if !documented.contains(&nm) {
                 out.push(format!("dataset {child}"));
             }
             for a in ds.attr_names().unwrap_or_default() {
@@ -103,42 +115,109 @@ fn collect_undocumented(
     }
 }
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+// --- Direction B: every always-present documented entity exists -------------
+
+fn is_always(p: Presence) -> bool {
+    matches!(p, Presence::Always)
 }
 
-#[test]
-fn analyzed_oisi_has_no_entity_undocumented_by_schema() {
-    let schema_path = manifest_dir().join("../../docs/oisi.schema.json");
-    let schema: Value = serde_json::from_str(
-        &std::fs::read_to_string(&schema_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display())),
-    )
-    .expect("oisi.schema.json must be valid JSON");
-    let documented = documented_names(&schema);
-    // Sanity: the collector found a real catalog, not an empty set.
-    assert!(
-        documented.contains("complex_maps") && documented.contains("analysis_state"),
-        "schema-name collector returned an implausible set: {documented:?}"
-    );
+fn collect_missing(file: &hdf5::File, out: &mut Vec<String>) {
+    let root_attrs: BTreeSet<String> = file.attr_names().unwrap_or_default().into_iter().collect();
+    for a in SCHEMA.root_attrs {
+        if is_always(a.presence) && !root_attrs.contains(a.name) {
+            out.push(format!("root attribute @{}", a.name));
+        }
+    }
+    for g in SCHEMA.groups {
+        check_group_present(file, g, out);
+    }
+}
 
-    let oisi = manifest_dir().join("tests/fixtures/baseline/R43_smoke.baseline.oisi");
-    let file = hdf5::File::open(&oisi)
-        .unwrap_or_else(|e| panic!("open {}: {e}", oisi.display()));
+fn check_group_present(file: &hdf5::File, g: &Group, out: &mut Vec<String>) {
+    let rel = g.path.trim_start_matches('/');
+    let Ok(grp) = file.group(rel) else {
+        return; // group absent → its own (conditional) presence is not checked here
+    };
+    let attrs: BTreeSet<String> = grp.attr_names().unwrap_or_default().into_iter().collect();
+    for a in g.attrs {
+        if is_always(a.presence) && !attrs.contains(a.name) {
+            out.push(format!("attribute {}@{}", g.path, a.name));
+        }
+    }
+    let members: BTreeSet<String> = grp.member_names().unwrap_or_default().into_iter().collect();
+    for d in g.datasets {
+        if is_always(d.presence) && !members.contains(d.name) {
+            out.push(format!("dataset {}/{}", g.path, d.name));
+        }
+    }
+    for sub in g.subgroups {
+        let present = file.group(sub.path.trim_start_matches('/')).is_ok();
+        if is_always(sub.presence) && !present {
+            out.push(format!("subgroup {}", sub.path));
+        }
+        if present {
+            check_group_present(file, sub, out);
+        }
+    }
+}
+
+/// Shared entry point reused by the acquisition-side contract test in `openisi`.
+pub fn assert_oisi_matches_schema(oisi: &std::path::Path) {
+    let file = hdf5::File::open(oisi).unwrap_or_else(|e| panic!("open {}: {e}", oisi.display()));
+    let documented = documented_basenames();
+    let dynamic = dynamic_attr_paths();
 
     let mut undocumented = Vec::new();
-    // Root attributes (on "/").
     for a in file.attr_names().unwrap_or_default() {
         if !documented.contains(&a) {
             undocumented.push(format!("root attribute @{a}"));
         }
     }
-    collect_undocumented("/", &file, &documented, &mut undocumented);
-
+    collect_undocumented("/", &file, &documented, &dynamic, &mut undocumented);
     assert!(
         undocumented.is_empty(),
-        "these entities exist in the .oisi but are undocumented in \
-         docs/oisi.schema.json (schema drift — document them):\n  {}",
+        "{}: entities present but UNDOCUMENTED in oisi_schema::SCHEMA (drift):\n  {}",
+        oisi.display(),
         undocumented.join("\n  ")
+    );
+
+    let mut missing = Vec::new();
+    collect_missing(&file, &mut missing);
+    assert!(
+        missing.is_empty(),
+        "{}: entities SCHEMA marks always-present but MISSING from the file:\n  {}",
+        oisi.display(),
+        missing.join("\n  ")
+    );
+}
+
+#[test]
+fn committed_schema_doc_matches_generated() {
+    let generated = oisi_schema::to_json_schema();
+    let path = schema_doc_path();
+    if std::env::var("OISI_REGEN_SCHEMA").is_ok() {
+        let pretty = serde_json::to_string_pretty(&generated).expect("serialize schema") + "\n";
+        std::fs::write(&path, pretty).expect("write schema doc");
+        return;
+    }
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display())),
+    )
+    .expect("committed oisi.schema.json must be valid JSON");
+    assert_eq!(
+        committed, generated,
+        "docs/oisi.schema.json is stale vs oisi_schema::SCHEMA — regenerate with \
+         `OISI_REGEN_SCHEMA=1 cargo test -p isi-analysis --test oisi_schema_contract`"
+    );
+}
+
+#[test]
+fn analyzed_oisi_matches_schema() {
+    // Sanity: the SCHEMA flatteners found a real catalog.
+    let documented = documented_basenames();
+    assert!(documented.contains("complex_maps") && documented.contains("analysis_state"));
+
+    assert_oisi_matches_schema(
+        &manifest_dir().join("tests/fixtures/baseline/R43_smoke.baseline.oisi"),
     );
 }

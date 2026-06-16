@@ -14,6 +14,7 @@ pub mod mat5;
 pub mod math;
 pub mod methods;
 pub mod migrate;
+pub mod oisi_schema;
 pub mod params;
 pub mod pipeline;
 pub mod segmentation;
