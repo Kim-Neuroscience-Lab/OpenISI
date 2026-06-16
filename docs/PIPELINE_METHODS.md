@@ -1,9 +1,8 @@
 # Pipeline Method Architecture
 
-Status: design proposal (2026-06). Defines how analysis methods are selected,
-grouped, parameterized, and validated. Extends — does not replace — the existing
-stage/method enums (`crates/isi-analysis/src/methods/`), the `Tagged<>` param
-system (`crates/openisi-params/`), and the per-stage fingerprint cache
+How analysis methods are selected, grouped, parameterized, and validated. It builds
+on the stage/method enums (`crates/isi-analysis/src/methods/`), the typed tagged-enum
+param system (`crates/openisi-params/`), and the per-stage fingerprint cache
 (`crates/isi-analysis/src/pipeline/fingerprint.rs`).
 
 ## 1. Principle: the *method* is the unit, not the pipeline
@@ -188,21 +187,15 @@ Open Decisions.
    (exhaustive, allocation-free); "extensibility" is adding a variant, which is
    cheap and keeps the menu a closed, audited set.
 
-## 10. First step
+## 10. The golden-test net
 
-Stand up the **golden-test harness against one reference method** (proposed:
-`SnlcGarrett2014ImBound` vs `getMouseAreasX.m`, since its on-data behavior is
-already suspect). Outcomes: (a) proves whether our claimed reproductions are
-faithful, (b) pins the exact defaults the presets need, (c) establishes the
-validation net for every method added afterward.
-
-> **Status (2026-06):** harness built and proven against **both** reference
-> ecosystems — Python/scipy (`tests/golden/*.py`) and MATLAB via Octave 11.2
-> (`tests/golden/*.m`). In-crate golden tests in `compute/golden_vfs.rs` and
-> `segmentation/golden_cortex_morph.rs`; binary fixtures in
-> `tests/golden/fixtures/`. It already caught + fixed a real faithfulness bug
-> (disk erosion treated the image edge as background; MATLAB `imerode` pads with
-> 1s). See §11 for live coverage.
+Every author/year-named method is validated by a golden test against its reference
+implementation, across **both** reference ecosystems — Python/scipy
+(`tests/golden/*.py`) and MATLAB via Octave (`tests/golden/*.m`) — with in-crate
+golden tests in `compute/golden_vfs.rs` and `segmentation/golden_cortex_morph.rs` and
+binary fixtures in `tests/golden/fixtures/`. The net both proves a claimed
+reproduction is faithful and pins the exact defaults the presets need; the live
+coverage matrix is §11.
 
 ## 11. Faithful-reproduction coverage matrix
 

@@ -261,6 +261,25 @@
               "zero_means": "VarLenUnicode (sentinel meaning for literal 0, empty if 0 is just a value)"
             }
           }
+        },
+        "/analysis_state": {
+          "type": "object",
+          "description": "Incremental-cache fingerprints — one attribute per pipeline stage, keyed by the stage's fingerprint_key, holding the BLAKE3 Merkle key of the inputs that produced that stage's currently stored output. Source: isi-analysis io.rs (read/write_stage_fingerprint). Ignored by external readers. See INCREMENTAL_ANALYSIS_DESIGN.md.",
+          "present_when": "after first analysis run (incremental cache populated)",
+          "attributes": {
+            "<stage fingerprint_key>": "VarLenUnicode (BLAKE3 hex; one attribute per cacheable stage)"
+          }
+        },
+        "/cache": {
+          "type": "object",
+          "description": "Non-result intermediates the incremental cache restores but which are not /results data: the binary candidate-patch mask and the applied |VFS| threshold that PatchThreshold produces and later stages consume. Regenerable from /results + params; safe to delete. See INCREMENTAL_ANALYSIS_DESIGN.md.",
+          "present_when": "after an analysis run that persisted the patch-threshold tail",
+          "datasets": {
+            "imseg": { "dtype": "u8 (bool)", "shape": "(H, W)", "description": "Binary candidate-patch mask (PatchThreshold output)." }
+          },
+          "attributes": {
+            "threshold_applied": "f64 (the scalar |VFS| threshold PatchThreshold applied)"
+          }
         }
       }
     }

@@ -1,297 +1,203 @@
 # UI Architecture
 
-## Layout
+This is the single source of truth for the **frontend concern**: how the UI is
+built, how it talks to the Rust backend, and how it renders parameters and maps.
+For the project's guiding principles see [PRINCIPLES.md](PRINCIPLES.md); for the
+system as a whole (backend crates, pipeline, IPC surface) see
+[ARCHITECTURE.md](ARCHITECTURE.md). This doc does not restate either.
+
+## What the frontend is
+
+Vanilla, **build-less** JavaScript. There is no framework, no TypeScript, no
+bundler, no `package.json`, no `node_modules`, no compile step. The browser
+loads `ui/index.html`, which loads `ui/src/main.js` as a native ES module
+(`<script type="module">`), and the rest of the modules are pulled in with
+native `import` / dynamic `import()`. Tauri serves the `ui/` directory directly
+(`tauri.conf.json` → `frontendDist: "../ui"`; no `devUrl`, no
+`beforeDevCommand`/`beforeBuildCommand`). Editing a file under `ui/src/` and
+reloading is the entire dev loop.
+
+Styling is a single hand-written stylesheet, `ui/styles/app.css`. Dark theme —
+the scientist works in a dark room and bright UI contaminates imaging. Icons are
+inline Lucide SVGs (MIT) embedded in `index.html`.
+
+### File map
 
 ```
-┌──────┬────────────────────────────────┬──────────────────┐
-│      │                                │                  │
-│ ICON │   Main content area            │  Live preview    │
-│ BAR  │                                │  (camera, when   │
-│      │                                │   connected)     │
-│  ○   │                                │                  │
-│  ○   │                                │                  │
-│  ○   │                                │                  │
-│      │                                │                  │
-│      │                                │                  │
-├──────┴────────────────────────────────┴──────────────────┤
-│ Status bar                                               │
-└──────────────────────────────────────────────────────────┘
+ui/
+  index.html                       static shell: icon bar, content area,
+                                    layered preview panel, layer bar, status bar
+  styles/app.css                   single stylesheet (dark theme)
+  src/
+    main.js                        entry point: navigation, layered preview/
+                                   visualization, status bar, global IPC
+                                   listeners, window.openISI API for views
+    param-form.js                  descriptor-driven form builder
+                                   (backend param descriptors → HTML inputs)
+    views/
+      library.js                   .oisi file explorer (home view)
+      session.js                   acquisition workflow rail
+                                   (Setup → Focus → Protocol → Acquire)
+      analysis.js                  single-file analysis + map visualization
+    lib/
+      errors.js                    error-payload helpers for invoke catch blocks
+      error-codes.generated.js     GENERATED catalog of error codes/categories
 ```
 
-**Icon bar** — thin, left edge, icons only with tooltips. Always visible.
-
-**Main content area** — changes based on which icon is selected.
-
-**Live preview panel** — right side, persistent when camera is connected. Collapses when no camera. During Focus, expands to full height. During Acquire, shows monitoring metrics alongside preview.
-
-**Status bar** — bottom edge, always visible. Shows connected hardware, current activity, timing info.
-
-**Dark theme** — the scientist works in a dark room. Bright UI contaminates imaging and is painful to look at.
-
-## Navigation
-
-Three icons:
-
-### Library (default on launch)
-Always enabled. This is the home screen.
-
-Shows `.oisi` files from the configured data directory as a table or card grid. Metadata columns: date, animal ID, stimulus type, conditions, duration, whether analysis results exist, notes excerpt.
-
-**Actions from Library:**
-- Select a file → "Open for Analysis" → loads file, enables Analysis icon
-- "New Session" button → enables Session icon, switches to Session view
-- "Import" button → brings in external data (SNLC `.mat`, etc.), converts to `.oisi`, appears in Library
-- "Export" on selected file → export maps/data to TIFF, CSV, MATLAB
-- Delete, rename (basic file management)
-
-Sort and filter by date, animal ID, stimulus type.
-
-### Session (disabled until "New Session")
-Activates when the user clicks "New Session" in Library. Stays active until the user explicitly ends the session or starts a new one.
-
-A session spans an entire sitting — the scientist may run multiple acquisitions on the same animal without ending the session. Hardware stays connected, anatomical stays captured, protocol can be adjusted between runs.
-
-**Starting a new session when one is active:** prompts "A session is in progress. End current session and start new?" No silent overwriting.
-
-**Content:** the workflow rail — collapsible sections, accordion-style. Each section header shows a one-line status summary and a green checkmark when complete.
-
-## Workflow sections
-
-Each section owns a specific set of configurable values. The principle: values live where the scientist thinks about them, not where they happen to be stored in config files.
-
-### Setup — the physical rig
-
-Everything about the hardware and physical arrangement. Set once per session, rarely changes between acquisitions.
-
-**Monitor:**
-- Monitor selection (dropdown of detected monitors)
-- Physical dimensions — width/height in cm (EDID-detected, user-overridable)
-- Source label ("EDID" vs "user override") with hint to measure if uncertain
-- Display validation button → measured refresh Hz, jitter, sample count, confidence
-- Target stimulus FPS
-
-**Geometry:**
-- Viewing distance (cm) — distance from animal's eye to monitor center
-- Horizontal offset (degrees) — azimuth of monitor center from animal's midline
-- Vertical offset (degrees) — elevation of monitor center
-- Projection type — cartesian / spherical / cylindrical
-- Monitor rotation — 0° / 90° / 180° / 270°
-
-**Camera:**
-- Camera enumeration + selection
-- Target camera FPS
-- FPS validation button → measured FPS, jitter, exposure bounds
-
-Collapsed summary: `✓ Display: 60.0Hz  ✓ Geometry: 25cm, 30° azi  ✓ Camera: PCO panda @ 30fps`
-
-**Why geometry is here, not in Protocol:** The monitor's physical position relative to the animal doesn't change between stimulus protocols. You set it once when you position the rig. Protocols define *what* to present (bar at 9 deg/s), not *where* the monitor is. The geometry converts between monitor pixels and visual degrees — that's a property of the physical setup.
-
-### Focus — camera adjustment
-
-Hands-on step. Camera preview expands to full height. Scientist is physically adjusting the microscope and camera.
-
-**Controls:**
-- Exposure (slider + fine increment ±buttons)
-- Gain (when supported)
-- Live histogram (pixel value distribution)
-- Head ring overlay (toggle, radius, center position)
-- Anatomical capture (button → save dialog → side-by-side with live view)
-
-Collapsed summary: `✓ Exposure: 33000µs  ✓ Anatomical captured` (with thumbnail)
-
-### Protocol — stimulus design
-
-What stimulus to present and how. This is what changes between acquisitions on the same animal.
-
-**Stimulus:**
-- Envelope type — bar / wedge / ring / fullfield
-- Carrier type — solid / checkerboard
-- Carrier parameters — contrast, mean luminance, background luminance, check size, strobe frequency
-- Envelope parameters — width, speed (fields change based on envelope type)
-
-**Presentation:**
-- Conditions (auto-populated from envelope type, e.g. LR/RL/TB/BT for bar)
-- Repetitions
-- Structure — blocked / interleaved
-- Order — sequential / interleaved / randomized
-
-**Timing:**
-- Baseline start (seconds)
-- Baseline end (seconds)
-- Inter-stimulus interval (seconds)
-- Inter-direction interval (seconds)
-
-**Timeline visualization:** visual block diagram of the full acquisition schedule. Baseline blocks, sweep blocks colored by condition, intervals. Durations labeled. Total time. Updates live as parameters change.
-
-**Protocol management:** Load / Save / Save As. Stimulus preview runs on the animal's monitor.
-
-Collapsed summary: `Drifting Bar — LR/RL/TB/BT × 10 reps — 12:30`
-
-**What is NOT here:** Geometry (viewing distance, offsets, projection) — those are in Setup. The protocol defines the stimulus pattern; Setup defines the physical context it runs in.
-
-### Acquire — run the experiment
-
-**Pre-acquisition:**
-- Readiness checklist with status for each prerequisite:
-  - Display selected and validated
-  - Geometry configured (viewing distance > 0, dimensions valid)
-  - Camera connected and FPS validated
-  - Anatomical captured
-  - Protocol loaded
-  - Save path set
-- Each unmet prerequisite links to the section that resolves it
-- Animal ID field (persisted in .oisi metadata)
-- Experiment notes field (free text, persisted in .oisi metadata)
-- Estimated duration (computed from protocol + geometry)
-- Start button (enabled only when all prerequisites met, confirmation dialog on click)
-
-**During acquisition:**
-- Progress bar (percentage)
-- Elapsed time / estimated remaining
-- Current sweep (N of M) and condition label
-- Camera FPS (live)
-- Dropped frame counter
-- Timing jitter
-- Camera preview stays visible
-- Stop button (prominent)
-
-**After acquisition:**
-- Save prompt: "Save acquisition? (N sweeps, M frames, T duration)" — Save / Save As / Discard
-- On save, file appears in Library
-
-Collapsed summary: `✓ Saved: 40 sweeps, 12000 frames, 12:34 — experiment_2024_03_15.oisi`
-
-### Analyze (inline, within session)
-
-Quick-look at results after an acquisition, without leaving the session. Runs analysis on the just-saved file.
-
-- Phase maps (azimuth, altitude)
-- Amplitude maps
-- Visual field sign map
-- Overlay on anatomical image
-- For deeper analysis, user opens the file in the Analysis view via the icon bar
-
-Collapsed summary: `✓ Maps computed` or `— Not yet analyzed`
-
-## Analysis view (icon bar)
-
-Activates when the user selects a file in Library and clicks "Open for Analysis." Loads a single `.oisi` file.
-
-**Maps display:**
-- Phase maps (azimuth, altitude) — colormapped
-- Amplitude maps
-- Visual field sign map
-- Anatomical image (if present in file)
-- Map overlay on anatomy with opacity slider
-- Colorbar with angular scale
-
-**Parameters (editable, re-run on change):**
-- Smoothing sigma
-- Rotation (k × 90°)
-- Azimuth angular range (degrees) — pre-populated from acquisition metadata
-- Altitude angular range (degrees) — pre-populated from acquisition metadata
-- Azimuth offset (degrees)
-- Altitude offset (degrees)
-- Epsilon
-
-**Export:**
-- TIFF/PNG (individual maps)
-- CSV (phase/magnitude arrays)
-- MATLAB `.mat`
-- Export includes metadata (stimulus parameters, geometry, timing)
-
-## Values NOT in the workflow UI
-
-System internals that stay in `app.toml` only. A scientist doesn't need to see these. Power users can edit the TOML file directly.
-
-**Camera internals:**
-- `frame_send_interval_ms` — UI preview FPS cap
-- `poll_interval_ms` — frame poll frequency
-- `first_frame_timeout_ms` — camera startup timeout
-- `first_frame_poll_ms` — camera startup poll sleep
-
-**Display internals:**
-- `validation_sample_count` — vsync measurement samples
-- `preview_width_px` — sidebar preview resolution
-- `preview_interval_ms` — preview refresh rate
-- `preview_cycle_sec` — preview sweep cycle duration
-- `idle_sleep_ms` — CPU usage when idle
-
-**Acquisition internals:**
-- `drop_detection_warmup_frames` — frames to skip before drop detection
-- `drop_detection_threshold` — dropped frame ratio threshold
-
-**Performance internals:**
-- `fps_window_frames` — rolling FPS calculation window
-
-**Daemon (legacy, may be removed):**
-- `startup_delay_ms`, `shm_name`, `shm_num_buffers`, `health_check_interval_ms`
-
-**Window state (auto-persisted):**
-- `maximized`, `position_x`, `position_y`, `width`, `height`
-
-**UI preferences:**
-- `show_debug_overlay`, `show_timing_info`
-
-## Config file architecture
-
-Given the reorganization, config files should reflect where values are used:
-
-**`app.toml`** — system-level settings that don't change between sessions:
-- Camera hardware defaults (exposure, gain, target FPS)
-- Display defaults (target stimulus FPS, inverted)
-- System internals (poll intervals, timeouts, thresholds)
-- Window state, UI preferences, paths
-- Analysis defaults (smoothing, rotation, ranges, offsets, epsilon)
-
-**`session geometry`** — the physical rig arrangement, set in Setup:
-- Viewing distance, horizontal/vertical offset, projection type, monitor rotation
-- Monitor physical dimensions (override)
-- Stored in session state at runtime; persisted to config so it's remembered across app restarts
-
-**`protocol files`** (.protocol.json) — portable stimulus definitions:
-- Stimulus type, carrier, envelope parameters
-- Presentation (conditions, repetitions, structure, order)
-- Timing (baselines, intervals)
-- NO geometry — geometry is a session property, not a protocol property
-
-**`.oisi files`** — acquisition output:
-- Raw frames + timestamps
-- Full snapshot of geometry, protocol, and hardware state at time of acquisition
-- Analysis results (when computed)
-- Session notes, animal ID
-
-## State management
-
-- **Library** state: data directory path (from config), file list (scanned on view), selected file
-- **Session** state: hardware connections, validation results, geometry, anatomical capture, current protocol, acquisition progress — all in `AppState`
-- **Analysis** state: loaded `.oisi` file path, computed maps, current parameters
-
-Each view manages its own state. Navigation between views does not destroy state — switching from Session to Library and back preserves the session. Switching from Analysis to Library and back preserves the loaded analysis.
-
-## Milestone evolution
-
-### Alpha
-- Icon bar with three icons, functional dark theme
-- Library shows file list with basic metadata, New Session and Open for Analysis buttons
-- Session workflow rail with collapsible sections, status indicators, all controls functional
-- Geometry in Setup section (not Protocol)
-- Analysis view shows maps, overlay, export
-- Layout is correct from day one — no structural rework needed later
-- Visually simple: functional HTML/CSS, no animations
-
-### Beta
-- Visual polish: consistent spacing, typography, transitions
-- Timeline visualization in Protocol section
-- Readiness checklist with linked prerequisites in Acquire section
-- Histogram in Focus section
-- Head ring overlay in Focus section
-- File management in Library (sort, filter, delete)
-- Confirmation dialogs, inline validation feedback
-- Looks like professional scientific software
-
-### v1.0.0+
-- Multi-file analysis (load and compare multiple `.oisi` files)
-- Keyboard shortcuts for power users
-- Customizable data directory per project
-- Detachable preview panel
+## Backend IPC
+
+Tauri runs with `withGlobalTauri: true`, so the runtime is reached through the
+injected global rather than an npm import:
+
+```js
+const { invoke } = window.__TAURI__.core;    // call a #[tauri::command]
+const { listen } = window.__TAURI__.event;   // subscribe to a backend event
+window.__TAURI__.dialog                       // native file/dir dialogs
+```
+
+There are two directions:
+
+- **Commands (`invoke`)** — request/response calls into Rust commands. Examples:
+  `get_monitors`, `select_display`, `validate_display`, `enumerate_cameras`,
+  `connect_camera`, `set_exposure`, `capture_anatomical`, `get_experiment`,
+  `update_experiment`, `get_duration_summary`, `start_preview` / `stop_preview`,
+  `validate_timing`, `start_acquisition` / `stop_acquisition`,
+  `save_acquisition`, `list_oisi_files`, `inspect_oisi`, `run_analysis`,
+  `read_result`, `read_anatomical`, `export_map_png`, `import_snlc`,
+  `migrate_oisi`. Parameters are passed as a JS object; the backend serializes
+  results to JSON.
+- **Events (`listen`)** — backend-pushed streams the UI subscribes to. Examples:
+  `camera:frame`, `camera:status`, `camera:enumerated`, `stimulus:preview`,
+  `stimulus:frame`, `stimulus:stopped`, `stimulus:complete`, `params:changed`,
+  `analysis:started` / `analysis:complete` / `analysis:failed` /
+  `analysis:cancelled`, and a generic `error` event for the status bar. `listen`
+  returns an unlisten function; views collect these and call them on teardown.
+
+`main.js` exposes a small `window.openISI` facade (`showView`, `enableView`,
+`invoke`, `listen`, the `viz` visualization state, and the layer-rendering
+helpers) so the view modules share one navigation/visualization surface instead
+of each re-deriving it.
+
+### Error handling
+
+The backend serializes failures as a structured `AppErrorWire` object —
+`{ category, code, message, … }` — but legacy paths may still reject with a bare
+string. Every `catch` block that surfaces an error to the user routes the value
+through `errorToString(e)` from `ui/src/lib/errors.js`, which handles both shapes
+(and never produces `"[object Object]"`).
+
+`errors.js` also exposes `errorCode(e)` and `errorCategory(e)` for branching on
+error class. The stable code/category vocabularies are **not** invented in the
+frontend: they are imported from `ui/src/lib/error-codes.generated.js`, which is
+generated from the Rust error enums (`AppError` / `AnalysisError` /
+`AcquisitionError`) and regenerated via
+`OISI_REGEN_ERROR_CODES=1 cargo test -p openisi error_codes_js_in_sync`. Branch
+on `ERROR_CODES.E_…` / `ERROR_CATEGORIES.…`, never on a string literal, so the
+frontend cannot drift from the backend.
+
+## Parameter forms (descriptor-driven)
+
+The old `define_params!`/registry macro system is gone. Parameters are now typed
+serde configs in the backend, surfaced to the UI as **descriptors**. The
+frontend never hardcodes a parameter's type, range, label, unit, or enum values
+— it asks the backend and builds the form from the answer.
+
+The contract lives in `ui/src/param-form.js`:
+
+- **`fetchGroupDescriptors(invoke, group)`** → calls `get_param_descriptors`
+  with a `group` filter and returns the descriptors. A descriptor is
+  `{ id, label, unit, param_type, value, constraint, active, group }`.
+- **`buildParamInput(desc)` / `buildParamGroup(descriptors, title)`** → render a
+  descriptor to an HTML input (or a titled card of inputs). Type drives the
+  widget: `bool` → checkbox, `enum` → `<select>` built from
+  `constraint.values` (each an `{ value, label }` pair, where `value` is the
+  wire string and `label` the human display), `string` → text, numeric
+  (`u16`/`u32`/`i32`/`usize`/`f64`) → `<input type="number">` with min/max/step
+  from `constraint`. Inputs carry `data-param-id`; rows carry `data-param-row`.
+  Inactive descriptors render nothing.
+- **`wireParamListeners(container, invoke, onAfterSet)`** → on change, reads the
+  element value, validates against the constraint, and calls
+  `set_params { updates: { [id]: value } }`. On failure the input is marked
+  `.invalid`. An optional `onAfterSet` callback lets a view react (e.g. the
+  Protocol section recomputes the duration summary; Analysis schedules a
+  re-analyze).
+- **`applyParamChanges(container, changes)`** → the reactive path. The backend
+  emits `params:changed` when a parameter's value, constraint, or active-state
+  changes server-side (e.g. selecting an envelope reveals/hides dependent
+  fields, or tightens a range). `main.js` subscribes globally and patches the
+  live DOM in place — updating values, rebuilding enum options, adjusting
+  numeric min/max, and showing/hiding rows — without a full re-render.
+
+Analysis takes this one step further: `analysis.js` asks the backend for the
+pipeline stages via `get_analysis_stages`, then renders one descriptor group per
+stage (`buildParamGroup`). Adding a stage in Rust surfaces it in the UI with no
+frontend edit. Every analysis knob — including method pickers — is a descriptor;
+there is no separate "method tunable" code path.
+
+## Views
+
+A view is an ES module under `ui/src/views/` exporting
+`async render(container)`. `render` populates the container and may return a
+`cleanup()` function, which `main.js` calls before switching away (used to drop
+event listeners and intervals). Views are lazy-loaded with dynamic `import()`
+and cached. Navigation is gated by a `viewState` map: Library is always enabled;
+Session is enabled by "New Session"; Analysis is enabled when a file is opened
+for analysis. Switching views preserves each view's module-level state.
+
+- **Library** (`library.js`, home view) — lists `.oisi` files from the data
+  directory (`list_oisi_files`), sortable by name/date/size, with multi-select
+  and delete. Buttons: New Session, Import SNLC `.mat` (`import_snlc`), Download
+  Sample Data, Set Data Directory. "Analyze" on a row sets the active file
+  (`set_active_oisi`), enables and shows the Analysis view.
+- **Session** (`session.js`) — accordion workflow rail with four sections:
+  **Setup** (monitor select/validate, physical size, viewing distance, mount
+  rotation, camera scan/connect), **Focus** (exposure slider, head-ring overlay
+  with drag/scroll interaction, anatomical capture — preview expands to full
+  height), **Protocol** (descriptor-driven stimulus/rig/geometry/timing groups,
+  conditions list, presentation/timing, saved-experiment load/save, live
+  duration summary, stimulus preview), and **Acquire** (readiness checklist,
+  timing characterization, live acquisition dashboard fed by `stimulus:frame`,
+  save/discard on `stimulus:complete`). Physical geometry lives in Setup, not
+  Protocol: the rig's position is a property of the setup, not the stimulus.
+- **Analysis** (`analysis.js`) — single-file view. Inspects the `.oisi`
+  (`inspect_oisi`), renders per-stage parameter groups, and auto-runs analysis
+  if the file has data but no results (auto-migrating pre-2026 files via
+  `migrate_oisi`). Param edits debounce a re-analyze; `run_analysis` enqueues
+  work on a backend worker thread and the UI tracks progress via the
+  `analysis:started/complete/failed/cancelled` events. Exposes the head-ring
+  controls and PNG export (`export_map_png`).
+
+## Layered preview & map visualization
+
+The preview panel (right side of `index.html`) stacks canvases in one container:
+`layer-base` (camera frame or anatomical), `layer-map` (colormapped result
+overlay, with opacity + CSS `mix-blend-mode`), `layer-borders` (area borders),
+and `layer-ring` (interactive head-ring overlay). A separate stimulus canvas
+shows the live stimulus preview. The **layer bar** (right edge) toggles each
+layer and its options via popups.
+
+Visualization state lives in the `viz` object in `main.js` and is persisted to
+`localStorage` (`openisi_viz`); display preferences such as base mode, current
+map, opacity, blend mode, and overlay toggles survive relaunch. Rendering is
+done directly with the Canvas 2D API:
+
+- `camera:frame` / `stimulus:preview` events carry PNG bytes; the UI blobs them
+  into an `Image` and draws to the relevant canvas.
+- Map results are fetched with `read_result { path, name }`, which returns typed
+  data: `scalar_map` (rendered with a jet colormap, with min/max autoscaling and
+  optional masked/SNR-transparent regions), `bool_mask` (black where true), or
+  `label_map` (area patches colored red/blue by VFS sign, using a cached
+  `area_signs` result). The map-overlay popup is built dynamically from the
+  results actually present in the file (`inspect_oisi`), with human-readable
+  labels.
+- The head ring is stored server-side (`get_ring_overlay` / `set_ring_overlay`)
+  and is editable by drag (move center) and scroll (resize) directly on the
+  canvas, kept in sync with the Focus/Analysis numeric inputs.
+
+## Startup
+
+`DOMContentLoaded` wires the camera/stimulus preview listeners, the layer bar
+and ring interaction, the global IPC listeners, and the status bar (refreshed on
+an interval via `get_workspace_status`), then shows the Library view and runs
+`autoSetup()` — which auto-selects a stimulus monitor, validates the display,
+enumerates cameras, and connects the first one found.

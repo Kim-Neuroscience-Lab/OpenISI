@@ -1,13 +1,19 @@
-# Phase 4 — NWB conformance
+# NWB Interoperability & Export
 
-**Goal:** OpenISI data is DANDI-submittable and NWB-ecosystem-readable, with
-conformance *guaranteed by the reference validator* (PyNWB + `nwbinspector`), not
-hand-asserted.
+The single source on how OpenISI data reaches the field's interchange standard.
+See `PRINCIPLES.md` (Invariant 9, "By standard, not by adapter") for *why*; this
+doc is *how*.
+
+**Goal:** OpenISI data is NWB-/DANDI-**conformant** and NWB-ecosystem-readable,
+with conformance *guaranteed by the reference validator* (PyNWB + `nwbinspector` +
+`dandi validate`), not hand-asserted. Scope is validation + conformance, run
+locally; uploading to DANDI and publishing the NDX extension are out of scope.
 
 ## Architecture decision: transform-only export (not native-layout change)
 
-The roadmap floated NWB-aligning the *native* `.oisi` layout so the export bridge
-is "repackaging, not transformation". On inspection that is the wrong trade:
+Export is a **transform**, not a repackaging of an NWB-shaped native layout. Aligning
+the native `.oisi` layout to NWB so the bridge could merely repackage is the wrong
+trade:
 
 - The native `.oisi` is consumed by the analysis pipeline, whose **bit-identical
   `regression_oisi` gate** reads committed fixtures. Renaming/reshaping native
@@ -96,7 +102,8 @@ Optional, not done: **MatNWB** read-back for the MATLAB ecosystem.
 
 ## Follow-on (durable, in-repo, not blocking the export)
 
-- Reconcile `docs/oisi.schema.json` + `docs/DATA_FORMAT.md` with what the code
-  actually writes (some descriptions drifted during the Phase-3 registry→config
-  cut, e.g. `rig_params` is now a serde `RigConfig`, not a registry tree). The
-  faithful inventory used to build this mapping is the reconciliation source.
+- Keep `docs/oisi.schema.json` (the format SSoT) reconciled with what the code
+  actually writes — ideally **generated from the Rust schema source** so it cannot
+  drift (the I/O-boundary + schema-SSoT frontier in `PRINCIPLES.md`). The exporter's
+  structural paths should consume that same generated schema, eliminating the last
+  hand-copied schema knowledge across the Rust↔Python boundary.
