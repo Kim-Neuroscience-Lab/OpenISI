@@ -1,0 +1,8 @@
+[package]
+name = "oisi-format"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The .oisi file format — data model, HDF5 read/write, schema, and version/migration; the single owner of the format, depended on by both acquisition and analysis."
+
+[dependencies]
