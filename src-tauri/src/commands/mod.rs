@@ -32,10 +32,10 @@ pub use experiment::{
     load_experiment, save_experiment_as, update_experiment,
 };
 pub use hardware::{
-    capture_anatomical, connect_camera, disconnect_camera, enumerate_cameras, get_monitors,
-    get_rig_geometry, get_ring_overlay, select_display, set_display_dimensions, set_exposure,
-    set_monitor_rotation, set_ring_overlay, set_viewing_distance, validate_display,
-    validate_timing,
+    calibrate_um_per_pixel_from_ring, capture_anatomical, connect_camera, disconnect_camera,
+    enumerate_cameras, get_monitors, get_rig_geometry, get_ring_overlay, select_display,
+    set_display_dimensions, set_exposure, set_monitor_rotation, set_ring_overlay,
+    set_viewing_distance, validate_display, validate_timing,
 };
 pub use library::{
     OisiFileInfo, delete_oisi_files, get_data_directory, import_snlc, import_snlc_sample_data,

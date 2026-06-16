@@ -393,6 +393,7 @@ fn start_tauri() -> AppResult<()> {
             commands::hardware::set_viewing_distance,
             commands::hardware::get_ring_overlay,
             commands::hardware::set_ring_overlay,
+            commands::hardware::calibrate_um_per_pixel_from_ring,
             commands::hardware::enumerate_cameras,
             commands::hardware::connect_camera,
             commands::hardware::disconnect_camera,

@@ -220,6 +220,26 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// Calibrate `camera.um_per_pixel` from the head-ring overlay: a ring of
+    /// known physical diameter spanning its pixel radius defines the pixel↔µm
+    /// scale (see [`crate::config::rig::RingOverlay::um_per_pixel`]). Sets the
+    /// value and returns it. This is computed-WITH-override: it writes the
+    /// measured value into the same field the user can still set manually
+    /// (mirrors the monitor-cm "user value wins" precedence). Errors — never
+    /// silently — when the ring can't define a scale, so a half-set ring can't
+    /// quietly calibrate to a garbage number.
+    pub fn calibrate_um_per_pixel_from_ring(&mut self) -> ParamsResult<f64> {
+        let um_per_pixel = self.rig.ring_overlay.um_per_pixel().ok_or_else(|| {
+            ParamsError::Validation(
+                "head ring is not set up for calibration: enable it and set a \
+                 non-zero radius and physical diameter first"
+                    .into(),
+            )
+        })?;
+        self.merge_rig(&serde_json::json!({ "camera": { "um_per_pixel": um_per_pixel } }))?;
+        Ok(um_per_pixel)
+    }
+
     /// Apply a sparse JSON overlay to the experiment config.
     pub fn merge_experiment(&mut self, overlay: &serde_json::Value) -> ParamsResult<()> {
         let next: ExperimentConfig = merge_into(&self.experiment, overlay)?;
@@ -579,6 +599,27 @@ mod tests {
         let overlay = serde_json::json!({ "camera": { "exposure_us": 5000 } });
         store.merge_rig(&overlay).unwrap();
         assert_eq!(store.rig().camera.exposure_us, 5000);
+    }
+
+    #[test]
+    fn calibrate_um_per_pixel_from_ring_sets_camera() {
+        let mut store = ConfigStore::new(Path::new("."), Path::new("."));
+        // Enable + size the ring: 8 mm @ 200 px ⇒ 20.0 µm/px.
+        store
+            .merge_rig(&serde_json::json!({
+                "ring_overlay": { "enabled": true, "radius_px": 200, "diameter_mm": 8.0 }
+            }))
+            .unwrap();
+        let upp = store.calibrate_um_per_pixel_from_ring().unwrap();
+        assert_eq!(upp, 20.0);
+        assert_eq!(store.rig().camera.um_per_pixel, 20.0); // written into the live field
+    }
+
+    #[test]
+    fn calibrate_um_per_pixel_from_ring_errors_when_ring_unset() {
+        let mut store = ConfigStore::new(Path::new("."), Path::new("."));
+        // Default ring is disabled ⇒ no scale ⇒ explicit error, never a silent 0.
+        assert!(store.calibrate_um_per_pixel_from_ring().is_err());
     }
 
     #[test]

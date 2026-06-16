@@ -420,10 +420,12 @@ pub fn get_ring_overlay(state: State<'_, SharedState>) -> AppResult<serde_json::
         "radius_px": r.radius_px,
         "center_x_px": r.center_x_px,
         "center_y_px": r.center_y_px,
+        "diameter_mm": r.diameter_mm,
     }))
 }
 
-/// Update ring overlay config. Persists to rig.toml.
+/// Update ring overlay config. Persists to rig.json. `diameter_mm` is optional
+/// (omitted ⇒ the stored value is kept) so older callers are unaffected.
 #[tauri::command]
 pub fn set_ring_overlay(
     state: State<'_, SharedState>,
@@ -431,18 +433,38 @@ pub fn set_ring_overlay(
     radius_px: u32,
     center_x_px: u32,
     center_y_px: u32,
+    diameter_mm: Option<f64>,
 ) -> AppResult<()> {
     let mut cfg = state.config.lock();
-    cfg.merge_rig(&serde_json::json!({ "ring_overlay": {
+    let mut overlay = serde_json::json!({ "ring_overlay": {
         "enabled": enabled,
         "radius_px": radius_px,
         "center_x_px": center_x_px,
         "center_y_px": center_y_px,
-    } }))?;
+    } });
+    if let Some(d) = diameter_mm {
+        overlay["ring_overlay"]["diameter_mm"] = serde_json::json!(d);
+    }
+    cfg.merge_rig(&overlay)?;
     if let Err(e) = cfg.save_all() {
         tracing::error!(error = %e, "failed to save ring overlay");
     }
     Ok(())
+}
+
+/// Calibrate `camera.um_per_pixel` from the head-ring overlay (its known physical
+/// diameter spanning its pixel radius). Writes the measured value into the live
+/// config and returns it (µm/pixel). Errors if the ring can't define a scale
+/// (disabled / zero radius / non-positive diameter) rather than calibrating to a
+/// meaningless number.
+#[tauri::command]
+pub fn calibrate_um_per_pixel_from_ring(state: State<'_, SharedState>) -> AppResult<f64> {
+    let mut cfg = state.config.lock();
+    let um_per_pixel = cfg.calibrate_um_per_pixel_from_ring()?;
+    if let Err(e) = cfg.save_all() {
+        tracing::error!(error = %e, "failed to save um_per_pixel after ring calibration");
+    }
+    Ok(um_per_pixel)
 }
 
 /// Enumerate available cameras — results arrive via camera:enumerated event.
