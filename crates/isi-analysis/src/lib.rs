@@ -526,9 +526,13 @@ pub enum AnalysisError {
     #[strum_discriminants(strum(serialize = "E_IO"))]
     Io(#[from] std::io::Error),
 
-    #[error("HDF5 error: {0}")]
+    #[error("HDF5 error ({context}): {source}")]
     #[strum_discriminants(strum(serialize = "E_HDF5"))]
-    Hdf5(String),
+    Hdf5 {
+        context: String,
+        #[source]
+        source: hdf5::Error,
+    },
 
     #[error("Invalid .oisi file: {0}")]
     #[strum_discriminants(strum(serialize = "E_INVALID_PACKAGE"))]
@@ -566,11 +570,23 @@ impl AnalysisError {
     pub fn code(&self) -> &'static str {
         AnalysisCode::from(self).into()
     }
+
+    /// Construct an HDF5 error that **preserves the underlying `hdf5::Error`** as
+    /// its `source` (never stringified), with `context` naming the operation.
+    pub fn hdf5(context: impl Into<String>, source: hdf5::Error) -> Self {
+        Self::Hdf5 {
+            context: context.into(),
+            source,
+        }
+    }
 }
 
 impl From<hdf5::Error> for AnalysisError {
-    fn from(e: hdf5::Error) -> Self {
-        Self::Hdf5(e.to_string())
+    fn from(source: hdf5::Error) -> Self {
+        Self::Hdf5 {
+            context: String::new(),
+            source,
+        }
     }
 }
 

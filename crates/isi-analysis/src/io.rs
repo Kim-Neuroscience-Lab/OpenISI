@@ -193,7 +193,7 @@ pub fn read_complex_maps(path: &Path) -> Result<ComplexMaps, AnalysisError> {
             .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
         let raw: Array3<f64> = ds
             .read()
-            .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
+            .map_err(|e| AnalysisError::hdf5(format!("reading {ds_path}"), e))?;
         let (h, w, c) = raw.dim();
         if c != 2 {
             return Err(AnalysisError::InvalidPackage(format!(
@@ -268,7 +268,7 @@ pub fn read_stage_fingerprint(path: &Path, stage: &str) -> Result<Option<String>
         Ok(a) => {
             let s = a
                 .read_scalar::<hdf5::types::VarLenUnicode>()
-                .map_err(|e| AnalysisError::Hdf5(format!("reading fingerprint {stage}: {e}")))?;
+                .map_err(|e| AnalysisError::hdf5(format!("reading fingerprint {stage}"), e))?;
             Ok(Some(s.as_str().to_string()))
         }
         Err(_) => Ok(None),
@@ -284,7 +284,7 @@ pub fn write_stage_fingerprint(path: &Path, stage: &str, fp: &str) -> Result<(),
         Ok(g) => g,
         Err(_) => file
             .create_group("analysis_state")
-            .map_err(|e| AnalysisError::Hdf5(format!("creating analysis_state group: {e}")))?,
+            .map_err(|e| AnalysisError::hdf5("creating analysis_state group", e))?,
     };
     write_str_attr(&group, stage, fp)
 }
@@ -299,7 +299,7 @@ pub fn read_all_stage_fingerprints(path: &Path) -> Result<HashMap<String, String
     };
     let names = group
         .attr_names()
-        .map_err(|e| AnalysisError::Hdf5(format!("listing analysis_state attrs: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("listing analysis_state attrs", e))?;
     let mut out = HashMap::with_capacity(names.len());
     for name in names {
         match group
@@ -393,13 +393,13 @@ pub fn write_stage_cache(
     let _ = file.unlink("cache");
     let group = file
         .create_group("cache")
-        .map_err(|e| AnalysisError::Hdf5(format!("creating cache group: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("creating cache group", e))?;
     let u8data = imseg.mapv(|b| b as u8);
     group
         .new_dataset_builder()
         .with_data(&u8data)
         .create("imseg")
-        .map_err(|e| AnalysisError::Hdf5(format!("writing cache/imseg: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("writing cache/imseg", e))?;
     write_f64_attr(&group, "threshold_applied", threshold_applied)?;
     Ok(())
 }
@@ -412,7 +412,7 @@ pub fn read_cache_imseg(path: &Path) -> Result<Array2<bool>, AnalysisError> {
         .map_err(|e| AnalysisError::MissingData(format!("cache/imseg: {e}")))?;
     let data: Array2<u8> = ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading cache/imseg: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading cache/imseg", e))?;
     Ok(data.mapv(|v| v != 0))
 }
 
@@ -485,7 +485,7 @@ pub fn read_result_map(path: &Path, name: &str) -> Result<Array2<f64>, AnalysisE
         .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
     let data: Array2<f64> = ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("reading {ds_path}"), e))?;
     Ok(data)
 }
 
@@ -501,7 +501,7 @@ pub fn read_result_mask(path: &Path, name: &str) -> Result<Array2<bool>, Analysi
         .map_err(|e| AnalysisError::MissingData(format!("{ds_path}: {e}")))?;
     let data: Array2<u8> = ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading {ds_path}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("reading {ds_path}"), e))?;
     Ok(data.mapv(|v| v != 0))
 }
 
@@ -513,7 +513,7 @@ pub fn read_result_labels(path: &Path) -> Result<Array2<i32>, AnalysisError> {
         .dataset("results/area_labels")
         .map_err(|e| AnalysisError::MissingData(format!("results/area_labels: {e}")))?;
     ds.read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading results/area_labels: {e}")))
+        .map_err(|e| AnalysisError::hdf5("reading results/area_labels", e))
 }
 
 /// Read the `/results/area_signs` per-area sign array (the `Labels` stage
@@ -525,7 +525,7 @@ pub fn read_result_signs(path: &Path) -> Result<Vec<i8>, AnalysisError> {
         .map_err(|e| AnalysisError::MissingData(format!("results/area_signs: {e}")))?;
     let arr: Array1<i8> = ds
         .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading results/area_signs: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading results/area_signs", e))?;
     Ok(arr.to_vec())
 }
 
@@ -621,16 +621,16 @@ pub fn read_analysis_params_attr(path: &Path) -> Result<Option<serde_json::Value
     let file = open_read(path)?;
     let attr_names = file
         .attr_names()
-        .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("listing root attrs", e))?;
     if !attr_names.iter().any(|n| n == "analysis_params") {
         return Ok(None);
     }
     let attr = file
         .attr("analysis_params")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening analysis_params attr: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("opening analysis_params attr", e))?;
     let json_vlu: hdf5::types::VarLenUnicode = attr
         .read_scalar()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading analysis_params attr: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading analysis_params attr", e))?;
     let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing analysis_params: {e}")))?;
     Ok(Some(value))
@@ -663,16 +663,16 @@ fn read_root_json_attr(
     let file = open_read(path)?;
     let attr_names = file
         .attr_names()
-        .map_err(|e| AnalysisError::Hdf5(format!("listing root attrs: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("listing root attrs", e))?;
     if !attr_names.iter().any(|n| n == name) {
         return Ok(None);
     }
     let attr = file
         .attr(name)
-        .map_err(|e| AnalysisError::Hdf5(format!("opening {name} attr: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("opening {name} attr"), e))?;
     let json_vlu: hdf5::types::VarLenUnicode = attr
         .read_scalar()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading {name} attr: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("reading {name} attr"), e))?;
     let value: serde_json::Value = serde_json::from_str(json_vlu.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing {name}: {e}")))?;
     Ok(Some(value))
@@ -693,10 +693,10 @@ pub fn read_cortex_roi(path: &Path) -> Result<Option<Array2<bool>>, AnalysisErro
     }
     let ds = file
         .dataset("anatomical/cortex_roi")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening anatomical/cortex_roi: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("opening anatomical/cortex_roi", e))?;
     let data: Array2<u8> = ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading anatomical/cortex_roi: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading anatomical/cortex_roi", e))?;
     Ok(Some(data.mapv(|v| v != 0)))
 }
 
@@ -707,7 +707,7 @@ pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
         .map_err(|e| AnalysisError::MissingData(format!("anatomical: {e}")))?;
     let data: Array2<u8> = ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading anatomical: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading anatomical", e))?;
     Ok(data)
 }
 
@@ -718,7 +718,7 @@ pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
 /// Create a new .oisi file with just metadata.
 pub fn create(path: &Path, source_type: &str) -> Result<(), AnalysisError> {
     let file = H5File::create(path)
-        .map_err(|e| AnalysisError::Hdf5(format!("creating {}: {e}", path.display())))?;
+        .map_err(|e| AnalysisError::hdf5(format!("creating {}", path.display()), e))?;
 
     write_str_attr(&file, "version", "1.0")?;
     write_str_attr(&file, "source_type", source_type)?;
@@ -756,7 +756,7 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
     let _ = file.unlink("complex_maps");
     let group = file
         .create_group("complex_maps")
-        .map_err(|e| AnalysisError::Hdf5(format!("creating complex_maps group: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("creating complex_maps group", e))?;
 
     let write_complex = |name: &str, data: &Array2<Complex64>| -> Result<(), AnalysisError> {
         let (h, w) = data.dim();
@@ -771,7 +771,7 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
             .new_dataset_builder()
             .with_data(&raw)
             .create(name)
-            .map_err(|e| AnalysisError::Hdf5(format!("writing complex_maps/{name}: {e}")))?;
+            .map_err(|e| AnalysisError::hdf5(format!("writing complex_maps/{name}"), e))?;
         Ok(())
     };
 
@@ -803,7 +803,7 @@ pub fn write_results(
     let _ = file.unlink("results");
     let group = file
         .create_group("results")
-        .map_err(|e| AnalysisError::Hdf5(format!("creating results group: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("creating results group", e))?;
 
     // Writes a f64 (H,W) dataset and attaches the meta attrs that
     // describe how to render it. The renderer reads these attrs and
@@ -814,7 +814,7 @@ pub fn write_results(
             .new_dataset_builder()
             .with_data(data)
             .create(name)
-            .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
+            .map_err(|e| AnalysisError::hdf5(format!("writing results/{name}"), e))?;
         let meta = meta_for_f64(name, data, acquisition);
         attach_meta(&ds, &meta)?;
         Ok(())
@@ -825,7 +825,7 @@ pub fn write_results(
             .new_dataset_builder()
             .with_data(&u8data)
             .create(name)
-            .map_err(|e| AnalysisError::Hdf5(format!("writing results/{name}: {e}")))?;
+            .map_err(|e| AnalysisError::hdf5(format!("writing results/{name}"), e))?;
         attach_meta(&ds, &map_meta_bool())?;
         Ok(())
     };
@@ -851,14 +851,14 @@ pub fn write_results(
         .new_dataset_builder()
         .with_data(&result.area_labels)
         .create("area_labels")
-        .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_labels: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("writing results/area_labels", e))?;
     attach_meta(&labels_ds, &map_meta_labels())?;
     let signs_arr = ndarray::Array1::from(result.area_signs.clone());
     group
         .new_dataset_builder()
         .with_data(&signs_arr)
         .create("area_signs")
-        .map_err(|e| AnalysisError::Hdf5(format!("writing results/area_signs: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("writing results/area_signs", e))?;
     write_mask("area_borders", &result.area_borders)?;
 
     // Derived maps.
@@ -903,7 +903,7 @@ pub fn write_anatomical(path: &Path, image: &Array2<u8>) -> Result<(), AnalysisE
     file.new_dataset_builder()
         .with_data(image)
         .create("anatomical")
-        .map_err(|e| AnalysisError::Hdf5(format!("writing anatomical: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("writing anatomical", e))?;
     Ok(())
 }
 
@@ -966,30 +966,30 @@ pub fn read_raw_acquisition(path: &Path) -> Result<RawAcquisition, AnalysisError
 
     let frames_ds = file
         .dataset("acquisition/camera/frames")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening camera/frames: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("opening camera/frames", e))?;
     let frames: Array3<u16> = frames_ds
         .read()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading camera/frames: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading camera/frames", e))?;
 
     let cam_ts_sec: Vec<f64> = file
         .dataset("acquisition/camera/timestamps_sec")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening camera timestamps_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("opening camera timestamps_sec", e))?
         .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading camera timestamps_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("reading camera timestamps_sec", e))?
         .to_vec();
 
     // Sweep schedule — onset times + per-sweep duration + direction.
     let sweep_start_sec: Vec<f64> = file
         .dataset("acquisition/schedule/sweep_start_sec")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_start_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("opening sweep_start_sec", e))?
         .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_start_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("reading sweep_start_sec", e))?
         .to_vec();
     let sweep_end_sec: Vec<f64> = file
         .dataset("acquisition/schedule/sweep_end_sec")
-        .map_err(|e| AnalysisError::Hdf5(format!("opening sweep_end_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("opening sweep_end_sec", e))?
         .read_1d()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_end_sec: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("reading sweep_end_sec", e))?
         .to_vec();
     // `sweep_sequence` — the per-sweep direction list (SSoT for cycle
     // grouping), read via the shared helper that `inspect` also uses.
@@ -1058,12 +1058,12 @@ pub(crate) fn nearest_index_sorted(sorted: &[f64], target: f64) -> usize {
 // ---------------------------------------------------------------------------
 
 fn open_read(path: &Path) -> Result<H5File, AnalysisError> {
-    H5File::open(path).map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
+    H5File::open(path).map_err(|e| AnalysisError::hdf5(format!("opening {}", path.display()), e))
 }
 
 fn open_readwrite(path: &Path) -> Result<H5File, AnalysisError> {
     H5File::open_rw(path)
-        .map_err(|e| AnalysisError::Hdf5(format!("opening {}: {e}", path.display())))
+        .map_err(|e| AnalysisError::hdf5(format!("opening {}", path.display()), e))
 }
 
 fn write_str_attr(location: &hdf5::Location, name: &str, value: &str) -> Result<(), AnalysisError> {
@@ -1072,12 +1072,12 @@ fn write_str_attr(location: &hdf5::Location, name: &str, value: &str) -> Result<
     let attr = location
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
-        .map_err(|e| AnalysisError::Hdf5(format!("creating attr {name}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("creating attr {name}"), e))?;
     let val: hdf5::types::VarLenUnicode = value
         .parse()
-        .map_err(|e| AnalysisError::Hdf5(format!("invalid UTF-8 attr {name}: {e}")))?;
+        .map_err(|e| AnalysisError::Validation(format!("invalid UTF-8 attr {name}: {e}")))?;
     attr.write_scalar(&val)
-        .map_err(|e| AnalysisError::Hdf5(format!("writing attr {name}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("writing attr {name}"), e))?;
     Ok(())
 }
 
@@ -1086,16 +1086,16 @@ fn write_f64_attr(location: &hdf5::Location, name: &str, value: f64) -> Result<(
     let attr = location
         .new_attr::<f64>()
         .create(name)
-        .map_err(|e| AnalysisError::Hdf5(format!("creating attr {name}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("creating attr {name}"), e))?;
     attr.write_scalar(&value)
-        .map_err(|e| AnalysisError::Hdf5(format!("writing attr {name}: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5(format!("writing attr {name}"), e))?;
     Ok(())
 }
 
 fn list_group_members_from_group(group: &hdf5::Group) -> crate::Result<Vec<String>> {
     group
         .member_names()
-        .map_err(|e| AnalysisError::Hdf5(format!("listing HDF5 group members: {e}")))
+        .map_err(|e| AnalysisError::hdf5("listing HDF5 group members", e))
 }
 
 fn read_str_attr(location: &hdf5::Location, name: &str) -> Option<String> {
@@ -1127,9 +1127,9 @@ fn read_sweep_sequence(file: &H5File) -> Result<Vec<String>, AnalysisError> {
         .map_err(|_| AnalysisError::MissingData("acquisition/schedule".into()))?;
     let seq_json: hdf5::types::VarLenUnicode = schedule_group
         .attr("sweep_sequence")
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence: {e}")))?
+        .map_err(|e| AnalysisError::hdf5("reading sweep_sequence", e))?
         .read_scalar()
-        .map_err(|e| AnalysisError::Hdf5(format!("reading sweep_sequence value: {e}")))?;
+        .map_err(|e| AnalysisError::hdf5("reading sweep_sequence value", e))?;
     serde_json::from_str(seq_json.as_str())
         .map_err(|e| AnalysisError::InvalidPackage(format!("parsing sweep_sequence: {e}")))
 }

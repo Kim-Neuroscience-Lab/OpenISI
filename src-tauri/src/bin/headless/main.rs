@@ -1986,9 +1986,10 @@ fn cmd_import_samples() -> AppResult<()> {
 fn cmd_test_read(file: &std::path::Path) -> AppResult<()> {
     let path = file;
     let file = hdf5::File::open(path).map_err(|e| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "open {}: {e}", path.display()
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5(
+            format!("open {}", path.display()),
+            e,
+        ))
     })?;
 
     let group = file.group("results").map_err(|e| {
@@ -2180,9 +2181,10 @@ fn cmd_import_session(
 fn cmd_dump_h5(file: &std::path::Path) -> AppResult<()> {
     let path = file;
     let file = hdf5::File::open(path).map_err(|e| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "open {}: {e}", path.display()
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5(
+            format!("open {}", path.display()),
+            e,
+        ))
     })?;
 
     fn dump_group(group: &hdf5::Group, prefix: &str) {
@@ -2199,9 +2201,7 @@ fn cmd_dump_h5(file: &std::path::Path) -> AppResult<()> {
     }
 
     let root = file.as_group().map_err(|e| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "open root group: {e}"
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5("open root group", e))
     })?;
     dump_group(&root, "");
     Ok(())

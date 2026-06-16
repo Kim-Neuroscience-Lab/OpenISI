@@ -31,8 +31,8 @@ pub struct HardwareSnapshot {
 /// Wrap a true HDF5-API failure during .oisi export. Used for dataset /
 /// group creation, attribute writes, and any libhdf5 call that produces
 /// an `hdf5::Error`. Frontend sees `category: "Analysis", code: "E_HDF5"`.
-fn hdf5_err(msg: String) -> AppError {
-    AppError::Analysis(isi_analysis::AnalysisError::Hdf5(msg))
+fn hdf5_err(context: impl Into<String>, source: hdf5::Error) -> AppError {
+    AppError::Analysis(isi_analysis::AnalysisError::hdf5(context, source))
 }
 
 /// Wrap a filesystem-layer failure during .oisi export (open, flush,
@@ -242,7 +242,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // Write stimulus metadata.
     let metadata = stimulus_dataset.export_metadata();
     let meta_json = serde_json::to_string_pretty(&metadata)
-        .map_err(|e| hdf5_err(format!("Failed to serialize metadata: {e}")))?;
+        .map_err(|e| fs_err(format!("Failed to serialize metadata: {e}")))?;
     write_str_attr(&file, "stimulus_metadata", &meta_json)?;
 
     // Capture provenance — serialize the typed `RigConfig` + `ExperimentConfig`
@@ -252,11 +252,11 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // (This is the canonical, schema-bearing form; readers navigate by key.)
     {
         let rig_str = serde_json::to_string_pretty(&snapshot.rig)
-            .map_err(|e| hdf5_err(format!("Failed to serialize rig params: {e}")))?;
+            .map_err(|e| fs_err(format!("Failed to serialize rig params: {e}")))?;
         write_str_attr(&file, "rig_params", &rig_str)?;
 
         let exp_str = serde_json::to_string_pretty(&snapshot.experiment)
-            .map_err(|e| hdf5_err(format!("Failed to serialize experiment params: {e}")))?;
+            .map_err(|e| fs_err(format!("Failed to serialize experiment params: {e}")))?;
         write_str_attr(&file, "experiment_params", &exp_str)?;
     }
 
@@ -280,13 +280,13 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         file.new_dataset_builder()
             .with_data(anat)
             .create("anatomical")
-            .map_err(|e| hdf5_err(format!("Failed to write anatomical: {e}")))?;
+            .map_err(|e| hdf5_err("Failed to write anatomical", e))?;
     }
 
     // Create acquisition group.
     let acq_group = file
         .create_group("acquisition")
-        .map_err(|e| hdf5_err(format!("Failed to create acquisition group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create acquisition group", e))?;
 
     // ── Compute unified timeline ─────────────────────────────────
     // t=0 is the first camera frame's system (QPC) timestamp.
@@ -346,7 +346,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // Write unified stimulus timestamps.
     let stim_group = acq_group
         .group("stimulus")
-        .map_err(|e| hdf5_err(format!("Failed to open stimulus group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to open stimulus group", e))?;
     write_checked_1d(&stim_group, "timestamps_sec", stimulus_sec)?;
 
     // Write realized sweep schedule (unified seconds).
@@ -364,7 +364,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // ── Write clock sync ─────────────────────────────────────────
     let sync_group = acq_group
         .create_group("clock_sync")
-        .map_err(|e| hdf5_err(format!("Failed to create clock_sync group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create clock_sync group", e))?;
     write_group_f64_attr(&sync_group, "t0_system_us", t0_us as f64)?;
     if let Some((start_off, end_off)) = clock_sync {
         write_group_f64_attr(&sync_group, "start_offset_us", start_off as f64)?;
@@ -376,7 +376,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     if let Some(tc) = timing {
         let timing_group = acq_group
             .create_group("timing")
-            .map_err(|e| hdf5_err(format!("Failed to create timing group: {e}")))?;
+            .map_err(|e| hdf5_err("Failed to create timing group", e))?;
         write_group_f64_attr(&timing_group, "f_cam_hz", tc.f_cam_hz)?;
         write_group_f64_attr(&timing_group, "f_stim_hz", tc.f_stim_hz)?;
         write_group_f64_attr(&timing_group, "t_cam_sec", tc.t_cam_sec)?;
@@ -407,7 +407,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         write_group_f64_attr(&timing_group, "stim_jitter_sec", tc.stim_jitter_sec)?;
         if !tc.warnings.is_empty() {
             let warnings_json = serde_json::to_string(&tc.warnings)
-                .map_err(|e| hdf5_err(format!("Failed to serialize timing warnings: {e}")))?;
+                .map_err(|e| fs_err(format!("Failed to serialize timing warnings: {e}")))?;
             write_group_str_attr(&timing_group, "warnings", &warnings_json)?;
         }
     }
@@ -415,7 +415,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // ── Write camera data ────────────────────────────────────────
     let camera_group = acq_group
         .create_group("camera")
-        .map_err(|e| hdf5_err(format!("Failed to create camera group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create camera group", e))?;
 
     let n_frames = camera_data.frames.len();
     let h = camera_data.height as usize;
@@ -437,10 +437,10 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
             .chunk((1, h, w))
             .with_data(
                 &ndarray::Array3::from_shape_vec((n_frames, h, w), frame_data)
-                    .map_err(|e| hdf5_err(format!("Shape error: {e}")))?,
+                    .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Compute(format!("Shape error: {e}"))))?,
             )
             .create("frames")
-            .map_err(|e| hdf5_err(format!("Failed to write camera/frames: {e}")))?;
+            .map_err(|e| hdf5_err("Failed to write camera/frames", e))?;
 
         // Unified camera timestamps (seconds from t=0).
         write_checked_1d(&camera_group, "timestamps_sec", camera_sec)?;
@@ -508,7 +508,7 @@ fn write_hardware_group(
 ) -> AppResult<()> {
     let group = file
         .create_group("hardware")
-        .map_err(|e| hdf5_err(format!("Failed to create hardware group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create hardware group", e))?;
 
     write_group_str_attr(&group, "monitor_name", &hw.monitor_name)?;
     write_group_u32_attr(&group, "monitor_width_px", hw.monitor_width_px)?;
@@ -526,9 +526,9 @@ fn write_hardware_group(
     let attr = group
         .new_attr::<u8>()
         .create("gamma_corrected")
-        .map_err(|e| hdf5_err(format!("creating gamma_corrected attr: {e}")))?;
+        .map_err(|e| hdf5_err("creating gamma_corrected attr", e))?;
     attr.write_scalar(&gamma_val)
-        .map_err(|e| hdf5_err(format!("writing gamma_corrected attr: {e}")))?;
+        .map_err(|e| hdf5_err("writing gamma_corrected attr", e))?;
 
     // Rig geometry — viewing distance for stimulus geometry reproduction.
     write_group_f64_attr(
@@ -543,9 +543,9 @@ fn write_hardware_group(
     let attr = group
         .new_attr::<u16>()
         .create("camera_binning")
-        .map_err(|e| hdf5_err(format!("creating camera_binning attr: {e}")))?;
+        .map_err(|e| hdf5_err("creating camera_binning attr", e))?;
     attr.write_scalar(&binning_val)
-        .map_err(|e| hdf5_err(format!("writing camera_binning attr: {e}")))?;
+        .map_err(|e| hdf5_err("writing camera_binning attr", e))?;
 
     // Display settings — rotation and target FPS at acquisition time.
     write_group_f64_attr(
@@ -566,7 +566,7 @@ fn write_hardware_group(
 fn write_stimulus_arrays(acq_group: &hdf5::Group, dataset: &StimulusDataset) -> AppResult<()> {
     let stim_group = acq_group
         .create_group("stimulus")
-        .map_err(|e| hdf5_err(format!("Failed to create acquisition/stimulus group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create acquisition/stimulus group", e))?;
 
     write_checked_1d(&stim_group, "timestamps_us", dataset.timestamps_us.clone())?;
     write_checked_1d(&stim_group, "state_ids", dataset.state_ids.clone())?;
@@ -601,20 +601,20 @@ fn write_sweep_schedule_sec(
 ) -> AppResult<()> {
     let sched_group = acq_group
         .create_group("schedule")
-        .map_err(|e| hdf5_err(format!("Failed to create schedule group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create schedule group", e))?;
 
     // Sweep sequence as JSON array attribute (HDF5 doesn't have native string arrays easily).
     let seq_json = serde_json::to_string(&schedule.sweep_sequence)
-        .map_err(|e| hdf5_err(format!("Failed to serialize sweep_sequence: {e}")))?;
+        .map_err(|e| fs_err(format!("Failed to serialize sweep_sequence: {e}")))?;
     let attr = sched_group
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create("sweep_sequence")
-        .map_err(|e| hdf5_err(format!("creating sweep_sequence attr: {e}")))?;
+        .map_err(|e| hdf5_err("creating sweep_sequence attr", e))?;
     let val: hdf5::types::VarLenUnicode = seq_json
         .parse()
-        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
+        .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Validation(format!("Failed to create HDF5 unicode value: {e}"))))?;
     attr.write_scalar(&val)
-        .map_err(|e| hdf5_err(format!("writing sweep_sequence attr: {e}")))?;
+        .map_err(|e| hdf5_err("writing sweep_sequence attr", e))?;
 
     // Raw microsecond timestamps (provenance).
     write_checked_1d(
@@ -641,7 +641,7 @@ fn write_quality_metrics(
 ) -> AppResult<()> {
     let quality = acq_group
         .create_group("quality")
-        .map_err(|e| hdf5_err(format!("Failed to create quality group: {e}")))?;
+        .map_err(|e| hdf5_err("Failed to create quality group", e))?;
 
     // Camera frame deltas (computed from hardware timestamps).
     let cam_ts = &camera_data.hardware_timestamps_us;
@@ -713,9 +713,9 @@ fn write_quality_metrics(
     let attr = quality
         .new_attr::<u8>()
         .create("acquisition_complete")
-        .map_err(|e| hdf5_err(format!("creating acquisition_complete attr: {e}")))?;
+        .map_err(|e| hdf5_err("creating acquisition_complete attr", e))?;
     attr.write_scalar(&complete_val)
-        .map_err(|e| hdf5_err(format!("writing acquisition_complete attr: {e}")))?;
+        .map_err(|e| hdf5_err("writing acquisition_complete attr", e))?;
 
     // Camera drops are always real (the camera has its own hardware clock).
     // Stimulus drops are only a real defect on a hardware scanout; on a remote
@@ -744,12 +744,12 @@ fn write_str_attr(file: &hdf5::File, name: &str, value: &str) -> AppResult<()> {
     let attr = file
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
-        .map_err(|e| hdf5_err(format!("creating attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("creating attr {name}"), e))?;
     let val: hdf5::types::VarLenUnicode = value
         .parse()
-        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
+        .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Validation(format!("Failed to create HDF5 unicode value: {e}"))))?;
     attr.write_scalar(&val)
-        .map_err(|e| hdf5_err(format!("writing attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("writing attr {name}"), e))?;
     Ok(())
 }
 
@@ -765,7 +765,7 @@ fn write_checked_1d<T: hdf5::H5Type + Clone>(
             .new_dataset_builder()
             .with_data(&ndarray::Array1::<T>::from(data))
             .create(name)
-            .map_err(|e| hdf5_err(format!("Failed to write {name}: {e}")))?;
+            .map_err(|e| hdf5_err(format!("Failed to write {name}"), e))?;
     } else {
         let len = data.len();
         group
@@ -774,7 +774,7 @@ fn write_checked_1d<T: hdf5::H5Type + Clone>(
             .chunk((len,))
             .with_data(&ndarray::Array1::from(data))
             .create(name)
-            .map_err(|e| hdf5_err(format!("Failed to write {name}: {e}")))?;
+            .map_err(|e| hdf5_err(format!("Failed to write {name}"), e))?;
     }
     Ok(())
 }
@@ -821,12 +821,12 @@ fn write_group_str_attr(group: &hdf5::Group, name: &str, value: &str) -> AppResu
     let attr = group
         .new_attr::<hdf5::types::VarLenUnicode>()
         .create(name)
-        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}"), e))?;
     let val: hdf5::types::VarLenUnicode = value
         .parse()
-        .map_err(|e| hdf5_err(format!("Failed to create HDF5 unicode value: {e}")))?;
+        .map_err(|e| AppError::Analysis(isi_analysis::AnalysisError::Validation(format!("Failed to create HDF5 unicode value: {e}"))))?;
     attr.write_scalar(&val)
-        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}"), e))?;
     Ok(())
 }
 
@@ -834,9 +834,9 @@ fn write_group_u32_attr(group: &hdf5::Group, name: &str, value: u32) -> AppResul
     let attr = group
         .new_attr::<u32>()
         .create(name)
-        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}"), e))?;
     attr.write_scalar(&value)
-        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}"), e))?;
     Ok(())
 }
 
@@ -844,9 +844,9 @@ fn write_group_f64_attr(group: &hdf5::Group, name: &str, value: f64) -> AppResul
     let attr = group
         .new_attr::<f64>()
         .create(name)
-        .map_err(|e| hdf5_err(format!("creating group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("creating group attr {name}"), e))?;
     attr.write_scalar(&value)
-        .map_err(|e| hdf5_err(format!("writing group attr {name}: {e}")))?;
+        .map_err(|e| hdf5_err(format!("writing group attr {name}"), e))?;
     Ok(())
 }
 

@@ -186,21 +186,24 @@ pub fn get_analysis_params_impl(state: &SharedState) -> AppResult<serde_json::Va
 #[tauri::command]
 pub fn read_result(path: String, name: String) -> AppResult<serde_json::Value> {
     let file = hdf5::File::open(&path).map_err(|e| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "Failed to open {path}: {e}"
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5(
+            format!("Failed to open {path}"),
+            e,
+        ))
     })?;
     let ds = file.dataset(&format!("results/{name}")).map_err(|e| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "Failed to open results/{name}: {e}"
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5(
+            format!("Failed to open results/{name}"),
+            e,
+        ))
     })?;
     let shape = ds.shape();
     let result_type = isi_analysis::io::classify_result_type(&name, &shape, None);
     let hdf5_err = |e: hdf5::Error, ctx: &str| {
-        AppError::Analysis(isi_analysis::AnalysisError::Hdf5(format!(
-            "reading {ctx} {name}: {e}"
-        )))
+        AppError::Analysis(isi_analysis::AnalysisError::hdf5(
+            format!("reading {ctx} {name}"),
+            e,
+        ))
     };
 
     match result_type.as_str() {
