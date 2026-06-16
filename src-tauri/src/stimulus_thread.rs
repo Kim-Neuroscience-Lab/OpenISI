@@ -1044,6 +1044,17 @@ fn run_inner(
                     start_time_us = now_us;
                     dataset = Some(ds);
                     acquiring = true;
+
+                    // Re-entrancy: each acquisition starts its drop accounting
+                    // fresh. The DWM present count is monotonic for the whole
+                    // process, so zeroing `last_present_count` makes this run's
+                    // first frame re-establish the baseline (see
+                    // `present_count_gap`); without this, run 2 charges every
+                    // idle-time present since run 1 as dropped frames and trips
+                    // the catastrophic-drop abort.
+                    total_frames_observed = 0;
+                    total_drops = 0;
+                    last_present_count = 0;
                 }
                 Ok(StimulusCmd::Stop) => {
                     tracing::info!("stop requested");
@@ -1222,8 +1233,8 @@ fn run_inner(
                 // honoring the warmup window (composition / first-render
                 // JIT can produce a few spurious drops at startup).
                 let past_warmup = total_frames_observed > drop_detection_warmup_frames as u64;
-                if past_warmup && last_present_count > 0 && frame_count > last_present_count + 1 {
-                    let gap = frame_count - last_present_count - 1;
+                let gap = present_count_gap(last_present_count, frame_count);
+                if past_warmup && gap > 0 {
                     total_drops += gap;
                     tracing::warn!(
                         gap,
@@ -1237,15 +1248,42 @@ fn run_inner(
                     )));
 
                     // Catastrophic-threshold check (pure helper, see
-                    // `is_catastrophic_drop` for the policy + tests).
+                    // `is_catastrophic_drop` for the policy + tests). A
+                    // catastrophic drop ABORTS THIS ACQUISITION but must NOT
+                    // terminate the long-lived stimulus thread — it owns the GPU
+                    // device, window, and DXGI output created once at startup,
+                    // and the next run must reuse them. Returning here is what
+                    // forced a full app restart before every second acquisition.
+                    // Mirror the `Stop` flow: surface why (transient error),
+                    // hand back the partial run for the user's save decision,
+                    // mark stopped, set `acquiring = false`, and keep looping.
                     if is_catastrophic_drop(total_drops, total_frames_observed, gap) {
                         let drop_fraction = total_drops as f64 / total_frames_observed as f64;
-                        return Err(AcquisitionError::FrameDrop(format!(
+                        tracing::error!(
+                            cumulative = total_drops,
+                            observed = total_frames_observed,
+                            "stimulus drops exceeded catastrophic threshold — aborting acquisition",
+                        );
+                        let _ = evt_tx.send(StimulusEvt::Error(format!(
                             "stimulus drops exceeded catastrophic threshold: \
                              last gap={gap}, cumulative={total_drops}/{total_frames_observed} \
-                             ({:.2}%)",
+                             ({:.2}%) — acquisition aborted",
                             drop_fraction * 100.0
                         )));
+                        sequencer.stop();
+                        if let Some(mut ds) = dataset.take() {
+                            ds.stop_recording();
+                            let _ = evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
+                                dataset: ds,
+                                sweep_sequence: std::mem::take(&mut sweep_sequence),
+                                sweep_start_us: std::mem::take(&mut sweep_start_us),
+                                sweep_end_us: std::mem::take(&mut sweep_end_us),
+                                completed_normally: false,
+                            })));
+                        }
+                        acquiring = false;
+                        let _ = evt_tx.send(StimulusEvt::Stopped);
+                        continue;
                     }
                 }
                 last_present_count = frame_count;
@@ -1442,8 +1480,9 @@ const CATASTROPHIC_DROP_FRACTION: f64 = 0.05;
 #[cfg(any(windows, test))]
 const CATASTROPHIC_GAP_FRAMES: u64 = 60;
 
-/// Catastrophic-drop policy. Returns `true` when the run should exit
-/// with `AcquisitionError::FrameDrop` instead of continuing.
+/// Catastrophic-drop policy. Returns `true` when the current acquisition
+/// should be aborted (the stimulus thread surfaces the loss, hands back the
+/// partial run, and stays alive for the next acquisition) instead of continuing.
 ///
 /// Two independent triggers, either fires:
 /// - cumulative loss fraction >= `CATASTROPHIC_DROP_FRACTION` (5%)
@@ -1466,9 +1505,62 @@ pub(crate) fn is_catastrophic_drop(
     last_gap_frames >= CATASTROPHIC_GAP_FRAMES || fraction >= CATASTROPHIC_DROP_FRACTION
 }
 
+/// Frames missed between two successive DWM present counts. `prev == 0` means
+/// "no baseline established yet" (the first frame of a run) and never reports a
+/// gap; `current <= prev + 1` is the no-drop case.
+///
+/// The DWM present count is monotonic for the lifetime of the *process*, not
+/// per acquisition. Each `StartAcquisition` therefore zeroes the baseline
+/// (`last_present_count = 0`) so a fresh run re-establishes it on its first
+/// frame — otherwise run N+1's first frame would charge every DWM present that
+/// occurred while the app sat idle between runs as "dropped frames", trip the
+/// catastrophic-drop abort, and (formerly) kill the stimulus thread, which is
+/// what forced a full app restart before every second acquisition.
+///
+/// Pure function, extracted out of the Windows-only render loop so the reset
+/// semantics are unit-testable on every platform.
+#[cfg(any(windows, test))]
+pub(crate) fn present_count_gap(prev: u64, current: u64) -> u64 {
+    if prev == 0 || current <= prev + 1 {
+        0
+    } else {
+        current - prev - 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_catastrophic_drop;
+    use super::{is_catastrophic_drop, present_count_gap};
+
+    #[test]
+    fn fresh_baseline_reports_no_gap() {
+        // prev == 0 is the per-run reset state: the first frame of a run
+        // establishes the baseline and must never report a gap, no matter how
+        // far the process-lifetime DWM present count has advanced.
+        assert_eq!(present_count_gap(0, 1), 0);
+        assert_eq!(present_count_gap(0, 50_000), 0);
+    }
+
+    #[test]
+    fn consecutive_presents_have_no_gap() {
+        assert_eq!(present_count_gap(100, 101), 0); // next frame
+        assert_eq!(present_count_gap(100, 100), 0); // same (defensive)
+    }
+
+    #[test]
+    fn one_missed_present_is_a_gap_of_one() {
+        assert_eq!(present_count_gap(100, 102), 1);
+    }
+
+    #[test]
+    fn idle_between_runs_without_reset_would_be_a_huge_gap() {
+        // The bug: run 2's first frame, baseline NOT reset, present count
+        // advanced by ~thousands while idle → a catastrophic phantom gap. The
+        // reset (prev == 0) is what prevents this; this documents the failure
+        // mode the reset guards against.
+        assert_eq!(present_count_gap(50_000, 51_800), 1_799);
+        assert!(super::is_catastrophic_drop(1_799, 10_001, 1_799));
+    }
 
     #[test]
     fn zero_observed_frames_is_not_catastrophic() {
