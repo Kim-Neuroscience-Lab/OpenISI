@@ -18,7 +18,8 @@
     "enabled": false,
     "radius_px": 200,
     "center_x_px": 512,
-    "center_y_px": 512
+    "center_y_px": 512,
+    "diameter_mm": 5.0
   },
   "display": {
     "target_stimulus_fps": 60,

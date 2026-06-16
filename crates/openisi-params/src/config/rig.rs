@@ -101,6 +101,11 @@ impl Default for Geometry {
     }
 }
 
+/// Head-ring overlay — a circle of KNOWN physical diameter (`diameter_mm`, the
+/// machined headplate ring) the user positions over the camera image. Doubles as
+/// a spatial fiducial: a ring of `diameter_mm` spanning `2·radius_px` frame
+/// pixels yields µm/pixel (see [`RingOverlay::um_per_pixel`]), so the camera's
+/// spatial calibration can be *measured* from the part rather than hand-entered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct RingOverlay {
@@ -113,12 +118,41 @@ pub struct RingOverlay {
     pub center_x_px: u32,
     #[garde(skip)]
     pub center_y_px: u32,
+    /// Physical diameter of the head ring in millimetres (its known machined
+    /// spec). With `radius_px` this defines the pixel↔mm scale.
+    #[garde(range(min = 0.0))]
+    #[schemars(range(min = 0.0))]
+    pub diameter_mm: f64,
 }
 
 impl Default for RingOverlay {
     fn default() -> Self {
-        Self { enabled: false, radius_px: 200, center_x_px: 512, center_y_px: 512 }
+        Self { enabled: false, radius_px: 200, center_x_px: 512, center_y_px: 512, diameter_mm: 5.0 }
     }
+}
+
+impl RingOverlay {
+    /// The µm-per-pixel implied by this ring, or `None` when it can't define a
+    /// scale (disabled / zero radius / non-positive diameter).
+    ///
+    /// `radius_px` MUST be in the analysis frame's pixel space. The camera
+    /// delivers already-binned frames (binning is set as the capture ROI), so
+    /// the binning factor is implicit in the frame size — there is no separate
+    /// binning multiply here; the UI is responsible for converting an on-canvas
+    /// radius to frame pixels before storing it.
+    pub fn um_per_pixel(&self) -> Option<f64> {
+        if !self.enabled || self.radius_px == 0 || self.diameter_mm <= 0.0 {
+            return None;
+        }
+        Some(um_per_pixel_from_ring(self.diameter_mm, self.radius_px))
+    }
+}
+
+/// µm per pixel from a head ring of physical `diameter_mm` whose diameter spans
+/// `2·radius_px` pixels: `(diameter_mm · 1000) / (2 · radius_px)`. Pure so the
+/// calibration is unit-testable independent of config/UI plumbing.
+pub fn um_per_pixel_from_ring(diameter_mm: f64, radius_px: u32) -> f64 {
+    (diameter_mm * 1000.0) / (2.0 * radius_px as f64)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Validate)]
@@ -234,6 +268,38 @@ mod tests {
         assert_eq!(cfg.camera.exposure_us, 100000);
         assert_eq!(cfg.camera.binning, 4); // inherited
         assert_eq!(cfg.geometry.monitor_yaw_deg, 30.0); // inherited
+    }
+
+    /// A config written before `diameter_mm` existed still loads — the new field
+    /// inherits its default. Guards the additive/back-compatible overlay rule.
+    #[test]
+    fn ring_overlay_without_diameter_inherits_default() {
+        let cfg: RigConfig =
+            serde_json::from_str(r#"{ "ring_overlay": { "radius_px": 150 } }"#).unwrap();
+        assert_eq!(cfg.ring_overlay.radius_px, 150);
+        assert_eq!(cfg.ring_overlay.diameter_mm, 5.0); // inherited
+    }
+
+    /// The ring calibration: a `diameter_mm` ring spanning `2·radius_px` pixels
+    /// gives `(diameter_mm·1000)/(2·radius_px)` µm/pixel. The 8 mm @ 200 px case
+    /// reproduces the historical hand-entered `um_per_pixel = 20.0`, anchoring the
+    /// formula to a known-good value.
+    #[test]
+    fn ring_um_per_pixel_formula() {
+        assert_eq!(um_per_pixel_from_ring(8.0, 200), 20.0); // anchors the legacy default
+        assert_eq!(um_per_pixel_from_ring(5.0, 200), 12.5);
+        assert_eq!(um_per_pixel_from_ring(5.0, 100), 25.0); // smaller ring px ⇒ larger µm/px
+    }
+
+    /// The accessor returns a scale only when the ring can define one.
+    #[test]
+    fn ring_um_per_pixel_accessor_guards() {
+        let enabled = RingOverlay { enabled: true, radius_px: 200, diameter_mm: 8.0, ..Default::default() };
+        assert_eq!(enabled.um_per_pixel(), Some(20.0));
+
+        // Disabled / zero diameter ⇒ no scale (so it never silently feeds 0).
+        assert_eq!(RingOverlay { enabled: false, ..enabled.clone() }.um_per_pixel(), None);
+        assert_eq!(RingOverlay { diameter_mm: 0.0, ..enabled }.um_per_pixel(), None);
     }
 
     /// An unknown key is a hard error (the typo guard `deny_unknown_fields`).
