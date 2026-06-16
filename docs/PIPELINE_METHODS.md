@@ -226,6 +226,13 @@ Legend: ✅ golden · 🟡 partial · ⬜ gap · — n/a (trivial / our own).
 | patch_refinement | `None` | — | — | — |
 | patch_refinement | *SNLC `splitPatchesX`/`fusePatchesX`* | `reference/ISI/splitPatchesX.m`, `fusePatchesX.m` (Octave/A) | ❌ **NOT PORTED** — verified method gap (2026-06-16). Distinct from Allen `SplitMerge`: splits on visual-space *over-representation* (`overRep`: Jacobian-coverage ÷ actual-coverage > 0.999) + prunes negligible-coverage patches; `fusePatchesX` fuses same-sign adjacent. Large port (new primitives: `imregionalmin`/`imimposemin`/`bwdist`/spherical visual-space coverage). Golden-able vs the in-repo `.m`. |
 | eccentricity | `Garrett2014WholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | 🟡 distance formula only |
+| magnification | *anisotropy outputs* | SNLC `getMagFactors.m` `prefAxisMF` + `Distrtion` | Octave/A | ❌ **NOT PORTED** — verified gap (2026-06-16). We compute only the scalar determinant; SNLC also outputs the **preferred axis** + **distortion/anisotropy** of cortical magnification (from the complex resultant of the two gradient vectors). |
+
+> **⚠ This gap list is NOT proven exhaustive.** It records only the gaps found by
+> spot-checking the *top-level* retinotopy `.m`; the vendored oracle packages
+> (`reference/corticalmapping/` Python, full `reference/ISI/` MATLAB) have not been
+> traversed function-by-function. A definitive coverage answer needs that systematic
+> enumeration.
 
 **Cross-cutting primitive:** `gaussian_smooth_f64` (`segmentation/morphology.rs`)
 backs `sign_map_smoothing` *and* the amp-weighted phasor smooth — golden it first;
