@@ -137,6 +137,7 @@ pub fn restore(
             }
             StageId::Eccentricity => {
                 state.eccentricity = Some(io::read_result_map(path, "eccentricity")?);
+                state.polar_angle = Some(io::read_result_map(path, "polar_angle")?);
             }
             StageId::DerivedMaps => {
                 state.magnification = Some(io::read_result_map(path, "magnification")?);

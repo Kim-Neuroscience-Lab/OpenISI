@@ -165,6 +165,19 @@ pub fn meta_for_f64(name: &str, data: &Array2<f64>, acquisition: &AcquisitionPro
                 zero_means: lit("outside_patch"),
             }
         }
+        // Polar angle: the SNLC `kmap_ang` companion to eccentricity. A circular
+        // visual-field coordinate over [-180, 180]°, so it renders with the same
+        // wrapping HSV palette as the phase maps (period 360°). `0.0` is the
+        // patch-scope sentinel (zero outside `area_labels > 0`), as for ecc.
+        "polar_angle" => MapMeta {
+            palette: lit("hsv_circular"),
+            units: lit("deg"),
+            display_min: -180.0,
+            display_max: 180.0,
+            wrap_period: 360.0,
+            nan_means: lit(""),
+            zero_means: lit("outside_patch"),
+        },
         // Magnification: Allen cortical magnification factor (px²/deg²) — the
         // reciprocal of the Jacobian determinant, high where cortex is
         // magnified. ROI-gated, so zeros mean "outside patch".

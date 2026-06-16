@@ -138,6 +138,7 @@ fn assemble(st: PipelineState) -> Result<AnalysisResult, AnalysisError> {
         area_signs: st.area_signs.ok_or_else(|| missing("area_signs"))?,
         area_borders: st.area_borders.ok_or_else(|| missing("area_borders"))?,
         eccentricity: st.eccentricity.ok_or_else(|| missing("eccentricity"))?,
+        polar_angle: st.polar_angle.ok_or_else(|| missing("polar_angle"))?,
         magnification: st.magnification.ok_or_else(|| missing("magnification"))?,
         contours_azi: st.contours_azi.ok_or_else(|| missing("contours_azi"))?,
         contours_alt: st.contours_alt.ok_or_else(|| missing("contours_alt"))?,

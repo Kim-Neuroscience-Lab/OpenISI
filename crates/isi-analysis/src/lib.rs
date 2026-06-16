@@ -196,6 +196,10 @@ pub struct AnalysisResult {
     // Patch-scoped derived maps — zero outside `area_labels > 0` as
     // a native output of their compute functions (not cortex masking).
     pub eccentricity: Array2<f64>,
+    /// Polar-angle map (degrees, wrap ±180) about the V1 center — the SNLC
+    /// `getRadialEccMapX.m` `kmap_ang` companion to `eccentricity`'s `kmap_rad`.
+    /// Zero outside `area_labels > 0`, same patch scoping as eccentricity.
+    pub polar_angle: Array2<f64>,
     pub magnification: Array2<f64>,
     /// Unmasked absolute Jacobian determinant (deg²/px²) — full frame, the raw
     /// magnification before ROI gating. Persisted to `/results` so a parameter

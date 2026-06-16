@@ -299,12 +299,22 @@ impl Stage for Eccentricity {
     }
     fn execute(&self, st: &mut PipelineState, ctx: &StageCtx) -> Result<(), AnalysisError> {
         let retino = st.retino_ref()?;
+        let area_labels = st.area_labels_ref()?;
         let ecc = ctx.params.eccentricity.apply(
             &retino.azi_phase_degrees,
             &retino.alt_phase_degrees,
-            st.area_labels_ref()?,
+            area_labels,
+        );
+        // Polar angle is the fixed SNLC `kmap_ang` companion to eccentricity's
+        // `kmap_rad` — atan2 about the same V1 center. No method variant: the
+        // angular coordinate is a single formula, not a parameterized choice.
+        let polar = math::compute_polar_angle(
+            &retino.azi_phase_degrees,
+            &retino.alt_phase_degrees,
+            area_labels,
         );
         st.eccentricity = Some(ecc);
+        st.polar_angle = Some(polar);
         Ok(())
     }
 }

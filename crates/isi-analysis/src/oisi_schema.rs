@@ -203,6 +203,7 @@ pub mod name {
     pub const AREA_SIGNS: &str = "area_signs";
     pub const AREA_BORDERS: &str = "area_borders";
     pub const ECCENTRICITY: &str = "eccentricity";
+    pub const POLAR_ANGLE: &str = "polar_angle";
     pub const MAGNIFICATION: &str = "magnification";
     pub const MAGNIFICATION_RAW: &str = "magnification_raw";
     pub const CONTOURS_AZI: &str = "contours_azi";
@@ -391,6 +392,7 @@ const RESULTS_DATASETS: &[Dataset] = &[
     Dataset { name: n::AREA_SIGNS, dtype: "i8", shape: "(N,)", presence: Always, doc: "Per-patch sign in [-1, +1], order-matched to area_labels 1..N.", attrs: &[] },
     Dataset { name: n::AREA_BORDERS, dtype: "u8 (bool)", shape: "(H, W)", presence: Always, doc: "Area border mask.", attrs: MAP_META },
     result_f64(n::ECCENTRICITY, Always, "Visual-field eccentricity (deg)."),
+    result_f64(n::POLAR_ANGLE, Always, "Visual-field polar angle (deg, wrap ±180) about V1 center."),
     result_f64(n::MAGNIFICATION, Always, "Cortical magnification (px²/deg², ROI-masked)."),
     result_f64(n::MAGNIFICATION_RAW, Always, "Unmasked |det J| (deg²/px²); split-criterion input."),
     Dataset { name: n::CONTOURS_AZI, dtype: "u8 (bool)", shape: "(H, W)", presence: Always, doc: "Azimuth iso-contour mask.", attrs: MAP_META },

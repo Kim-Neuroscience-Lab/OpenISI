@@ -58,6 +58,8 @@ pub struct PipelineState {
     pub area_borders: Option<Array2<bool>>,
     /// Eccentricity map (stage 10).
     pub eccentricity: Option<Array2<f64>>,
+    /// Polar-angle map (stage 10, produced alongside eccentricity).
+    pub polar_angle: Option<Array2<f64>>,
     /// ROI-masked magnification (derived).
     pub magnification: Option<Array2<f64>>,
     /// Azimuth iso-contours (derived).

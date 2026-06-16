@@ -370,7 +370,10 @@ pub fn stage_artifacts_present(path: &Path) -> Result<StageArtifacts, AnalysisEr
             "results/area_signs",
             "results/area_borders",
         ]),
-        eccentricity: has("results/eccentricity"),
+        // Both outputs must be present to restore the stage; an old file with
+        // `eccentricity` but no `polar_angle` recomputes (cheap) rather than
+        // restoring a partial Eccentricity stage.
+        eccentricity: all(&["results/eccentricity", "results/polar_angle"]),
         derived_maps: all(&[
             "results/magnification",
             "results/contours_azi",
@@ -905,6 +908,7 @@ pub fn write_results(
 
     // Derived maps.
     write_f64(name::ECCENTRICITY, &result.eccentricity)?;
+    write_f64(name::POLAR_ANGLE, &result.polar_angle)?;
     write_f64(name::MAGNIFICATION, &result.magnification)?;
     // Unmasked Jacobian magnitude — persisted as a retinotopy restore input
     // (and a legitimate raw output). Read back by `read_retinotopy_maps`.
@@ -1435,6 +1439,7 @@ mod tests {
             area_signs: vec![],
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
+            polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
@@ -1519,6 +1524,7 @@ mod tests {
             area_signs: vec![1, -1],
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
+            polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
@@ -1642,6 +1648,7 @@ mod tests {
             area_signs: vec![],
             area_borders: Array2::from_elem((h, w), false),
             eccentricity: Array2::zeros((h, w)),
+            polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),

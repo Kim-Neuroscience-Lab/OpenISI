@@ -89,6 +89,13 @@ bit_exact = true
 rtol = 3.05e-5   # 256·ε; observed ≤ 7.9e-6
 atol = 3.05e-5
 
+# ── Polar angle (degrees, atan2 about V1 center → crosses zero, ±180) ───
+# Angular like eccentricity but signed and zero-crossing, so an atol floor
+# carries the near-zero pixels; same K=256 propagation as eccentricity.
+[results.polar_angle]
+rtol = 3.05e-5   # 256·ε
+atol = 3.05e-5
+
 # ── Magnification = 1/|det J| — ill-conditioned reciprocal ─────────────
 # `det J` is a catastrophic-cancellation difference; at near-singular pixels its
 # condition number κ amplifies f32 error, so this map's relative bound is
