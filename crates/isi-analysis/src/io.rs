@@ -1107,7 +1107,18 @@ fn open_readwrite(path: &Path) -> Result<H5File, AnalysisError> {
         .map_err(|e| AnalysisError::hdf5(format!("opening {}", path.display()), e))
 }
 
-fn write_str_attr(location: &hdf5::Location, name: &str, value: &str) -> Result<(), AnalysisError> {
+// String / scalar attribute writers — the `.oisi` HDF5 attribute primitives,
+// owned here (the single I/O boundary) and used by both the analysis-write path
+// and the capture-write path (`src-tauri::export`). Each takes `&hdf5::Location`,
+// the base that both `File` and `Group` coerce to, so one writer serves root and
+// group attributes alike.
+
+/// Write (replacing) a string attribute on `location` (a file or a group).
+pub fn write_str_attr(
+    location: &hdf5::Location,
+    name: &str,
+    value: &str,
+) -> Result<(), AnalysisError> {
     // Remove existing attribute if present.
     let _ = location.delete_attr(name);
     let attr = location
@@ -1122,10 +1133,23 @@ fn write_str_attr(location: &hdf5::Location, name: &str, value: &str) -> Result<
     Ok(())
 }
 
-fn write_f64_attr(location: &hdf5::Location, name: &str, value: f64) -> Result<(), AnalysisError> {
+/// Write (replacing) an `f64` attribute on `location` (a file or a group).
+pub fn write_f64_attr(location: &hdf5::Location, name: &str, value: f64) -> Result<(), AnalysisError> {
     let _ = location.delete_attr(name);
     let attr = location
         .new_attr::<f64>()
+        .create(name)
+        .map_err(|e| AnalysisError::hdf5(format!("creating attr {name}"), e))?;
+    attr.write_scalar(&value)
+        .map_err(|e| AnalysisError::hdf5(format!("writing attr {name}"), e))?;
+    Ok(())
+}
+
+/// Write (replacing) a `u32` attribute on `location` (a file or a group).
+pub fn write_u32_attr(location: &hdf5::Location, name: &str, value: u32) -> Result<(), AnalysisError> {
+    let _ = location.delete_attr(name);
+    let attr = location
+        .new_attr::<u32>()
         .create(name)
         .map_err(|e| AnalysisError::hdf5(format!("creating attr {name}"), e))?;
     attr.write_scalar(&value)
