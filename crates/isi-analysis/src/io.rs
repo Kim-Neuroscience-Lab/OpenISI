@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
+use crate::oisi_schema::name;
 use crate::{
     AcquisitionProperties, AnalysisError, AnalysisParams, AnalysisResult, ComplexMaps,
     ProgressSink, RawAcquisition, RawProcessingResult,
@@ -280,10 +281,10 @@ pub fn read_stage_fingerprint(path: &Path, stage: &str) -> Result<Option<String>
 /// whether to restore or recompute.
 pub fn write_stage_fingerprint(path: &Path, stage: &str, fp: &str) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
-    let group = match file.group("analysis_state") {
+    let group = match file.group(name::ANALYSIS_STATE) {
         Ok(g) => g,
         Err(_) => file
-            .create_group("analysis_state")
+            .create_group(name::ANALYSIS_STATE)
             .map_err(|e| AnalysisError::hdf5("creating analysis_state group", e))?,
     };
     write_str_attr(&group, stage, fp)
@@ -390,17 +391,17 @@ pub fn write_stage_cache(
     threshold_applied: f64,
 ) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
-    let _ = file.unlink("cache");
+    let _ = file.unlink(name::CACHE);
     let group = file
-        .create_group("cache")
+        .create_group(name::CACHE)
         .map_err(|e| AnalysisError::hdf5("creating cache group", e))?;
     let u8data = imseg.mapv(|b| b as u8);
     group
         .new_dataset_builder()
         .with_data(&u8data)
-        .create("imseg")
+        .create(name::IMSEG)
         .map_err(|e| AnalysisError::hdf5("writing cache/imseg", e))?;
-    write_f64_attr(&group, "threshold_applied", threshold_applied)?;
+    write_f64_attr(&group, name::THRESHOLD_APPLIED, threshold_applied)?;
     Ok(())
 }
 
@@ -596,7 +597,7 @@ pub fn write_analysis_params_attr(
     let file = open_readwrite(path)?;
     let json = serde_json::to_string(params_tree)
         .map_err(|e| AnalysisError::Io(std::io::Error::other(e)))?;
-    write_str_attr(&file, "analysis_params", &json)?;
+    write_str_attr(&file, name::ANALYSIS_PARAMS, &json)?;
     Ok(())
 }
 
@@ -761,9 +762,9 @@ pub fn create(path: &Path, source_type: &str) -> Result<(), AnalysisError> {
     let file = H5File::create(path)
         .map_err(|e| AnalysisError::hdf5(format!("creating {}", path.display()), e))?;
 
-    write_str_attr(&file, "version", FORMAT_VERSION)?;
-    write_str_attr(&file, "source_type", source_type)?;
-    write_str_attr(&file, "created_at", &chrono_now())?;
+    write_str_attr(&file, name::VERSION, FORMAT_VERSION)?;
+    write_str_attr(&file, name::SOURCE_TYPE, source_type)?;
+    write_str_attr(&file, name::CREATED_AT, &chrono_now())?;
 
     Ok(())
 }
@@ -794,9 +795,9 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
     let file = open_readwrite(path)?;
 
     // Remove existing group if present, then recreate
-    let _ = file.unlink("complex_maps");
+    let _ = file.unlink(name::COMPLEX_MAPS);
     let group = file
-        .create_group("complex_maps")
+        .create_group(name::COMPLEX_MAPS)
         .map_err(|e| AnalysisError::hdf5("creating complex_maps group", e))?;
 
     let write_complex = |name: &str, data: &Array2<Complex64>| -> Result<(), AnalysisError> {
@@ -816,10 +817,10 @@ pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), Analysi
         Ok(())
     };
 
-    write_complex("azi_fwd", &maps.azi_fwd)?;
-    write_complex("azi_rev", &maps.azi_rev)?;
-    write_complex("alt_fwd", &maps.alt_fwd)?;
-    write_complex("alt_rev", &maps.alt_rev)?;
+    write_complex(name::AZI_FWD, &maps.azi_fwd)?;
+    write_complex(name::AZI_REV, &maps.azi_rev)?;
+    write_complex(name::ALT_FWD, &maps.alt_fwd)?;
+    write_complex(name::ALT_REV, &maps.alt_rev)?;
 
     Ok(())
 }
@@ -841,9 +842,9 @@ pub fn write_results(
     let file = open_readwrite(path)?;
 
     // Remove and recreate results group (flat).
-    let _ = file.unlink("results");
+    let _ = file.unlink(name::RESULTS);
     let group = file
-        .create_group("results")
+        .create_group(name::RESULTS)
         .map_err(|e| AnalysisError::hdf5("creating results group", e))?;
 
     // Writes a f64 (H,W) dataset and attaches the meta attrs that
@@ -876,46 +877,46 @@ pub fn write_results(
     // smoothed array segmentation operated on; `vfs_smoothed_thresholded`
     // is the literal threshold mask. All full frame — no cortex
     // masking pre-baked.
-    write_f64("azi_phase", &result.azi_phase)?;
-    write_f64("alt_phase", &result.alt_phase)?;
-    write_f64("azi_phase_degrees", &result.azi_phase_degrees)?;
-    write_f64("alt_phase_degrees", &result.alt_phase_degrees)?;
-    write_f64("azi_amplitude", &result.azi_amplitude)?;
-    write_f64("alt_amplitude", &result.alt_amplitude)?;
-    write_f64("vfs", &result.vfs)?;
-    write_f64("vfs_smoothed", &result.vfs_smoothed)?;
-    write_f64("vfs_smoothed_thresholded", &result.vfs_smoothed_thresholded)?;
+    write_f64(name::AZI_PHASE, &result.azi_phase)?;
+    write_f64(name::ALT_PHASE, &result.alt_phase)?;
+    write_f64(name::AZI_PHASE_DEGREES, &result.azi_phase_degrees)?;
+    write_f64(name::ALT_PHASE_DEGREES, &result.alt_phase_degrees)?;
+    write_f64(name::AZI_AMPLITUDE, &result.azi_amplitude)?;
+    write_f64(name::ALT_AMPLITUDE, &result.alt_amplitude)?;
+    write_f64(name::VFS, &result.vfs)?;
+    write_f64(name::VFS_SMOOTHED, &result.vfs_smoothed)?;
+    write_f64(name::VFS_SMOOTHED_THRESHOLDED, &result.vfs_smoothed_thresholded)?;
 
     // Segmentation outputs.
-    write_mask("cortex_mask", &result.cortex_mask)?;
+    write_mask(name::CORTEX_MASK, &result.cortex_mask)?;
     let labels_ds = group
         .new_dataset_builder()
         .with_data(&result.area_labels)
-        .create("area_labels")
+        .create(name::AREA_LABELS)
         .map_err(|e| AnalysisError::hdf5("writing results/area_labels", e))?;
     attach_meta(&labels_ds, &map_meta_labels())?;
     let signs_arr = ndarray::Array1::from(result.area_signs.clone());
     group
         .new_dataset_builder()
         .with_data(&signs_arr)
-        .create("area_signs")
+        .create(name::AREA_SIGNS)
         .map_err(|e| AnalysisError::hdf5("writing results/area_signs", e))?;
-    write_mask("area_borders", &result.area_borders)?;
+    write_mask(name::AREA_BORDERS, &result.area_borders)?;
 
     // Derived maps.
-    write_f64("eccentricity", &result.eccentricity)?;
-    write_f64("magnification", &result.magnification)?;
+    write_f64(name::ECCENTRICITY, &result.eccentricity)?;
+    write_f64(name::MAGNIFICATION, &result.magnification)?;
     // Unmasked Jacobian magnitude — persisted as a retinotopy restore input
     // (and a legitimate raw output). Read back by `read_retinotopy_maps`.
-    write_f64("magnification_raw", &result.magnification_raw)?;
-    write_mask("contours_azi", &result.contours_azi)?;
-    write_mask("contours_alt", &result.contours_alt)?;
+    write_f64(name::MAGNIFICATION_RAW, &result.magnification_raw)?;
+    write_mask(name::CONTOURS_AZI, &result.contours_azi)?;
+    write_mask(name::CONTOURS_ALT, &result.contours_alt)?;
 
     if let Some(ref r) = result.responsiveness {
-        write_f64("spectral_snr_azi", &r.spectral_snr_azi)?;
-        write_f64("spectral_snr_alt", &r.spectral_snr_alt)?;
-        write_f64("allen_power_snr_azi", &r.allen_power_snr_azi)?;
-        write_f64("allen_power_snr_alt", &r.allen_power_snr_alt)?;
+        write_f64(name::SPECTRAL_SNR_AZI, &r.spectral_snr_azi)?;
+        write_f64(name::SPECTRAL_SNR_ALT, &r.spectral_snr_alt)?;
+        write_f64(name::ALLEN_POWER_SNR_AZI, &r.allen_power_snr_azi)?;
+        write_f64(name::ALLEN_POWER_SNR_ALT, &r.allen_power_snr_alt)?;
     }
 
     // Per-direction cross-cycle reliability (Allen / Engel). Source of
@@ -923,10 +924,10 @@ pub fn write_results(
     // future reanalysis) can re-derive cortex with a different threshold
     // without rerunning the raw pipeline.
     if let Some(ref rel) = result.reliability {
-        write_f64("reliability_azi_fwd", &rel.rel_azi_fwd)?;
-        write_f64("reliability_azi_rev", &rel.rel_azi_rev)?;
-        write_f64("reliability_alt_fwd", &rel.rel_alt_fwd)?;
-        write_f64("reliability_alt_rev", &rel.rel_alt_rev)?;
+        write_f64(name::RELIABILITY_AZI_FWD, &rel.rel_azi_fwd)?;
+        write_f64(name::RELIABILITY_AZI_REV, &rel.rel_azi_rev)?;
+        write_f64(name::RELIABILITY_ALT_FWD, &rel.rel_alt_fwd)?;
+        write_f64(name::RELIABILITY_ALT_REV, &rel.rel_alt_rev)?;
     }
 
     let area_count = result.area_signs.len();
@@ -940,10 +941,10 @@ pub fn write_results(
 /// Write an anatomical image.
 pub fn write_anatomical(path: &Path, image: &Array2<u8>) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
-    let _ = file.unlink("anatomical");
+    let _ = file.unlink(name::ANATOMICAL);
     file.new_dataset_builder()
         .with_data(image)
-        .create("anatomical")
+        .create(name::ANATOMICAL)
         .map_err(|e| AnalysisError::hdf5("writing anatomical", e))?;
     Ok(())
 }
