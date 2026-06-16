@@ -224,6 +224,7 @@ Legend: ✅ golden · 🟡 partial · ⬜ gap · — n/a (trivial / our own).
 | patch_extraction | `AllenZhuang2017LabelOpenCloseDilate` | Allen RM.py 1089-1210 | scipy / A | 🟡 primitives only |
 | patch_refinement | `AllenZhuang2017SplitMerge` | Allen RM.py 1247-1527 | Python / A | ⬜ (complex) |
 | patch_refinement | `None` | — | — | — |
+| patch_refinement | *SNLC `splitPatchesX`/`fusePatchesX`* | `reference/ISI/splitPatchesX.m`, `fusePatchesX.m` (Octave/A) | ❌ **NOT PORTED** — verified method gap (2026-06-16). Distinct from Allen `SplitMerge`: splits on visual-space *over-representation* (`overRep`: Jacobian-coverage ÷ actual-coverage > 0.999) + prunes negligible-coverage patches; `fusePatchesX` fuses same-sign adjacent. Large port (new primitives: `imregionalmin`/`imimposemin`/`bwdist`/spherical visual-space coverage). Golden-able vs the in-repo `.m`. |
 | eccentricity | `Garrett2014WholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | 🟡 distance formula only |
 
 **Cross-cutting primitive:** `gaussian_smooth_f64` (`segmentation/morphology.rs`)
