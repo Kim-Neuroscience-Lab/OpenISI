@@ -623,6 +623,25 @@ mod tests {
     }
 
     #[test]
+    fn ring_overlay_partial_merge_preserves_unsent_fields() {
+        // The `set_ring_overlay` command relies on this RFC-7386 partial-merge
+        // semantics: a UI resize sends only the geometry keys and must NOT wipe a
+        // previously-calibrated diameter.
+        let mut store = ConfigStore::new(Path::new("."), Path::new("."));
+        store
+            .merge_rig(&serde_json::json!({ "ring_overlay": { "diameter_mm": 8.0 } }))
+            .unwrap();
+        assert_eq!(store.rig().ring_overlay.diameter_mm, 8.0);
+
+        store
+            .merge_rig(&serde_json::json!({ "ring_overlay": { "enabled": true, "radius_px": 150 } }))
+            .unwrap();
+        assert_eq!(store.rig().ring_overlay.radius_px, 150);
+        assert!(store.rig().ring_overlay.enabled);
+        assert_eq!(store.rig().ring_overlay.diameter_mm, 8.0); // preserved, not reset
+    }
+
+    #[test]
     fn hardware_injection_clamps_exposure() {
         let mut store = ConfigStore::new(Path::new("."), Path::new("."));
         store.merge_rig(&serde_json::json!({ "camera": { "exposure_us": 1000 } })).unwrap();

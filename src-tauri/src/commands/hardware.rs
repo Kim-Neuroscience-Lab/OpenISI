@@ -424,28 +424,19 @@ pub fn get_ring_overlay(state: State<'_, SharedState>) -> AppResult<serde_json::
     }))
 }
 
-/// Update ring overlay config. Persists to rig.json. `diameter_mm` is optional
-/// (omitted ⇒ the stored value is kept) so older callers are unaffected.
+/// Update ring overlay config (persists to rig.json). Takes the `overlay` object
+/// the UI sends verbatim and applies it as an RFC 7386 partial merge — so sending
+/// only the geometry keys (e.g. on a resize) does NOT reset `diameter_mm`, and any
+/// subset of fields is valid.
+///
+/// (Was previously declared with flat params — `enabled`, `radius_px`, … — that
+/// the front-end's `invoke("set_ring_overlay", { overlay })` call never bound to
+/// under Tauri's arg-name convention, so every ring-overlay edit silently failed
+/// to persist. Matching the `overlay` arg name fixes that.)
 #[tauri::command]
-pub fn set_ring_overlay(
-    state: State<'_, SharedState>,
-    enabled: bool,
-    radius_px: u32,
-    center_x_px: u32,
-    center_y_px: u32,
-    diameter_mm: Option<f64>,
-) -> AppResult<()> {
+pub fn set_ring_overlay(state: State<'_, SharedState>, overlay: serde_json::Value) -> AppResult<()> {
     let mut cfg = state.config.lock();
-    let mut overlay = serde_json::json!({ "ring_overlay": {
-        "enabled": enabled,
-        "radius_px": radius_px,
-        "center_x_px": center_x_px,
-        "center_y_px": center_y_px,
-    } });
-    if let Some(d) = diameter_mm {
-        overlay["ring_overlay"]["diameter_mm"] = serde_json::json!(d);
-    }
-    cfg.merge_rig(&overlay)?;
+    cfg.merge_rig(&serde_json::json!({ "ring_overlay": overlay }))?;
     if let Err(e) = cfg.save_all() {
         tracing::error!(error = %e, "failed to save ring overlay");
     }
