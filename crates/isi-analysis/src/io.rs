@@ -553,19 +553,29 @@ pub struct AcquisitionIdentity {
     pub created_at: String,
 }
 
-/// Read the acquisition identity attributes from a `.oisi` file. Returns `None`
-/// for either field if its attribute is missing.
+/// Read the acquisition identity attributes from a `.oisi` file.
+///
+/// A **missing** attribute is legitimate (imports carry no `animal_id`) and reads
+/// as an empty string. An attribute that **exists but cannot be read** is
+/// corruption, and is surfaced as an error rather than silently defaulted — a
+/// silent default would let a damaged recording masquerade as one with empty
+/// identity (and that identity keys the incremental cache).
 pub fn read_acquisition_identity(path: &Path) -> Result<AcquisitionIdentity, AnalysisError> {
     let file = open_read(path)?;
-    let read = |name: &str| -> String {
-        file.attr(name)
-            .and_then(|a| a.read_scalar::<hdf5::types::VarLenUnicode>())
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_default()
+    let read = |name: &str| -> Result<String, AnalysisError> {
+        match file.attr(name) {
+            // Present but unreadable → corruption → fail loud (never default).
+            Ok(attr) => attr
+                .read_scalar::<hdf5::types::VarLenUnicode>()
+                .map(|s| s.as_str().to_string())
+                .map_err(|e| AnalysisError::hdf5(format!("reading {name} attribute"), e)),
+            // Absent → legitimate (e.g. imported files) → empty.
+            Err(_) => Ok(String::new()),
+        }
     };
     Ok(AcquisitionIdentity {
-        animal_id: read("animal_id"),
-        created_at: read("created_at"),
+        animal_id: read("animal_id")?,
+        created_at: read("created_at")?,
     })
 }
 
