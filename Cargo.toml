@@ -5,7 +5,6 @@ members = [
     "crates/openisi-stimulus",
     "crates/pco-sdk",
     "crates/openisi-params",
-    "crates/oisi-format",
     "crates/isi-analysis",
 ]
 
