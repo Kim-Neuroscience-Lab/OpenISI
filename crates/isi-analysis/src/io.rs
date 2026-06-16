@@ -1157,6 +1157,34 @@ pub fn write_u32_attr(location: &hdf5::Location, name: &str, value: u32) -> Resu
     Ok(())
 }
 
+/// Write a 1-D array as a dataset under `group`, with a Fletcher32 integrity
+/// checksum (which requires chunking). An empty array is written unchunked
+/// (HDF5 rejects a zero-length chunk). The `.oisi` 1-D dataset primitive,
+/// shared by the capture-write and analysis-write paths.
+pub fn write_checked_1d<T: hdf5::H5Type + Clone>(
+    group: &hdf5::Group,
+    name: &str,
+    data: Vec<T>,
+) -> Result<(), AnalysisError> {
+    if data.is_empty() {
+        group
+            .new_dataset_builder()
+            .with_data(&ndarray::Array1::<T>::from(data))
+            .create(name)
+            .map_err(|e| AnalysisError::hdf5(format!("writing {name}"), e))?;
+    } else {
+        let len = data.len();
+        group
+            .new_dataset_builder()
+            .fletcher32()
+            .chunk((len,))
+            .with_data(&ndarray::Array1::from(data))
+            .create(name)
+            .map_err(|e| AnalysisError::hdf5(format!("writing {name}"), e))?;
+    }
+    Ok(())
+}
+
 fn list_group_members_from_group(group: &hdf5::Group) -> crate::Result<Vec<String>> {
     group
         .member_names()

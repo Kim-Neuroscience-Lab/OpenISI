@@ -347,7 +347,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     let stim_group = acq_group
         .group("stimulus")
         .map_err(|e| hdf5_err("Failed to open stimulus group", e))?;
-    write_checked_1d(&stim_group, "timestamps_sec", stimulus_sec)?;
+    isi_analysis::io::write_checked_1d(&stim_group, "timestamps_sec", stimulus_sec)?;
 
     // Write realized sweep schedule (unified seconds).
     write_sweep_schedule_sec(&acq_group, schedule, &sweep_start_sec, &sweep_end_sec)?;
@@ -443,16 +443,16 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
             .map_err(|e| hdf5_err("Failed to write camera/frames", e))?;
 
         // Unified camera timestamps (seconds from t=0).
-        write_checked_1d(&camera_group, "timestamps_sec", camera_sec)?;
+        isi_analysis::io::write_checked_1d(&camera_group, "timestamps_sec", camera_sec)?;
 
         // Raw hardware timestamps (provenance — camera's internal clock).
-        write_checked_1d(
+        isi_analysis::io::write_checked_1d(
             &camera_group,
             "hardware_timestamps_us",
             camera_data.hardware_timestamps_us,
         )?;
         // Raw system timestamps (provenance — QPC at frame read time).
-        write_checked_1d(
+        isi_analysis::io::write_checked_1d(
             &camera_group,
             "system_timestamps_us",
             camera_data.system_timestamps_us,
@@ -463,7 +463,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
             .iter()
             .map(|&s| s as i64)
             .collect();
-        write_checked_1d(&camera_group, "sequence_numbers", seq_i64)?;
+        isi_analysis::io::write_checked_1d(&camera_group, "sequence_numbers", seq_i64)?;
     }
 
     // Flush + close the HDF5 file before renaming. HDF5's default weak-
@@ -568,21 +568,21 @@ fn write_stimulus_arrays(acq_group: &hdf5::Group, dataset: &StimulusDataset) -> 
         .create_group("stimulus")
         .map_err(|e| hdf5_err("Failed to create acquisition/stimulus group", e))?;
 
-    write_checked_1d(&stim_group, "timestamps_us", dataset.timestamps_us.clone())?;
-    write_checked_1d(&stim_group, "state_ids", dataset.state_ids.clone())?;
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(&stim_group, "timestamps_us", dataset.timestamps_us.clone())?;
+    isi_analysis::io::write_checked_1d(&stim_group, "state_ids", dataset.state_ids.clone())?;
+    isi_analysis::io::write_checked_1d(
         &stim_group,
         "condition_indices",
         dataset.condition_indices.clone(),
     )?;
-    write_checked_1d(&stim_group, "sweep_indices", dataset.sweep_indices.clone())?;
-    write_checked_1d(&stim_group, "progress", dataset.progress.clone())?;
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(&stim_group, "sweep_indices", dataset.sweep_indices.clone())?;
+    isi_analysis::io::write_checked_1d(&stim_group, "progress", dataset.progress.clone())?;
+    isi_analysis::io::write_checked_1d(
         &stim_group,
         "frame_deltas_us",
         dataset.frame_deltas_us.clone(),
     )?;
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(
         &stim_group,
         "dropped_frame_indices",
         dataset.dropped_frame_indices.clone(),
@@ -617,16 +617,16 @@ fn write_sweep_schedule_sec(
         .map_err(|e| hdf5_err("writing sweep_sequence attr", e))?;
 
     // Raw microsecond timestamps (provenance).
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(
         &sched_group,
         "sweep_start_us",
         schedule.sweep_start_us.clone(),
     )?;
-    write_checked_1d(&sched_group, "sweep_end_us", schedule.sweep_end_us.clone())?;
+    isi_analysis::io::write_checked_1d(&sched_group, "sweep_end_us", schedule.sweep_end_us.clone())?;
 
     // Unified seconds from t=0.
-    write_checked_1d(&sched_group, "sweep_start_sec", sweep_start_sec.to_vec())?;
-    write_checked_1d(&sched_group, "sweep_end_sec", sweep_end_sec.to_vec())?;
+    isi_analysis::io::write_checked_1d(&sched_group, "sweep_start_sec", sweep_start_sec.to_vec())?;
+    isi_analysis::io::write_checked_1d(&sched_group, "sweep_end_sec", sweep_end_sec.to_vec())?;
 
     Ok(())
 }
@@ -646,7 +646,7 @@ fn write_quality_metrics(
     // Camera frame deltas (computed from hardware timestamps).
     let cam_ts = &camera_data.hardware_timestamps_us;
     let cam_deltas: Vec<i64> = cam_ts.windows(2).map(|w| w[1] - w[0]).collect();
-    write_checked_1d(&quality, "camera_frame_deltas_us", cam_deltas)?;
+    isi_analysis::io::write_checked_1d(&quality, "camera_frame_deltas_us", cam_deltas)?;
 
     // Camera sequence number gaps (indices where sequence is non-consecutive).
     let seq = &camera_data.sequence_numbers;
@@ -656,15 +656,15 @@ fn write_quality_metrics(
         .filter(|(_, w)| w[1] != w[0] + 1)
         .map(|(i, _)| (i + 1) as u32)
         .collect();
-    write_checked_1d(&quality, "camera_sequence_gaps", cam_seq_gaps.clone())?;
+    isi_analysis::io::write_checked_1d(&quality, "camera_sequence_gaps", cam_seq_gaps.clone())?;
 
     // Stimulus frame deltas and drops.
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(
         &quality,
         "stimulus_frame_deltas_us",
         stimulus_dataset.frame_deltas_us.clone(),
     )?;
-    write_checked_1d(
+    isi_analysis::io::write_checked_1d(
         &quality,
         "stimulus_dropped_indices",
         stimulus_dataset.dropped_frame_indices.clone(),
@@ -682,7 +682,7 @@ fn write_quality_metrics(
             sum as f32 / pixels.len() as f32
         })
         .collect();
-    write_checked_1d(&quality, "mean_frame_intensity", mean_intensities)?;
+    isi_analysis::io::write_checked_1d(&quality, "mean_frame_intensity", mean_intensities)?;
 
     // Summary attributes.
     let cam_drops = cam_seq_gaps.len() as u32;
@@ -737,32 +737,6 @@ fn write_quality_metrics(
         }
     }
 
-    Ok(())
-}
-
-/// Write a 1D array with Fletcher32 checksum. Requires chunking.
-fn write_checked_1d<T: hdf5::H5Type + Clone>(
-    group: &hdf5::Group,
-    name: &str,
-    data: Vec<T>,
-) -> AppResult<()> {
-    if data.is_empty() {
-        // Write empty dataset — no chunking needed for empty
-        group
-            .new_dataset_builder()
-            .with_data(&ndarray::Array1::<T>::from(data))
-            .create(name)
-            .map_err(|e| hdf5_err(format!("Failed to write {name}"), e))?;
-    } else {
-        let len = data.len();
-        group
-            .new_dataset_builder()
-            .fletcher32()
-            .chunk((len,))
-            .with_data(&ndarray::Array1::from(data))
-            .create(name)
-            .map_err(|e| hdf5_err(format!("Failed to write {name}"), e))?;
-    }
     Ok(())
 }
 
