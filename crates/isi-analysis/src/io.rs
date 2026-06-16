@@ -725,12 +725,43 @@ pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
 // Writing
 // ---------------------------------------------------------------------------
 
+/// The `.oisi` format version this build writes and recognizes.
+pub const FORMAT_VERSION: &str = "1.0";
+
+/// Verify a file's format version is one this build can read.
+///
+/// A **missing** version attribute is tolerated (pre-versioning files; their
+/// `/analysis_params` schema is brought forward by [`crate::migrate`]). A version
+/// that is **present but unrecognized** is rejected rather than silently misread —
+/// forward compatibility (PRINCIPLES Invariant 4): never guess at a format written
+/// by a newer OpenISI.
+pub fn verify_format_version(path: &Path) -> Result<(), AnalysisError> {
+    let file = open_read(path)?;
+    match file.attr("version") {
+        Ok(attr) => {
+            let v = attr
+                .read_scalar::<hdf5::types::VarLenUnicode>()
+                .map_err(|e| AnalysisError::hdf5("reading version attribute", e))?;
+            if v.as_str() == FORMAT_VERSION {
+                Ok(())
+            } else {
+                Err(AnalysisError::InvalidPackage(format!(
+                    "unrecognized .oisi format version {:?} (this build reads {FORMAT_VERSION:?}); the file may be from a newer OpenISI",
+                    v.as_str()
+                )))
+            }
+        }
+        // Absent → pre-versioning file; tolerate (schema migration handles it).
+        Err(_) => Ok(()),
+    }
+}
+
 /// Create a new .oisi file with just metadata.
 pub fn create(path: &Path, source_type: &str) -> Result<(), AnalysisError> {
     let file = H5File::create(path)
         .map_err(|e| AnalysisError::hdf5(format!("creating {}", path.display()), e))?;
 
-    write_str_attr(&file, "version", "1.0")?;
+    write_str_attr(&file, "version", FORMAT_VERSION)?;
     write_str_attr(&file, "source_type", source_type)?;
     write_str_attr(&file, "created_at", &chrono_now())?;
 
@@ -1725,5 +1756,29 @@ mod tests {
         );
         assert_eq!(tree["phase_smoothing"]["sigma_px"], serde_json::json!(2.5));
         assert!(tree.get("azi_angular_range").is_none());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // format version invariant (forward-compatibility gate)
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn verify_format_version_accepts_current_and_rejects_unknown() {
+        let tmp = TempFile::new("format_version");
+        create(tmp.path(), "test").unwrap();
+
+        // A freshly created file carries FORMAT_VERSION and is accepted.
+        verify_format_version(tmp.path()).unwrap();
+
+        // Stamp an unrecognized (e.g. newer) version → rejected, never misread.
+        {
+            let file = open_readwrite(tmp.path()).unwrap();
+            write_str_attr(&file, "version", "99.0").unwrap();
+        }
+        let err = verify_format_version(tmp.path()).unwrap_err();
+        assert!(
+            matches!(err, AnalysisError::InvalidPackage(_)),
+            "expected InvalidPackage, got {err:?}"
+        );
     }
 }

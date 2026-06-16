@@ -337,6 +337,10 @@ pub fn analyze(
     progress: &dyn ProgressSink,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    // Forward-compatibility gate: refuse a file whose format version this build
+    // does not recognize, rather than silently misreading a newer layout.
+    io::verify_format_version(path)?;
+
     let caps = io::inspect(path)?;
 
     // Recording identity — keys stage 0's complex-maps cache and folds into
