@@ -101,10 +101,13 @@ atol = 3.05e-5
 # rtol = κ_max·2·ε with κ_max ≈ 85 000 ⇒ K ≈ 131072 ⇒ rtol ≈ 1.56e-2.
 # NOTE: this looseness is inherent ill-conditioning at a handful of numerically
 # degenerate pixels — the values are mathematically correct (1/det), and the
-# renderer's 2–98 percentile scaling already ignores the tail. A *physical* cap is
-# NOT cleanly grounded: it would need a max cortical magnification, i.e. V1's
-# extent — itself a literature constant requiring V1 to be identified. Whether to
-# apply a data-driven or numerically-grounded det floor instead is an open question.
+# renderer's 2–98 percentile scaling already ignores the tail. NO cap is applied,
+# on oracle grounds: Allen `_getDeterminantMap` outputs |det J| (our
+# `magnification_raw`) and NEVER inverts — the 1/det leaf is OpenISI's display
+# transform, so the tail is an inversion artifact, not an oracle quantity. Capping
+# would diverge from the oracle to patch our own transform; a physical cap would
+# need V1's extent, itself a literature magic-number. See math.rs
+# `cortical_magnification_factor`.
 [results.magnification]
 rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max ≈ 85 000 (cancellation in det)
 atol = 3.05e-5

@@ -193,16 +193,23 @@ pub fn apply_label_roi(src: &Array2<f64>, area_labels: &Array2<i32>) -> Array2<f
     })
 }
 
-/// Cortical magnification factor (Allen CMF, **px²/deg²**) — the reciprocal of
-/// the visual-field Jacobian determinant `|det J|` (deg²/px², our
-/// `magnification_raw`). High where a small patch of visual space maps to a
-/// large patch of cortex (i.e. where cortex is *magnified*), which is the
-/// physiologically meaningful reading and matches Allen's
-/// `RetinotopicMapping._getDeterminantMap` orientation.
+/// Cortical magnification factor (**px²/deg²**) — the reciprocal of the
+/// visual-field Jacobian determinant `|det J|` (deg²/px², our `magnification_raw`).
+/// High where a small patch of visual space maps to a large patch of cortex (cortex
+/// is *magnified*) — the physiologically meaningful direction.
 ///
-/// `eps` floors the denominator so degenerate (near-singular) pixels don't
-/// produce infinities. Pixels outside any segmented patch are zeroed
-/// (`area_labels == 0`), exactly like the other ROI-gated derived maps.
+/// **Oracle note (why there is no cap):** the oracle, Allen
+/// `RetinotopicMapping._getDeterminantMap`, outputs `|det J|` — i.e.
+/// `magnification_raw` — and stops there; it never inverts. This reciprocal leaf is
+/// OpenISI's, for display only. So at near-singular pixels (`|det J| → 0`) this map
+/// spikes — an artifact of *our* inversion, not a physical signal nor an oracle
+/// quantity — and the renderer's 2–98 percentile scaling already absorbs it. We
+/// therefore add NO cap: capping would diverge from the oracle to patch our own
+/// transform, and a "physical" cap would need a max cortical magnification (V1
+/// extent), itself a literature magic-number requiring V1 to be identified. `eps`
+/// only prevents a literal divide-by-zero (it is never reached on real data: the
+/// smallest observed `|det J|` is ~1e-6). Pixels outside any segmented patch are
+/// zeroed (`area_labels == 0`), like the other ROI-gated derived maps.
 pub fn cortical_magnification_factor(
     magnification_raw: &Array2<f64>,
     area_labels: &Array2<i32>,
