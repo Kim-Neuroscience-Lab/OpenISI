@@ -124,6 +124,29 @@ are **regression-locks on our own current behaviour only**.
 | `CortexSource::UserPolygon`, `NoRestriction` | n/a | user input / trivial pass-through — no oracle applies. |
 | `PatchRefinement::None` | n/a | identity pass-through (`none_passes_through_unchanged`). |
 
+## Oracle COVERAGE gaps — outputs/methods the oracles produce that we do NOT
+
+From a function-level enumeration of the vendored oracles (`reference/corticalmapping/`
+Allen-Zhuang Python, `reference/ISI/` SNLC MATLAB; ori/dir/SF/color/ocdom modalities
+and sparse-noise STRF are out of scope — different experiment types). **NOT proven
+fully exhaustive.** ✅ = confirmed by reading the oracle source; 🟡 = from the
+function inventory, source not yet line-confirmed.
+
+| Missing output / method | Oracle source | Conf. | Note |
+|---|---|---|---|
+| **Polar-angle map** (companion to eccentricity) | SNLC `getRadialEccMapX.m:56` `kmap_ang = atan2(alt,az)` | ✅ | We emit `eccentricity` only. LOW-effort, HIGH-value: trivially derivable from the same (alt,azi,center) we already use for eccentricity. |
+| **Magnification anisotropy** — preferred axis + distortion | SNLC `getMagFactors.m` `prefAxisMF`,`Distrtion` | ✅ | We emit only scalar `|det J|`. |
+| **Per-direction hemodynamic phase-delay maps** | SNLC `Gprocesskret.m:88-105` `delay_hor`,`delay_vert` | ✅ | We *apply* Kalatsky delay-subtraction but discard the delays. |
+| **Visual-field coverage / "shadow" map** | SNLC `Gprocesskret.m:111` `sh=shadow(...)`; Allen `getVisualSpace` | ✅ | Cortex→visual-space coverage projection. |
+| **Per-patch principal axis** | SNLC `getPatchCoM.m:30` `Axisxy` | ✅ | We compute patch CoM, not its orientation axis. |
+| **SNLC `splitPatchesX`/`fusePatchesX`** refinement | `reference/ISI/*.m` | ✅ | Over-representation split + same-sign fuse; distinct from Allen `SplitMerge` (ported). Large port. |
+| **Per-area summary scalars**: cortical area (mm²), magnification (mm²/deg²), mean response power, baseline fluorescence | Allen `getCorticalArea`/`getMagnification`/`getMeanPowerAmplitude`/`getBaselineFluorscence` | 🟡 | Per-area aggregates (some V1-normalized → naming-gated). We emit per-pixel maps + labels, no per-area scalars. Depend on `um_per_pixel` (see ring calibration). |
+| **Map normalization** (rotate/center to V1) | Allen `normalize`/`generateNormalizedMaps` | 🟡 | Canonical-orientation registration of all maps. |
+| Area NAMING (V1/LM/AL…) | both | ✅ | NOT a gap — manual in both oracles (verified); our numeric `area_labels` matches their automated output. |
+
+None are correctness gaps for the default pipeline (defaults use the ported Allen
+methods, golden-pinned above); they are missing *additional* oracle outputs/methods.
+
 ## Notes
 
 - **Attribution policy** (`PIPELINE_METHODS.md` §6): every author/year-named
