@@ -99,6 +99,8 @@ pub fn translate_pre_2026_analysis_params(
     // truly unknown and surface as a typed error so a stray key in a
     // pre-2026 file isn't silently lost.
     const STAGES: &[&str] = &[
+        "baseline",
+        "cycle_average",
         "cycle_combine",
         "phase_smoothing",
         "vfs_computation",
@@ -442,6 +444,38 @@ mod tests {
             json!("garrett2014_sigma_scaled")
         );
         assert_eq!(new["patch_threshold"]["k"], json!(1.5));
+        assert_current_schema(&new);
+    }
+
+    #[test]
+    fn registry_shape_with_baseline_and_cycle_average_migrates() {
+        // A baseline-fixture-shaped tree: the full nested registry shape an
+        // older build serialized, INCLUDING the `baseline` and `cycle_average`
+        // root stages. These are current `AnalysisConfig` stages but were once
+        // missing from the migration's STAGES allow-list, so the unknown-key
+        // guard rejected them ("unknown legacy root-level key \"baseline\"").
+        // They must migrate as plain method-only stages, not error.
+        let old = json!({
+            "baseline": { "method": "open_isi_inter_sweep_mean" },
+            "cycle_average": { "method": "simple_complex_average" },
+            "cortex_source": {
+                "method": "snlc_garrett2014_im_bound",
+                "reliability": { "threshold": 0.5 },
+                "snlc_garrett2014_im_bound": { "k": 1.5, "close": 10, "dilate": 3 }
+            }
+        });
+        let new = translate_pre_2026_analysis_params(&old).unwrap();
+        assert_eq!(
+            new["baseline"]["method"],
+            json!("open_isi_inter_sweep_mean")
+        );
+        assert_eq!(
+            new["cycle_average"]["method"],
+            json!("simple_complex_average")
+        );
+        // cortex_source: active variant flattened, inactive `reliability` dropped.
+        assert_eq!(new["cortex_source"]["k"], json!(1.5));
+        assert!(new["cortex_source"].get("reliability").is_none());
         assert_current_schema(&new);
     }
 
