@@ -963,7 +963,6 @@ fn run_inner(
     // sweep speed in the UI are visible during preview. Falls back to
     // `preview_cycle_sec` if sweep duration can't be computed.
     let mut preview_cycle_sec_actual: f32 = preview_cycle_sec as f32;
-    let mut last_present_count: u64 = 0;
 
     // Drop detection state.
     //
@@ -975,9 +974,9 @@ fn run_inner(
     // in `crates/openisi-stimulus/src/dataset.rs`.
     //
     // Catastrophic-threshold policy lives in the pure helper
-    // `is_catastrophic_drop` (module-level + unit-tested).
-    let mut total_frames_observed: u64 = 0;
-    let mut total_drops: u64 = 0;
+    // `is_catastrophic_drop` (module-level + unit-tested); the per-run state +
+    // its reset live in `DropMonitor`.
+    let mut drops = DropMonitor::new(drop_detection_warmup_frames as u64);
 
     // Sweep schedule â€” records when each sweep started and ended.
     let mut sweep_sequence: Vec<String> = Vec::new();
@@ -1046,31 +1045,24 @@ fn run_inner(
                     acquiring = true;
 
                     // Re-entrancy: each acquisition starts its drop accounting
-                    // fresh. The DWM present count is monotonic for the whole
-                    // process, so zeroing `last_present_count` makes this run's
-                    // first frame re-establish the baseline (see
-                    // `present_count_gap`); without this, run 2 charges every
-                    // idle-time present since run 1 as dropped frames and trips
-                    // the catastrophic-drop abort.
-                    total_frames_observed = 0;
-                    total_drops = 0;
-                    last_present_count = 0;
+                    // fresh (counters + present-count baseline). Without this,
+                    // run 2 charges every idle-time DWM present since run 1 as
+                    // dropped frames and trips the catastrophic-drop abort — see
+                    // `DropMonitor` / `present_count_gap`.
+                    drops.reset();
                 }
                 Ok(StimulusCmd::Stop) => {
                     tracing::info!("stop requested");
                     if acquiring {
                         sequencer.stop();
-                        if let Some(mut ds) = dataset.take() {
-                            ds.stop_recording();
-                            let _ =
-                                evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
-                                    dataset: ds,
-                                    sweep_sequence: std::mem::take(&mut sweep_sequence),
-                                    sweep_start_us: std::mem::take(&mut sweep_start_us),
-                                    sweep_end_us: std::mem::take(&mut sweep_end_us),
-                                    completed_normally: false,
-                                })));
-                        }
+                        finalize_acquisition(
+                            evt_tx,
+                            &mut dataset,
+                            &mut sweep_sequence,
+                            &mut sweep_start_us,
+                            &mut sweep_end_us,
+                            false,
+                        );
                         acquiring = false;
                         let _ = evt_tx.send(StimulusEvt::Stopped);
                     }
@@ -1228,23 +1220,21 @@ fn run_inner(
                 query_dwm_vsync()
             {
                 let us = qpc_to_us(qpc_vblank, qpc_freq);
-                total_frames_observed += 1;
-                // Detect GPU-level frame drops from present count gaps,
-                // honoring the warmup window (composition / first-render
-                // JIT can produce a few spurious drops at startup).
-                let past_warmup = total_frames_observed > drop_detection_warmup_frames as u64;
-                let gap = present_count_gap(last_present_count, frame_count);
-                if past_warmup && gap > 0 {
-                    total_drops += gap;
+                // `DropMonitor` owns per-run drop accounting (counters + warmup +
+                // present-count baseline); it returns the frames missed before
+                // this one (0 within warmup / no drop).
+                let gap = drops.observe(frame_count);
+                if gap > 0 {
                     tracing::warn!(
                         gap,
-                        cumulative = total_drops,
-                        observed = total_frames_observed,
+                        cumulative = drops.cumulative_drops(),
+                        observed = drops.observed_frames(),
                         "DWM present-count gap: frames dropped",
                     );
                     // Transient drop event â€” non-fatal, UI logs it.
                     let _ = evt_tx.send(StimulusEvt::Error(format!(
-                        "Dropped {gap} stimulus frame(s) (cumulative {total_drops})"
+                        "Dropped {gap} stimulus frame(s) (cumulative {})",
+                        drops.cumulative_drops()
                     )));
 
                     // Catastrophic-threshold check (pure helper, see
@@ -1257,36 +1247,34 @@ fn run_inner(
                     // Mirror the `Stop` flow: surface why (transient error),
                     // hand back the partial run for the user's save decision,
                     // mark stopped, set `acquiring = false`, and keep looping.
-                    if is_catastrophic_drop(total_drops, total_frames_observed, gap) {
-                        let drop_fraction = total_drops as f64 / total_frames_observed as f64;
+                    if drops.is_catastrophic(gap) {
                         tracing::error!(
-                            cumulative = total_drops,
-                            observed = total_frames_observed,
+                            cumulative = drops.cumulative_drops(),
+                            observed = drops.observed_frames(),
                             "stimulus drops exceeded catastrophic threshold — aborting acquisition",
                         );
                         let _ = evt_tx.send(StimulusEvt::Error(format!(
                             "stimulus drops exceeded catastrophic threshold: \
-                             last gap={gap}, cumulative={total_drops}/{total_frames_observed} \
+                             last gap={gap}, cumulative={}/{} \
                              ({:.2}%) — acquisition aborted",
-                            drop_fraction * 100.0
+                            drops.cumulative_drops(),
+                            drops.observed_frames(),
+                            drops.drop_fraction() * 100.0
                         )));
                         sequencer.stop();
-                        if let Some(mut ds) = dataset.take() {
-                            ds.stop_recording();
-                            let _ = evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
-                                dataset: ds,
-                                sweep_sequence: std::mem::take(&mut sweep_sequence),
-                                sweep_start_us: std::mem::take(&mut sweep_start_us),
-                                sweep_end_us: std::mem::take(&mut sweep_end_us),
-                                completed_normally: false,
-                            })));
-                        }
+                        finalize_acquisition(
+                            evt_tx,
+                            &mut dataset,
+                            &mut sweep_sequence,
+                            &mut sweep_start_us,
+                            &mut sweep_end_us,
+                            false,
+                        );
                         acquiring = false;
                         let _ = evt_tx.send(StimulusEvt::Stopped);
                         continue;
                     }
                 }
-                last_present_count = frame_count;
                 (us, frame_count)
             } else {
                 // DWM not available (unlikely on Windows 7+), fall back to QPC
@@ -1380,16 +1368,14 @@ fn run_inner(
             // Check completion
             if sequencer.is_complete() {
                 tracing::info!("acquisition complete");
-                if let Some(mut ds) = dataset.take() {
-                    ds.stop_recording();
-                    let _ = evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
-                        dataset: ds,
-                        sweep_sequence: std::mem::take(&mut sweep_sequence),
-                        sweep_start_us: std::mem::take(&mut sweep_start_us),
-                        sweep_end_us: std::mem::take(&mut sweep_end_us),
-                        completed_normally: true,
-                    })));
-                }
+                finalize_acquisition(
+                    evt_tx,
+                    &mut dataset,
+                    &mut sweep_sequence,
+                    &mut sweep_start_us,
+                    &mut sweep_end_us,
+                    true,
+                );
                 acquiring = false;
             }
         } else if previewing {
@@ -1528,9 +1514,109 @@ pub(crate) fn present_count_gap(prev: u64, current: u64) -> u64 {
     }
 }
 
+/// Per-acquisition DWM frame-drop accounting. Owns the three counters that must
+/// be reset together at the start of every run, so "forget to reset a field"
+/// (the bug behind the every-second-acquisition failure) is impossible — the
+/// caller resets one object, not three loose variables. The drop *policy* stays
+/// in the pure [`present_count_gap`] / [`is_catastrophic_drop`] helpers this
+/// calls; this only owns the mutable state plus the (per-process) warmup window.
+#[cfg(any(windows, test))]
+struct DropMonitor {
+    /// Frames ignored at run start (composition / first-render JIT spuriously
+    /// "drops" a few). Configuration, not per-run state — survives `reset`.
+    warmup_frames: u64,
+    observed_frames: u64,
+    cumulative_drops: u64,
+    last_present_count: u64,
+}
+
+#[cfg(any(windows, test))]
+impl DropMonitor {
+    fn new(warmup_frames: u64) -> Self {
+        Self {
+            warmup_frames,
+            observed_frames: 0,
+            cumulative_drops: 0,
+            last_present_count: 0,
+        }
+    }
+
+    /// Begin a fresh acquisition: zero the counters AND the present-count
+    /// baseline (so the first frame re-establishes it — see [`present_count_gap`]).
+    /// The warmup window is configuration, not per-run state, so it persists.
+    fn reset(&mut self) {
+        self.observed_frames = 0;
+        self.cumulative_drops = 0;
+        self.last_present_count = 0;
+    }
+
+    /// Observe one presented frame at DWM `present_count`. Returns the number of
+    /// frames dropped immediately before it (0 within the warmup window or when
+    /// none were missed), accumulating any drop into `cumulative_drops`.
+    fn observe(&mut self, present_count: u64) -> u64 {
+        self.observed_frames += 1;
+        let gap = present_count_gap(self.last_present_count, present_count);
+        self.last_present_count = present_count;
+        if self.observed_frames > self.warmup_frames && gap > 0 {
+            self.cumulative_drops += gap;
+            gap
+        } else {
+            0
+        }
+    }
+
+    fn observed_frames(&self) -> u64 {
+        self.observed_frames
+    }
+
+    fn cumulative_drops(&self) -> u64 {
+        self.cumulative_drops
+    }
+
+    fn drop_fraction(&self) -> f64 {
+        if self.observed_frames == 0 {
+            0.0
+        } else {
+            self.cumulative_drops as f64 / self.observed_frames as f64
+        }
+    }
+
+    fn is_catastrophic(&self, last_gap: u64) -> bool {
+        is_catastrophic_drop(self.cumulative_drops, self.observed_frames, last_gap)
+    }
+}
+
+/// Finalize the in-flight acquisition: stop recording and hand the dataset +
+/// realized sweep schedule back as a `Complete` event (the sweep vectors are
+/// drained so the next run starts empty), tagged with whether it ended normally.
+/// The single place a `Complete` is emitted — the normal-completion, user-`Stop`,
+/// and catastrophic-abort paths all route through here so the handoff can't drift
+/// between them. The caller owns the `acquiring` flag, the `Stopped` event, and
+/// any `sequencer.stop()` (those differ per path).
+#[cfg(windows)]
+fn finalize_acquisition(
+    evt_tx: &Sender<StimulusEvt>,
+    dataset: &mut Option<StimulusDataset>,
+    sweep_sequence: &mut Vec<String>,
+    sweep_start_us: &mut Vec<i64>,
+    sweep_end_us: &mut Vec<i64>,
+    completed_normally: bool,
+) {
+    if let Some(mut ds) = dataset.take() {
+        ds.stop_recording();
+        let _ = evt_tx.send(StimulusEvt::Complete(Box::new(AcquisitionResult {
+            dataset: ds,
+            sweep_sequence: std::mem::take(sweep_sequence),
+            sweep_start_us: std::mem::take(sweep_start_us),
+            sweep_end_us: std::mem::take(sweep_end_us),
+            completed_normally,
+        })));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_catastrophic_drop, present_count_gap};
+    use super::{is_catastrophic_drop, present_count_gap, DropMonitor};
 
     #[test]
     fn fresh_baseline_reports_no_gap() {
@@ -1550,6 +1636,41 @@ mod tests {
     #[test]
     fn one_missed_present_is_a_gap_of_one() {
         assert_eq!(present_count_gap(100, 102), 1);
+    }
+
+    #[test]
+    fn drop_monitor_reset_clears_state_and_baseline() {
+        let mut m = DropMonitor::new(0); // no warmup
+        m.observe(100); // baseline
+        m.observe(200); // gap of 99 charged
+        assert!(m.cumulative_drops() > 0);
+        assert_eq!(m.observed_frames(), 2);
+
+        m.reset();
+        assert_eq!(m.observed_frames(), 0);
+        assert_eq!(m.cumulative_drops(), 0);
+        // After reset the first frame re-establishes the baseline → no phantom
+        // gap, however far the process-lifetime present count has advanced.
+        // This is the every-second-acquisition bug, now impossible to forget.
+        assert_eq!(m.observe(51_800), 0);
+        assert_eq!(m.cumulative_drops(), 0);
+    }
+
+    #[test]
+    fn drop_monitor_ignores_gaps_within_warmup() {
+        let mut m = DropMonitor::new(5);
+        assert_eq!(m.observe(10), 0); // frame 1: baseline
+        assert_eq!(m.observe(20), 0); // frame 2 (≤ warmup): gap not charged
+        assert_eq!(m.cumulative_drops(), 0);
+    }
+
+    #[test]
+    fn drop_monitor_charges_gaps_past_warmup() {
+        let mut m = DropMonitor::new(1);
+        assert_eq!(m.observe(10), 0); // frame 1: baseline
+        assert_eq!(m.observe(13), 2); // frame 2 (> warmup): 10→13 = 2 missed
+        assert_eq!(m.cumulative_drops(), 2);
+        assert_eq!(m.observed_frames(), 2);
     }
 
     #[test]
