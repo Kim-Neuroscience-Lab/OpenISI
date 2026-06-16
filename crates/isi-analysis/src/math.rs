@@ -249,17 +249,16 @@ pub fn eccentricity_pixel_deg(alt_deg: f64, azi_deg: f64, alt_c_deg: f64, azi_c_
     term.sqrt().atan() * 180.0 / PI
 }
 
-/// V1-centric eccentricity map (degrees). V1 = largest segmented area; the
-/// center is V1's center-of-mass in visual-field coordinates. Pixels
-/// outside any segmented patch are zeroed via `apply_label_roi`.
-pub fn compute_eccentricity(
+/// The visual-field center of V1 (largest segmented area's center-of-mass), as
+/// `(center_azi, center_alt)` in degrees — the shared reference point for the
+/// V1-centric eccentricity and polar-angle maps. Returns `(0, 0)` when no area
+/// is segmented.
+pub fn v1_center(
     azi_deg: &Array2<f64>,
     alt_deg: &Array2<f64>,
     area_labels: &Array2<i32>,
-) -> Array2<f64> {
+) -> (f64, f64) {
     let (h, w) = azi_deg.dim();
-
-    // Find V1 center: center-of-mass of the largest area.
     let max_label = *area_labels.iter().max().unwrap_or(&0);
     let mut counts = vec![0usize; max_label as usize + 1];
     for &l in area_labels.iter() {
@@ -283,14 +282,54 @@ pub fn compute_eccentricity(
             }
         }
     }
-    let center_azi = if n > 0 { sum_azi / n as f64 } else { 0.0 };
-    let center_alt = if n > 0 { sum_alt / n as f64 } else { 0.0 };
+    if n > 0 {
+        (sum_azi / n as f64, sum_alt / n as f64)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// V1-centric eccentricity map (degrees). V1 = largest segmented area; the
+/// center is V1's center-of-mass in visual-field coordinates. Pixels
+/// outside any segmented patch are zeroed via `apply_label_roi`.
+pub fn compute_eccentricity(
+    azi_deg: &Array2<f64>,
+    alt_deg: &Array2<f64>,
+    area_labels: &Array2<i32>,
+) -> Array2<f64> {
+    let (h, w) = azi_deg.dim();
+    let (center_azi, center_alt) = v1_center(azi_deg, alt_deg, area_labels);
 
     Array2::from_shape_fn((h, w), |(r, c)| {
         if area_labels[[r, c]] == 0 {
             return 0.0;
         }
         eccentricity_pixel_deg(alt_deg[[r, c]], azi_deg[[r, c]], center_alt, center_azi)
+    })
+}
+
+/// V1-centric **polar-angle** map (degrees, −180..180) — the angular companion to
+/// [`compute_eccentricity`], sharing the same V1 center. Together they are the
+/// two standard retinotopic-coordinate displays (eccentricity + polar angle).
+///
+/// Verbatim SNLC `getRadialEccMapX.m:56`:
+/// `kmap_ang = atan2(alt, az)·180/π`, where `alt`/`az` are the V1-centered
+/// position deltas. The `·π/180` scaling SNLC applies to both deltas cancels
+/// inside `atan2`, so this is `atan2(altΔ, aziΔ)·180/π` on the degree maps.
+/// Pixels outside any segmented patch are zeroed, like the other patch-scoped maps.
+pub fn compute_polar_angle(
+    azi_deg: &Array2<f64>,
+    alt_deg: &Array2<f64>,
+    area_labels: &Array2<i32>,
+) -> Array2<f64> {
+    let (h, w) = azi_deg.dim();
+    let (center_azi, center_alt) = v1_center(azi_deg, alt_deg, area_labels);
+
+    Array2::from_shape_fn((h, w), |(r, c)| {
+        if area_labels[[r, c]] == 0 {
+            return 0.0;
+        }
+        (alt_deg[[r, c]] - center_alt).atan2(azi_deg[[r, c]] - center_azi) * 180.0 / PI
     })
 }
 
@@ -710,5 +749,30 @@ mod tests {
                 e_minus,
             );
         }
+    }
+
+    /// `compute_polar_angle` matches the SNLC `getRadialEccMapX.m:56` formula
+    /// `atan2(altΔ, aziΔ)·180/π` about the V1 center (here the mean of a
+    /// single all-in-ROI area), and zeroes pixels outside any patch.
+    #[test]
+    fn polar_angle_matches_snlc_atan2_about_v1_center() {
+        // 3×3: azi = column, alt = row ⇒ V1 (one area) center is the middle (1,1).
+        let azi = Array2::from_shape_fn((3, 3), |(_r, c)| c as f64);
+        let alt = Array2::from_shape_fn((3, 3), |(r, _c)| r as f64);
+        let labels = Array2::from_elem((3, 3), 1i32);
+
+        let pa = compute_polar_angle(&azi, &alt, &labels);
+        let expect = |dr: f64, dc: f64| dr.atan2(dc) * 180.0 / PI; // (altΔ, aziΔ)
+
+        assert!((pa[[1, 1]] - 0.0).abs() < 1e-10); // at center → atan2(0,0)=0
+        assert!((pa[[0, 2]] - expect(-1.0, 1.0)).abs() < 1e-10); // -45°
+        assert!((pa[[2, 0]] - expect(1.0, -1.0)).abs() < 1e-10); // 135°
+        assert!((pa[[2, 2]] - expect(1.0, 1.0)).abs() < 1e-10); // 45°
+
+        // Outside any patch → zeroed, like the other patch-scoped maps.
+        let mut labels2 = labels.clone();
+        labels2[[0, 0]] = 0;
+        let pa2 = compute_polar_angle(&azi, &alt, &labels2);
+        assert_eq!(pa2[[0, 0]], 0.0);
     }
 }
