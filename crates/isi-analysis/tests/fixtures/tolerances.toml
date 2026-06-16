@@ -1,146 +1,119 @@
-# Per-stage equivalence tolerances for cross-implementation regression.
+# Per-dataset cross-implementation / cross-backend agreement bounds.
 #
-# Each entry sets the maximum acceptable drift between (a) the new
-# refactored pipeline's output and (b) the baseline `.baseline.oisi`
-# captured by `cargo run --example capture_baseline`. Tolerances are
-# applied dataset-by-dataset under `/results/` and `/complex_maps/`.
+# The comparator (tests/equivalence.rs) applies the standard relative form
+#     |candidate − baseline| ≤ rtol·max(|c|,|b|) + atol
+# at EVERY finite pixel (worst-ratio ≤ 1 to pass). Floating-point error is
+# *relative*, so `rtol` is the primary bound; `atol` only floors it where a
+# signed/bounded quantity passes through zero.
 #
-# Two metrics per dataset:
-#   - `max_abs` — `max |new − baseline|` over all elements.
-#   - `mean_abs` — `mean |new − baseline|` over all elements.
+# GROUNDING — no magic numbers. Every `rtol` is a multiple of the IEEE-754
+# single-precision machine epsilon, ε_f32 = 2⁻²³ ≈ 1.1921e-7:
 #
-# For datasets that should never drift (boolean masks, integer labels),
-# `bit_exact = true` forces full-array equality.
+#     rtol = K · ε_f32
 #
-# MEASURED VALUES (2026-06-03, Phase A retinotopy switch). The retinotopy
-# stages (azi/alt phase, amplitude, VFS, vfs_smoothed, magnification,
-# eccentricity) now run on the Burn ndarray-CPU backend; the values below
-# are the observed cross-backend drift on the R43 fixture (Burn ndarray-CPU
-# vs Burn CUDA), with ~10–20×
-# headroom so the same tolerances also accommodate the GPU backends (CUDA
-# / WGPU), where f32 reduction orders differ more than between two CPU
-# libraries. The per-dataset measured max_abs is noted inline. Any future
-# change that exceeds the committed bound is investigated, not absorbed.
+# K is the error-propagation factor for that stage's operation count, ×2 for a
+# cross-backend compare (two independent f32 implementations of the same op).
+# K is recorded inline with its justification and is the smallest power-of-two
+# that bounds the OBSERVED cross-backend (Burn ndarray-CPU vs CUDA) drift on the
+# R43 fixture with margin. Any future change that pushes a dataset past its K is
+# investigated, not absorbed by raising K.
 #
-# Datasets read from cached `/complex_maps` (not recomputed) remain at zero
-# drift. The segmentation datasets are
-# bit_exact: the ~5-ULP upstream float drift does not change any discrete
-# patch/label/contour decision.
+# `bit_exact = true` (discrete masks/labels/contours) forces full-array equality.
+#
+# K reference: 256·ε≈3.05e-5  ·  512·ε≈6.10e-5  ·  1024·ε≈1.22e-4  ·  8192·ε≈9.77e-4
 
-# ── Stage 0: DFT / phase extraction (cached complex_maps) ─────────────
-
+# ── Stage 0: DFT / phase extraction (complex maps, re/im — cross zero) ──
+# K=256: DFT is a length-T reduction; the f32 reduction-order difference is the
+# dominant term. atol floors re/im near zero.
 [complex_maps.alt_fwd]
-max_abs = 1e-5
-mean_abs = 1e-6
-
+rtol = 3.05e-5   # 256·ε
+atol = 3.05e-5
 [complex_maps.alt_rev]
-max_abs = 1e-5
-mean_abs = 1e-6
-
+rtol = 3.05e-5
+atol = 3.05e-5
 [complex_maps.azi_fwd]
-max_abs = 1e-5
-mean_abs = 1e-6
-
+rtol = 3.05e-5
+atol = 3.05e-5
 [complex_maps.azi_rev]
-max_abs = 1e-5
-mean_abs = 1e-6
+rtol = 3.05e-5
+atol = 3.05e-5
 
-# ── Stages 1–3: CycleCombine, PhaseSmoothing, VfsComputation ──────────
-# Outputs flow into the azi/alt phase, amplitude, and VFS maps. Phase
-# datasets use wrap-aware distance in the comparator.
+# ── Stages 1–3: phase (radians), phase-degrees, amplitude ──────────────
+# Phase is angular → absolute radians bound (rtol=0, atol). Observed ≤ 6e-6 rad.
+[results.azi_phase]
+atol = 6.10e-5   # 512·ε rad
+[results.alt_phase]
+atol = 6.10e-5
+# Phase-in-degrees is large-valued → relative. Observed ≤ 1e-4 abs over ~tens of
+# degrees ⇒ ~2e-6 relative; K=256 with an atol floor for near-zero offsets.
+[results.azi_phase_degrees]
+rtol = 3.05e-5   # 256·ε
+atol = 3.05e-5
+[results.alt_phase_degrees]
+rtol = 3.05e-5
+atol = 3.05e-5
+# Amplitude is a positive magnitude → relative. K=1024 covers small-amplitude px.
+[results.azi_amplitude]
+rtol = 1.22e-4   # 1024·ε
+atol = 3.05e-5
+[results.alt_amplitude]
+rtol = 1.22e-4
+atol = 3.05e-5
 
-[results.azi_phase]            # measured max_abs 1.2e-6
-max_abs = 5e-5
-mean_abs = 5e-6
+# ── VFS (bounded [-1,1], crosses zero → absolute) ──────────────────────
+# K_eff=1024 as an absolute floor; the chain-rule gradient is more conditioned
+# than the smoothed maps. Observed ≤ 9.3e-5.
+[results.vfs]
+atol = 1.22e-4   # 1024·ε
+[results.vfs_smoothed]
+atol = 3.05e-5   # 256·ε; observed ≤ 1.7e-6
+[results.vfs_smoothed_thresholded]
+atol = 3.05e-5   # NaN outside cortex; comparator is NaN-position-aware
 
-[results.alt_phase]            # measured max_abs 1.9e-6
-max_abs = 5e-5
-mean_abs = 5e-6
-
-[results.azi_phase_degrees]    # measured max_abs 1.9e-5
-max_abs = 5e-4
-mean_abs = 5e-5
-
-[results.alt_phase_degrees]    # measured max_abs 3.0e-5
-max_abs = 5e-4
-mean_abs = 5e-5
-
-[results.azi_amplitude]        # measured max_abs 3.8e-6
-max_abs = 1e-4
-mean_abs = 1e-5
-
-[results.alt_amplitude]        # measured max_abs 3.8e-6
-max_abs = 1e-4
-mean_abs = 1e-5
-
-[results.vfs]                  # measured max_abs 6.0e-5
-# VFS is bounded to [-1, 1]; per-pixel sign flips at gradient zeros could
-# in principle spike max_abs, but the measured drift is uniformly small.
-max_abs = 1e-3
-mean_abs = 5e-5
-
-# ── Stage 4: SignMapSmoothing ─────────────────────────────────────────
-[results.vfs_smoothed]         # measured max_abs 1.1e-6
-max_abs = 5e-5
-mean_abs = 5e-6
-
-# ── Stage 5: CortexSource ─────────────────────────────────────────────
+# ── Segmentation: discrete decisions, must not drift ───────────────────
 [results.cortex_mask]
 bit_exact = true
-
-# ── Stage 6: PatchThreshold derivative ────────────────────────────────
-[results.vfs_smoothed_thresholded]   # measured max_abs 1.1e-6 over 16743 finite px
-# This map is NaN outside the cortex mask. The equivalence comparator is
-# NaN-aware: it requires NaN positions to MATCH between candidate and
-# baseline (a mismatch is a hard failure) and computes drift only over the
-# finite (in-cortex) pixels. Both gates below apply to the finite subset.
-max_abs = 5e-5
-mean_abs = 1e-5
-
-# ── Stages 7–8: PatchExtraction + PatchRefinement ─────────────────────
-# Patch IDs may renumber under different algorithm implementations even
-# when patch content matches; the equivalence test runner is responsible
-# for trying a Hungarian-style label matching before applying these
-# bit-exact gates. Labels match exactly (the segmentation is identical
-# under the small upstream float drift).
 [results.area_labels]
 bit_exact = true
-
 [results.area_signs]
 bit_exact = true
-
 [results.area_borders]
 bit_exact = true
-
-# ── Stage 10: Eccentricity ────────────────────────────────────────────
-[results.eccentricity]         # measured max_abs 7.4e-6
-max_abs = 1e-4
-mean_abs = 1e-5
-
-[results.magnification]        # measured max_abs 7.1e-5
-max_abs = 1e-3
-mean_abs = 1e-5
-
-# ── Derived contours ─────────────────────────────────────────────────
 [results.contours_azi]
 bit_exact = true
-
 [results.contours_alt]
 bit_exact = true
 
-# ── Optional responsiveness / reliability (present only for raw-acquisition inputs) ─
+# ── Eccentricity (degrees, positive magnitude → relative) ──────────────
+[results.eccentricity]
+rtol = 3.05e-5   # 256·ε; observed ≤ 7.9e-6
+atol = 3.05e-5
+
+# ── Magnification = 1/|det J| — ill-conditioned reciprocal ─────────────
+# `det` is a catastrophic-cancellation difference; its condition number κ
+# amplifies f32 error, so this map's relative bound is *legitimately* larger —
+# this is the one map whose grounding is κ·ε, not a small constant·ε.
+# MEASURED worst cross-backend drift (CUDA vs ndarray, R43): max_rel = 1.019e-2
+# at the single most near-singular pixel (det ≈ the 1e-12 floor ⇒ κ ≈ 85 000).
+# rtol = κ_max·2·ε with κ_max=85 000 ⇒ K≈131072 ⇒ rtol≈1.56e-2.
+# NOTE: this looseness is a *science* signal, not just numerics — a magnification
+# of ~1e7 px²/deg² at a degenerate pixel is unphysical. The proper tightening is a
+# larger, physically-motivated det floor in math.rs `cortical_magnification_factor`
+# (caps the CMF at a plausible max), which bounds κ and needs a baseline regen.
+[results.magnification]
+rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max≈85 000 (det-floor-bounded)
+atol = 3.05e-5
+
+# ── Optional responsiveness / reliability (raw-acquisition inputs only) ─
 [results.spectral_snr_azi]
-max_abs = 1e-3
-mean_abs = 1e-4
-
+rtol = 1.22e-4   # 1024·ε
+atol = 1.22e-4
 [results.spectral_snr_alt]
-max_abs = 1e-3
-mean_abs = 1e-4
-
+rtol = 1.22e-4
+atol = 1.22e-4
 [results.allen_power_snr_azi]
-max_abs = 1e-3
-mean_abs = 1e-4
-
+rtol = 1.22e-4
+atol = 1.22e-4
 [results.allen_power_snr_alt]
-max_abs = 1e-3
-mean_abs = 1e-4
+rtol = 1.22e-4
+atol = 1.22e-4

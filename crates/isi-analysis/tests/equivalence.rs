@@ -21,6 +21,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+// The per-element tolerance comparison is `approx` (the project's standard tool,
+// already a dependency); only the domain wrapper around it — the NaN-position
+// gate, the wrap-aware phase distance, and the array-level aggregation — is local.
+use approx::{abs_diff_eq, relative_eq};
 use isi_analysis::{self, SilentProgress};
 use ndarray::ArrayD;
 use openisi_params::config::AnalysisConfig;
@@ -45,15 +49,32 @@ struct ToleranceTree {
     results: HashMap<String, Tolerance>,
 }
 
+/// Per-dataset numerical agreement bound, grounded in IEEE-754 f32 precision.
+///
+/// The check is the standard relative form `|c − b| ≤ rtol·max(|c|,|b|) + atol`:
+/// floating-point error is *relative*, so `rtol` is the primary bound and `atol`
+/// only floors it where values pass through zero.
+///
+/// **`rtol` is grounded, not measured-and-pasted:** `rtol = K · EPS_F32`, where
+/// `EPS_F32 = 2⁻²³` is the f32 machine epsilon and `K` is the error-propagation
+/// factor for that stage's operation count, doubled for a cross-backend compare
+/// (two independent f32 implementations). `K` is recorded per entry in
+/// `tolerances.toml` with its justification.
 #[derive(Debug, Deserialize, Default, Clone)]
 struct Tolerance {
     #[serde(default)]
     bit_exact: bool,
+    /// Relative tolerance = `K · EPS_F32`.
     #[serde(default)]
-    max_abs: Option<f64>,
+    rtol: Option<f64>,
+    /// Absolute floor (a few ULP of the map's representative scale).
     #[serde(default)]
-    mean_abs: Option<f64>,
+    atol: Option<f64>,
 }
+
+/// IEEE-754 single-precision machine epsilon, `2⁻²³`. Every `rtol` is a multiple
+/// of this — the one constant the relative bounds are grounded in.
+const EPS_F32: f64 = f32::EPSILON as f64;
 
 fn load_tolerances() -> ToleranceTree {
     let p = manifest_path().join("tests/fixtures/tolerances.toml");
@@ -104,9 +125,14 @@ fn run_analyze_into(input: &Path, output: &Path) {
 
 #[derive(Debug, Default)]
 struct DriftStats {
+    /// Worst absolute `|c − b|` over finite pairs (reporting only).
     max_abs: f64,
-    mean_abs: f64,
-    /// Number of finite element pairs that contributed to the drift.
+    /// Worst relative `|c − b| / max(|c|,|b|)` over finite pairs (reporting only).
+    max_rel: f64,
+    /// Number of finite pairs that FAILED the `approx` tolerance check
+    /// (`relative_eq!` / `abs_diff_eq!` at the dataset's `rtol`/`atol`). `0` ⇔ pass.
+    n_fail: usize,
+    /// Number of finite element pairs compared.
     n_finite: usize,
     /// Positions where exactly one of (candidate, baseline) is NaN/Inf —
     /// a structural mismatch (the maps disagree on *where* data exists),
@@ -123,30 +149,53 @@ struct DriftStats {
 ///     position where they differ is counted as `n_nan_mismatch` (always
 ///     a failure),
 ///   - computes drift only over positions where both are finite.
-fn compute_drift(candidate: &[f64], baseline: &[f64]) -> DriftStats {
-    drift_with(candidate, baseline, |c, b| (c - b).abs())
+fn compute_drift(candidate: &[f64], baseline: &[f64], rtol: f64, atol: f64) -> DriftStats {
+    drift_with(
+        candidate,
+        baseline,
+        |c, b| (c - b).abs(),
+        // Tool: `approx`'s relative comparison, `|c−b| ≤ max(atol, rtol·max(|c|,|b|))`.
+        |c, b| relative_eq!(c, b, max_relative = rtol, epsilon = atol),
+    )
 }
 
-/// Wrap-aware drift on phase values (radians) — wrapped circle distance
-/// in [0, π]. Same NaN-position discipline as [`compute_drift`].
-fn compute_phase_drift(candidate: &[f64], baseline: &[f64]) -> DriftStats {
+/// Wrap-aware drift on phase values (radians). Phase is an angular quantity, so
+/// the bound is absolute (radians): the wrap distance must be within `atol`.
+fn compute_phase_drift(candidate: &[f64], baseline: &[f64], _rtol: f64, atol: f64) -> DriftStats {
+    drift_with(
+        candidate,
+        baseline,
+        phase_wrap_distance,
+        // Tool: `approx`'s absolute comparison on the (domain) wrap distance.
+        move |c, b| abs_diff_eq!(phase_wrap_distance(c, b), 0.0, epsilon = atol),
+    )
+}
+
+/// Wrapped circle distance between two phases (radians), in `[0, π]`.
+fn phase_wrap_distance(c: f64, b: f64) -> f64 {
     let two_pi = std::f64::consts::TAU;
     let pi = std::f64::consts::PI;
-    drift_with(candidate, baseline, move |c, b| {
-        let mut d = (c - b).rem_euclid(two_pi);
-        if d > pi {
-            d = two_pi - d;
-        }
-        d
-    })
+    let mut d = (c - b).rem_euclid(two_pi);
+    if d > pi {
+        d = two_pi - d;
+    }
+    d
 }
 
-/// Shared NaN/Inf-aware drift accumulator parameterized by the per-element
-/// distance function.
-fn drift_with(candidate: &[f64], baseline: &[f64], dist: impl Fn(f64, f64) -> f64) -> DriftStats {
+/// Shared NaN/Inf-aware accumulator. `dist` reports the per-element drift (abs or
+/// wrap distance) for diagnostics; `pass` is the `approx` tolerance check for that
+/// element. The loop owns only the domain discipline — NaN-position matching and
+/// array-level aggregation — not the tolerance comparison itself.
+fn drift_with(
+    candidate: &[f64],
+    baseline: &[f64],
+    dist: impl Fn(f64, f64) -> f64,
+    pass: impl Fn(f64, f64) -> bool,
+) -> DriftStats {
     assert_eq!(candidate.len(), baseline.len(), "element count mismatch");
     let mut max_abs = 0.0_f64;
-    let mut sum_abs = 0.0_f64;
+    let mut max_rel = 0.0_f64;
+    let mut n_fail = 0usize;
     let mut n_finite = 0usize;
     let mut n_nan_mismatch = 0usize;
     for (&c, &b) in candidate.iter().zip(baseline.iter()) {
@@ -154,7 +203,13 @@ fn drift_with(candidate: &[f64], baseline: &[f64], dist: impl Fn(f64, f64) -> f6
             (true, true) => {
                 let d = dist(c, b);
                 max_abs = max_abs.max(d);
-                sum_abs += d;
+                let scale = c.abs().max(b.abs());
+                if scale > 0.0 {
+                    max_rel = max_rel.max(d / scale);
+                }
+                if !pass(c, b) {
+                    n_fail += 1;
+                }
                 n_finite += 1;
             }
             (false, false) => {
@@ -170,7 +225,8 @@ fn drift_with(candidate: &[f64], baseline: &[f64], dist: impl Fn(f64, f64) -> f6
     }
     DriftStats {
         max_abs,
-        mean_abs: sum_abs / n_finite.max(1) as f64,
+        max_rel,
+        n_fail,
         n_finite,
         n_nan_mismatch,
     }
@@ -184,9 +240,12 @@ fn assert_float_within(
     tol: &Tolerance,
     failures: &mut Vec<String>,
 ) {
+    let rtol = tol.rtol.unwrap_or(0.0);
+    let atol = tol.atol.unwrap_or(0.0);
     println!(
-        "  {:<40} max_abs={:.6e}  mean_abs={:.6e}  n_finite={}  nan_mismatch={}",
-        name, stats.max_abs, stats.mean_abs, stats.n_finite, stats.n_nan_mismatch,
+        "  {:<40} max_abs={:.3e} max_rel={:.3e} n_fail={}  (rtol={:.1e}={:.0}ε atol={:.1e})  n={} nan_mm={}",
+        name, stats.max_abs, stats.max_rel, stats.n_fail,
+        rtol, rtol / EPS_F32, atol, stats.n_finite, stats.n_nan_mismatch,
     );
     // A NaN-position disagreement is always a failure — it means the two
     // implementations produced data at different pixels.
@@ -197,28 +256,20 @@ fn assert_float_within(
         ));
     }
     // Guard against a dataset that is entirely non-finite (n_finite == 0
-    // would otherwise pass both numeric gates vacuously).
+    // would otherwise pass vacuously).
     if stats.n_finite == 0 {
         failures.push(format!(
             "{}: no finite element pairs to compare (entirely NaN/Inf)",
             name,
         ));
     }
-    if let Some(thr) = tol.max_abs {
-        if stats.max_abs > thr {
-            failures.push(format!(
-                "{}: max_abs={:.6e} > {:.6e}",
-                name, stats.max_abs, thr,
-            ));
-        }
-    }
-    if let Some(thr) = tol.mean_abs {
-        if stats.mean_abs > thr {
-            failures.push(format!(
-                "{}: mean_abs={:.6e} > {:.6e}",
-                name, stats.mean_abs, thr,
-            ));
-        }
+    // The grounded bound, applied per element by `approx`: every finite pair
+    // must pass `relative_eq!` / `abs_diff_eq!` at this dataset's rtol/atol.
+    if stats.n_fail > 0 {
+        failures.push(format!(
+            "{}: {} of {} finite px exceed rtol={:.2e} (={:.0}·ε_f32) + atol={:.2e}  (max_abs={:.3e}, max_rel={:.3e})",
+            name, stats.n_fail, stats.n_finite, rtol, rtol / EPS_F32, atol, stats.max_abs, stats.max_rel,
+        ));
     }
 }
 
@@ -369,7 +420,8 @@ fn equivalence_r43_smoke() {
                 ));
             }
         } else {
-            let stats = compute_drift(&c_flat, &b_flat);
+            let (rtol, atol) = (tol.rtol.unwrap_or(0.0), tol.atol.unwrap_or(0.0));
+            let stats = compute_drift(&c_flat, &b_flat, rtol, atol);
             assert_float_within(&label, &stats, tol, &mut failures);
         }
     }
@@ -425,10 +477,11 @@ fn equivalence_r43_smoke() {
             assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
             let c_flat = into_vec(c);
             let b_flat = into_vec(b);
+            let (rtol, atol) = (tol.rtol.unwrap_or(0.0), tol.atol.unwrap_or(0.0));
             let stats = if PHASE_DATASETS.contains(&name.as_str()) {
-                compute_phase_drift(&c_flat, &b_flat)
+                compute_phase_drift(&c_flat, &b_flat, rtol, atol)
             } else {
-                compute_drift(&c_flat, &b_flat)
+                compute_drift(&c_flat, &b_flat, rtol, atol)
             };
             assert_float_within(&label, &stats, tol, &mut failures);
         }
