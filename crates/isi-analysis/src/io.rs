@@ -809,6 +809,71 @@ pub fn strip_derived_outputs(path: &Path) -> Result<(), AnalysisError> {
     Ok(())
 }
 
+/// Apply a set of in-place `.oisi` mutations **atomically**: copy the file to a
+/// sibling temp, run `mutate` against the temp, fsync it, then atomically
+/// `rename` the temp over the original. A crash / disk-full / panic at any point
+/// leaves the ORIGINAL file untouched (the temp is removed on error).
+///
+/// This guards the analysis write path the way `export.rs` already guards
+/// acquisition capture: HDF5 B-tree/superblock updates are **not** atomic, so an
+/// in-place mid-write crash can corrupt the whole file — including its
+/// (irreplaceable) raw `/acquisition` frames. See `docs/FOUNDATION_AUDIT.md` A1.
+///
+/// Output is byte-identical to the equivalent in-place write: the temp starts as
+/// an exact copy of the original, and the `write_*` helpers unlink-then-recreate
+/// their groups, so they perform the same HDF5 operations on the same starting
+/// bytes. Cost: one full-file copy per call — acceptable because analyses are
+/// infrequent and the raw data is irreplaceable; correctness dominates.
+pub fn atomic_update<F>(path: &Path, mutate: F) -> Result<(), AnalysisError>
+where
+    F: FnOnce(&Path) -> Result<(), AnalysisError>,
+{
+    let tmp = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some("oisi") => "oisi.analyzing".to_string(),
+        _ => "analyzing".to_string(),
+    });
+    let io_err = |ctx: String| AnalysisError::Io(std::io::Error::other(ctx));
+
+    // Clear any stale temp left by a previously-killed run, then copy.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::copy(path, &tmp).map_err(|e| {
+        io_err(format!(
+            "atomic_update: copy {} -> {}: {e}",
+            path.display(),
+            tmp.display()
+        ))
+    })?;
+
+    // Run the mutations on the temp. On ANY error, drop the temp and abort,
+    // leaving the original intact.
+    if let Err(e) = mutate(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    // Durably flush the temp to disk before the rename, so a power loss right
+    // after the rename can't surface a temp whose bytes never reached storage.
+    // The handle must be WRITABLE: Windows `FlushFileBuffers` (sync_all) rejects
+    // a read-only handle with "access denied".
+    if let Err(e) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
+        .and_then(|f| f.sync_all())
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(io_err(format!("atomic_update: fsync {}: {e}", tmp.display())));
+    }
+
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io_err(format!(
+            "atomic_update: rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        ))
+    })
+}
+
 /// Write complex maps to the file.
 pub fn write_complex_maps(path: &Path, maps: &ComplexMaps) -> Result<(), AnalysisError> {
     let file = open_readwrite(path)?;
@@ -1871,5 +1936,54 @@ mod tests {
             matches!(err, AnalysisError::InvalidPackage(_)),
             "expected InvalidPackage, got {err:?}"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // atomic_update crash-safety (FOUNDATION_AUDIT A1)
+    // ─────────────────────────────────────────────────────────────────
+
+    /// A failing mutation must leave the ORIGINAL file byte-for-byte intact and
+    /// remove the temp — the whole point of A1 (a crash/disk-full mid-write
+    /// cannot corrupt the live `.oisi`).
+    #[test]
+    fn atomic_update_leaves_original_intact_on_mutate_error() {
+        let tmp = TempFile::new("atomic_err");
+        std::fs::write(tmp.path(), b"ORIGINAL-BYTES").unwrap();
+
+        let result = atomic_update(tmp.path(), |scratch| {
+            // Simulate a partial write that then fails (disk-full / crash).
+            std::fs::write(scratch, b"HALF-WRITTEN-GARBAGE").unwrap();
+            Err(AnalysisError::Compute("simulated mid-write failure".into()))
+        });
+
+        assert!(result.is_err(), "atomic_update should surface the error");
+        assert_eq!(
+            std::fs::read(tmp.path()).unwrap(),
+            b"ORIGINAL-BYTES",
+            "original must be untouched after a failed mutation"
+        );
+        assert!(
+            !tmp.path().with_extension("analyzing").exists(),
+            "the temp must be cleaned up on failure"
+        );
+        let _ = std::fs::remove_file(tmp.path());
+    }
+
+    /// A successful mutation publishes the temp over the original (atomic
+    /// rename) and leaves no temp behind.
+    #[test]
+    fn atomic_update_publishes_on_success() {
+        let tmp = TempFile::new("atomic_ok");
+        std::fs::write(tmp.path(), b"ORIGINAL").unwrap();
+
+        atomic_update(tmp.path(), |scratch| {
+            std::fs::write(scratch, b"NEW-CONTENTS").unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(std::fs::read(tmp.path()).unwrap(), b"NEW-CONTENTS");
+        assert!(!tmp.path().with_extension("analyzing").exists());
+        let _ = std::fs::remove_file(tmp.path());
     }
 }

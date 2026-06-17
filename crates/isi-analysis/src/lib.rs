@@ -470,37 +470,45 @@ pub fn analyze(
         return Err(AnalysisError::Cancelled);
     }
 
-    // Persist freshly-computed complex maps (+ projection fingerprint) so the
-    // next run can take the fast seeded stage-0 path.
-    if from_raw {
-        io::write_complex_maps(path, &out.result.complex_maps)?;
-        io::write_stage_fingerprint(path, projection_key, &projection_fp)?;
-    }
-
     progress.set_stage("Writing results");
     progress.set_progress(0.9);
 
+    // Persist all analysis outputs ATOMICALLY: a single copy-temp → mutate →
+    // fsync → rename, so a crash / disk-full mid-write cannot corrupt the live
+    // file (which also holds the irreplaceable raw `/acquisition`). All
+    // `write_*` calls target the temp; the rename publishes them together. See
+    // `docs/FOUNDATION_AUDIT.md` A1.
     let t_wr = Instant::now();
-    io::write_results(path, &out.result, &acquisition, params)?;
+    io::atomic_update(path, |tmp| {
+        // Freshly-computed complex maps (+ projection fingerprint) so the next
+        // run can take the fast seeded stage-0 path.
+        if from_raw {
+            io::write_complex_maps(tmp, &out.result.complex_maps)?;
+            io::write_stage_fingerprint(tmp, projection_key, &projection_fp)?;
+        }
+
+        io::write_results(tmp, &out.result, &acquisition, params)?;
+
+        // Patch-threshold intermediates → `/cache` whenever that stage executed,
+        // so its fresh `imseg`/`threshold_applied` can be restored next run. When
+        // it was restored, `/cache` already holds the matching values.
+        if !restored.contains(&pipeline::StageId::PatchThreshold) {
+            if let (Some(imseg), Some(thr)) = (out.imseg.as_ref(), out.threshold_applied) {
+                io::write_stage_cache(tmp, imseg, thr)?;
+            }
+        }
+
+        // Each tail stage's fingerprint (written AFTER its data, so a crash
+        // yields a missing fingerprint → safe recompute, never a premature one).
+        for (key, value) in fps.tail_pairs() {
+            io::write_stage_fingerprint(tmp, key, value)?;
+        }
+        Ok(())
+    })?;
     tracing::debug!(
         write_results_ms = t_wr.elapsed().as_secs_f64() * 1e3,
-        "io: write results"
+        "io: write results (atomic)"
     );
-
-    // Persist the patch-threshold intermediates to `/cache` whenever that stage
-    // executed, so its fresh `imseg`/`threshold_applied` can be restored next
-    // run. When it was restored, `/cache` already holds the matching values.
-    if !restored.contains(&pipeline::StageId::PatchThreshold) {
-        if let (Some(imseg), Some(thr)) = (out.imseg.as_ref(), out.threshold_applied) {
-            io::write_stage_cache(path, imseg, thr)?;
-        }
-    }
-
-    // Record every tail stage's fingerprint that produced these results, so the
-    // next run restores exactly the stages whose inputs are unchanged.
-    for (key, value) in fps.tail_pairs() {
-        io::write_stage_fingerprint(path, key, value)?;
-    }
 
     progress.set_stage("Complete");
     progress.set_progress(1.0);
