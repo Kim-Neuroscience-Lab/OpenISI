@@ -90,6 +90,12 @@ pub struct RetinotopyMaps {
     pub alt_amplitude: Array2<f64>,
     pub vfs: Array2<f64>,
     pub magnification_raw: Array2<f64>,
+    /// Magnification **anisotropy** — SNLC `getMagFactors.m` invariants of the
+    /// same Jacobian as `magnification_raw`. `magnification_axis` = `prefAxisMF`
+    /// (preferred axis, degrees, wraps at 180°); `magnification_distortion` =
+    /// `Distrtion` (anisotropy coherence, `[0,1]`). Full-frame, calibration-free.
+    pub magnification_axis: Array2<f64>,
+    pub magnification_distortion: Array2<f64>,
     /// Hemodynamic delay maps (degrees, `(0, 180]`) — SNLC `Gprocesskret.m`
     /// `delay_hor`/`delay_vert`. `Some` only under delay-subtraction
     /// cycle-combine; `None` for the unweighted-average method. Carried with
@@ -212,6 +218,11 @@ pub struct AnalysisResult {
     /// tweak downstream of retinotopy can restore retinotopy from disk (stage 8
     /// and the derived maps consume it). `magnification` is this gated to areas.
     pub magnification_raw: Array2<f64>,
+    /// Magnification anisotropy (SNLC `getMagFactors.m`), full-frame: the
+    /// preferred axis (degrees, wraps at 180°) and the distortion coherence
+    /// (`[0,1]`) — the other invariants of the `magnification_raw` Jacobian.
+    pub magnification_axis: Array2<f64>,
+    pub magnification_distortion: Array2<f64>,
     pub contours_azi: Array2<bool>,
     pub contours_alt: Array2<bool>,
 

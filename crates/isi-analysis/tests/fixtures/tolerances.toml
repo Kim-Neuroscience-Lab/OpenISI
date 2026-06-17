@@ -119,6 +119,18 @@ atol = 3.05e-5
 rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max ≈ 85 000 (cancellation in det)
 atol = 3.05e-5
 
+# ── Magnification anisotropy (SNLC getMagFactors prefAxisMF + Distrtion) ──
+# magnification_axis = ∠Res/2 (deg, wraps at 180°). arg(z) has condition number
+# κ = 1/|Res| = 1/distortion, so cross-backend it would need κ·ε AND a wrap-180
+# distance (like azi/alt_phase) — see golden_vfs.rs. The equivalence run is
+# SAME-backend (deterministic), so the drift is ~0 and a plain atol suffices.
+[results.magnification_axis]
+atol = 1.22e-4   # 1024·ε_f32 deg
+# magnification_distortion = |Res| is a well-conditioned bounded [0,1] magnitude.
+[results.magnification_distortion]
+rtol = 3.05e-5   # 256·ε
+atol = 3.05e-5
+
 # ── Delay maps (degrees, (0,180], present under delay-subtraction) ──────
 # Angular magnitude → relative, like eccentricity; atol floors the near-zero
 # (flip-region) pixels. Same K=512 propagation as the phase maps the delay is

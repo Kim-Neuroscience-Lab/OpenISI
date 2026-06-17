@@ -206,6 +206,8 @@ pub mod name {
     pub const POLAR_ANGLE: &str = "polar_angle";
     pub const MAGNIFICATION: &str = "magnification";
     pub const MAGNIFICATION_RAW: &str = "magnification_raw";
+    pub const MAGNIFICATION_AXIS: &str = "magnification_axis";
+    pub const MAGNIFICATION_DISTORTION: &str = "magnification_distortion";
     pub const CONTOURS_AZI: &str = "contours_azi";
     pub const CONTOURS_ALT: &str = "contours_alt";
     pub const SPECTRAL_SNR_AZI: &str = "spectral_snr_azi";
@@ -397,6 +399,8 @@ const RESULTS_DATASETS: &[Dataset] = &[
     result_f64(n::POLAR_ANGLE, Always, "Visual-field polar angle (deg, wrap ±180) about V1 center."),
     result_f64(n::MAGNIFICATION, Always, "Cortical magnification (px²/deg², ROI-masked)."),
     result_f64(n::MAGNIFICATION_RAW, Always, "Unmasked |det J| (deg²/px²); split-criterion input."),
+    result_f64(n::MAGNIFICATION_AXIS, Always, "Magnification preferred axis (deg, wrap 180; SNLC prefAxisMF)."),
+    result_f64(n::MAGNIFICATION_DISTORTION, Always, "Magnification distortion / anisotropy coherence [0,1] (SNLC Distrtion)."),
     Dataset { name: n::CONTOURS_AZI, dtype: "u8 (bool)", shape: "(H, W)", presence: Always, doc: "Azimuth iso-contour mask.", attrs: MAP_META },
     Dataset { name: n::CONTOURS_ALT, dtype: "u8 (bool)", shape: "(H, W)", presence: Always, doc: "Altitude iso-contour mask.", attrs: MAP_META },
     result_f64(n::SPECTRAL_SNR_AZI, When("raw acquisition path"), "Azimuth spectral SNR."),

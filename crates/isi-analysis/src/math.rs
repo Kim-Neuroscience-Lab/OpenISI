@@ -137,6 +137,16 @@ pub fn compute_retinotopy(
         params.vfs_computation.apply(&azi_z_s, &alt_z_s);
 
     let (scale_azi, scale_alt) = degree_scales(acquisition);
+    // The determinant (magnification) and the anisotropy (axis + distortion) are
+    // invariants of the SAME Jacobian — both consume the four gradients, so they
+    // are computed together here (clone the gradients into the anisotropy; the
+    // determinant takes them by value).
+    let (axis_t, distortion_t) = compute::magnification_anisotropy(
+        d_azi_dx.clone(),
+        d_azi_dy.clone(),
+        d_alt_dx.clone(),
+        d_alt_dy.clone(),
+    );
     let mag_t = compute::compute_magnification_jacobian(
         d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, scale_azi, scale_alt,
     );
@@ -147,6 +157,8 @@ pub fn compute_retinotopy(
     // Phase recovered via arg(z_smoothed).
     let vfs = compute::tensor_to_array2_f64(vfs_t)?;
     let magnification_raw = compute::tensor_to_array2_f64(mag_t)?;
+    let magnification_axis = compute::tensor_to_array2_f64(axis_t)?;
+    let magnification_distortion = compute::tensor_to_array2_f64(distortion_t)?;
     let azi_phase = compute::tensor_to_array2_f64(azi_z_s.angle())?;
     let alt_phase = compute::tensor_to_array2_f64(alt_z_s.angle())?;
     let azi_amplitude = compute::tensor_to_array2_f64(azi_amp_t)?;
@@ -186,6 +198,8 @@ pub fn compute_retinotopy(
         alt_amplitude,
         vfs,
         magnification_raw,
+        magnification_axis,
+        magnification_distortion,
         azi_delay,
         alt_delay,
     })

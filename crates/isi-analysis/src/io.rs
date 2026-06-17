@@ -234,6 +234,8 @@ pub fn read_retinotopy_maps(path: &Path) -> Result<Option<crate::RetinotopyMaps>
         r("alt_amplitude"),
         r("vfs"),
         r("magnification_raw"),
+        r("magnification_axis"),
+        r("magnification_distortion"),
     ) {
         (
             Ok(azi_phase),
@@ -244,6 +246,8 @@ pub fn read_retinotopy_maps(path: &Path) -> Result<Option<crate::RetinotopyMaps>
             Ok(alt_amplitude),
             Ok(vfs),
             Ok(magnification_raw),
+            Ok(magnification_axis),
+            Ok(magnification_distortion),
         ) => Ok(Some(crate::RetinotopyMaps {
             azi_phase,
             alt_phase,
@@ -253,6 +257,8 @@ pub fn read_retinotopy_maps(path: &Path) -> Result<Option<crate::RetinotopyMaps>
             alt_amplitude,
             vfs,
             magnification_raw,
+            magnification_axis,
+            magnification_distortion,
             // Delay maps are method-conditional (absent under unweighted
             // combine, or in files from before the leaf existed). Read as
             // optional — their absence does NOT defeat the retinotopy restore.
@@ -377,6 +383,8 @@ pub fn stage_artifacts_present(path: &Path) -> Result<StageArtifacts, AnalysisEr
             "results/alt_amplitude",
             "results/vfs",
             "results/magnification_raw",
+            "results/magnification_axis",
+            "results/magnification_distortion",
         ]),
         sign_smoothing: has("results/vfs_smoothed"),
         cortex_source: has("results/cortex_mask"),
@@ -994,6 +1002,9 @@ pub fn write_results(
     // Unmasked Jacobian magnitude — persisted as a retinotopy restore input
     // (and a legitimate raw output). Read back by `read_retinotopy_maps`.
     write_f64(name::MAGNIFICATION_RAW, &result.magnification_raw)?;
+    // Magnification anisotropy (SNLC getMagFactors) — restored with retinotopy.
+    write_f64(name::MAGNIFICATION_AXIS, &result.magnification_axis)?;
+    write_f64(name::MAGNIFICATION_DISTORTION, &result.magnification_distortion)?;
     write_mask(name::CONTOURS_AZI, &result.contours_azi)?;
     write_mask(name::CONTOURS_ALT, &result.contours_alt)?;
 
@@ -1532,6 +1543,8 @@ mod tests {
             polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
+            magnification_axis: Array2::zeros((h, w)),
+            magnification_distortion: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,
@@ -1619,6 +1632,8 @@ mod tests {
             polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
+            magnification_axis: Array2::zeros((h, w)),
+            magnification_distortion: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,
@@ -1745,6 +1760,8 @@ mod tests {
             polar_angle: Array2::zeros((h, w)),
             magnification: Array2::zeros((h, w)),
             magnification_raw: Array2::zeros((h, w)),
+            magnification_axis: Array2::zeros((h, w)),
+            magnification_distortion: Array2::zeros((h, w)),
             contours_azi: Array2::from_elem((h, w), false),
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,

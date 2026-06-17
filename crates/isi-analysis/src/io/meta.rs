@@ -224,6 +224,29 @@ pub fn meta_for_f64(name: &str, data: &Array2<f64>, acquisition: &AcquisitionPro
                 zero_means: lit(""),
             }
         }
+        // Magnification preferred axis (SNLC prefAxisMF): an axis in degrees,
+        // periodic over 180° (an axis, not a vector) → wrapping HSV palette.
+        // Full-frame; no sentinel.
+        "magnification_axis" => MapMeta {
+            palette: lit("hsv_circular"),
+            units: lit("deg"),
+            display_min: 0.0,
+            display_max: 180.0,
+            wrap_period: 180.0,
+            nan_means: lit("isotropic"),
+            zero_means: lit(""),
+        },
+        // Magnification distortion (SNLC Distrtion): anisotropy coherence,
+        // bounded [0, 1] by construction → hot palette over the fixed range.
+        "magnification_distortion" => MapMeta {
+            palette: lit("hot"),
+            units: lit("unitless"),
+            display_min: 0.0,
+            display_max: 1.0,
+            wrap_period: 0.0,
+            nan_means: lit(""),
+            zero_means: lit(""),
+        },
         // Reliability maps (Allen / Engel cross-cycle vector coherence):
         // bounded [0, 1] by construction. Hot palette over the full
         // range makes the cortex region pop visually.

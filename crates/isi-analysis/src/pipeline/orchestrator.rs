@@ -129,6 +129,8 @@ fn assemble(st: PipelineState) -> Result<AnalysisResult, AnalysisError> {
         // Unmasked Jacobian magnitude — persisted so a cached retinotopy can be
         // restored (stage 8 / derived maps need it) and a legitimate output.
         magnification_raw: retino.magnification_raw,
+        magnification_axis: retino.magnification_axis,
+        magnification_distortion: retino.magnification_distortion,
         vfs_smoothed: st.vfs_smooth.ok_or_else(|| missing("vfs_smoothed"))?,
         vfs_smoothed_thresholded: st
             .vfs_smoothed_thresholded
