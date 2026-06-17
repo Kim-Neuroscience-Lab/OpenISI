@@ -28,6 +28,19 @@ red, you changed the science — revert, or, if you *meant* to, update the golde
 so explicitly in the change. If you can't explain why a change is safe, the net can.
 Trust it; never bypass it.
 
+If you touch an **oracle golden** (the reference fixtures in
+`crates/isi-analysis/tests/golden/`), regenerate and re-check it through the harness
+instead of editing a `.bin` by hand:
+
+```sh
+cargo xtask goldens --check    # regenerate every fixture from its oracle, diff vs committed
+cargo xtask goldens <name>     # regenerate just the matching generators (then commit the .bin)
+```
+
+One-time toolchain setup (Octave + a pinned Python env) is in
+[`../tools/golden/README.md`](../tools/golden/README.md). The app/release build needs
+none of it — only this dev harness does.
+
 ## The map
 
 | Crate | What it is |
@@ -70,3 +83,9 @@ the threading/lock model: [`COMPUTE.md`](COMPUTE.md).
 and the objective Definition of Done. When a change feels like it's fighting the
 structure, re-read the relevant concern doc (the index is [`README.md`](README.md)) —
 the structure is deliberate.
+
+For the **foundation state** — what the senior-required invariants are (crash/disk-full
+integrity, error surfacing, re-entrancy, determinism, schema drift), why they matter, how
+each was verified, and the known residual risk you inherit — read
+[`FOUNDATION_AUDIT.md`](FOUNDATION_AUDIT.md). It also has the exact commands to re-verify
+the foundation holds after your change.

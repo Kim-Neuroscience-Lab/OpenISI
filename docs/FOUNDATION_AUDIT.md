@@ -31,9 +31,18 @@ fps), so a crash yields a *missing* fingerprint (→ safe recompute), never a
 premature one. The real risk is whole-file corruption from non-atomic in-place
 mutation, not stale-cache garbage.
 
-Secondary (same area): 2D `/results` datasets lack the `fletcher32` checksums
-that 1D arrays and acquisition frames get (`io.rs` `write_f64`/`write_mask` vs
-`write_checked_1d`); disk-full is not surfaced as a distinct, actionable error.
+**FIXED** (`e74362c`): `io::atomic_update(path, mutate)` — copy → mutate temp →
+fsync → atomic rename — now wraps `analyze()`'s entire write block. A crash
+leaves the original intact; output is byte-identical (regression bit-identical).
+Locked by two crash-safety tests in `io.rs`. The provenance `/analysis_params`
+stamp was a residual separate in-place write; **also FIXED** (`e932f19`) by
+folding it into the same transaction via `analyze`'s `params_tree` argument.
+
+Secondary, still open (lower severity): 2D `/results` datasets lack the
+`fletcher32` checksums that 1D arrays and acquisition frames get (`io.rs`
+`write_f64`/`write_mask` vs `write_checked_1d`) — a corruption-*detection* gap,
+not a corruption-*creation* one; disk-full is surfaced (it propagates as a typed
+HDF5/Io error) but not specially classified. See "Residual risk" below.
 
 ## B — smaller "no silent failure" gaps
 
@@ -74,8 +83,51 @@ that 1D arrays and acquisition frames get (`io.rs` `write_f64`/`write_mask` vs
   contract (`io/meta.rs`) is a *parallel* per-dataset source keyed by name — a
   minor cleanliness item (fold into the `SCHEMA` SSoT), not a foundational gap.
 
-## Fix order
+## Status
 
-A1 → B1/B2/B3 → (resume oracle-coverage gaps). Each fix is its own green-gated
-commit; `regression_oisi` stays bit-identical (these change serialization/
-error-paths, never the science). C-tier is documented above, not changed.
+A1 ✅ (`e74362c` + residual `e932f19`) · B1–B3 ✅ (`3011f99`) · C1–C3 audited
+green (no change). All foundation fixes are committed, green-gated, and
+bit-identical-preserving.
+
+## How to verify the foundation (successor checklist)
+
+Run from the repo root; all must pass before trusting a change:
+
+```sh
+cargo test --workspace                                                  # all green
+cargo clippy --workspace --all-targets                                  # zero warnings
+cargo test -p isi-analysis --test regression_oisi -- --include-ignored  # BIT-IDENTICAL (~100s)
+cargo test -p isi-analysis --test equivalence                           # re-analyze R43, all leaves
+cargo xtask goldens --check                                             # oracle goldens reproducible
+```
+
+Per-finding evidence the fix holds:
+- **A1 atomicity** — `cargo test -p isi-analysis --lib atomic_update` proves a
+  failed mutation leaves the original byte-for-byte intact and cleans the temp,
+  and a success publishes atomically. The bit-identical `regression_oisi` proves
+  the atomic path didn't move the science.
+- **B-tier** — these are error-path changes (a panicked worker is now logged, a
+  save-dir failure surfaces with its path, a corrupt fingerprint errors instead
+  of being read as a cache miss); covered by the io + incremental suites.
+- **C1 re-entrancy** — `cargo test -p openisi stimulus_thread` runs the 14
+  lifecycle/reset tests. **C2 determinism** — `regression_oisi` passing
+  bit-identical run-to-run *is* the within-backend determinism proof.
+
+## Residual risk (known, accepted — not silent)
+
+- **`fletcher32` on 2D `/results`.** Detection-only gap: a post-write disk bit-rot
+  in a result map isn't checksum-flagged on read (1D arrays + frames are). It does
+  not *create* corruption. Add it to `write_f64`/`write_mask` if/when result-map
+  integrity-on-read is required.
+- **`capture_baseline` strip-then-reanalyze** does an in-place
+  `strip_derived_outputs` before the (atomic) analyze. The window is **dev/baseline
+  only** — `capture_baseline` regenerates a throwaway baseline; production
+  `analyze()` never strips. Make it atomic too if baselines become precious.
+- **Cross-backend discrete-flip** (C2): a segmentation bit-exact output *could*
+  differ between CPU and CUDA at a numerically degenerate pixel. CPU is canonical
+  (`PRINCIPLES.md` → Platform); `bit_exact` is asserted same-backend.
+- **Live-rig items** (out of code scope): re-entrancy 2-run on real hardware;
+  ring-calibration UI verification.
+
+C-tier is documented above, not changed; the residuals are recorded here so a
+successor inherits the *known* risk surface rather than discovering it.
