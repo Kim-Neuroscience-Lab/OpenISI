@@ -247,25 +247,43 @@ pub fn position_gaussian_smooth(z: &Complex2, sigma: f64) -> Complex2 {
     Complex2::from_phase(gaussian_smooth(z.angle(), sigma))
 }
 
+/// The Kalatsky-Stryker hemodynamic **delay map** (radians, in `(0, π]`) — the
+/// phase common to the forward and reverse sweeps, separated from the
+/// antisymmetric retinotopic position. SNLC `Gprocesskret.m:87-96`'s
+/// `delay_hor`/`delay_vert`:
+///
+/// ```text
+/// delay = angle(exp(i·ang_fwd) + exp(i·ang_rev))
+/// delay = delay + (π/2)·(1 − sign(delay))          # force into (0, π]
+/// ```
+///
+/// A negative delay is assumed to have wrapped from −180°, so the `(0, π]`
+/// correction lifts it (the response delay is never negative). Returned as a
+/// real plane in radians; callers scale to degrees for the `/results` leaf.
+pub fn delay_map(fwd: &Complex2, rev: &Complex2) -> Tensor<Backend, 2> {
+    let ang_fwd = fwd.angle();
+    let ang_rev = rev.angle();
+    // delay = angle of the sum of unit phasors at the two phases.
+    let sin_sum = ang_fwd.clone().sin() + ang_rev.clone().sin();
+    let cos_sum = ang_fwd.cos() + ang_rev.cos();
+    let delay = sin_sum.atan2(cos_sum);
+    // Force into (0, π]: add (π/2)·(1 − sign(delay)).
+    let ones = delay.ones_like();
+    delay.clone() + (ones - delay.sign()).mul_scalar((std::f64::consts::PI / 2.0) as f32)
+}
+
 /// Marshel-Garrett delay subtraction, returning the position phase as a
 /// unit complex phasor `exp(i·φ)`.
 ///
 /// ```text
-/// delay = angle(exp(i·ang_fwd) + exp(i·ang_rev))
+/// delay = angle(exp(i·ang_fwd) + exp(i·ang_rev))    # see `delay_map`
 /// delay = delay + (π/2)·(1 − sign(delay))          # force into (0, π]
 /// φ     = 0.5·( wrap(ang_fwd − delay) − wrap(ang_rev − delay) )
 /// ```
 pub fn position_phasor_delay_subtracted(fwd: &Complex2, rev: &Complex2) -> Complex2 {
     let ang_fwd = fwd.angle();
     let ang_rev = rev.angle();
-    // delay = angle of the sum of unit phasors at the two phases.
-    let sin_sum = ang_fwd.clone().sin() + ang_rev.clone().sin();
-    let cos_sum = ang_fwd.clone().cos() + ang_rev.clone().cos();
-    let delay = sin_sum.atan2(cos_sum);
-    // Force into (0, π]: add (π/2)·(1 − sign(delay)).
-    let ones = delay.ones_like();
-    let delay_corrected =
-        delay.clone() + (ones - delay.sign()).mul_scalar((std::f64::consts::PI / 2.0) as f32);
+    let delay_corrected = delay_map(fwd, rev);
     let corrected_fwd = wrap_principal(ang_fwd - delay_corrected.clone());
     let corrected_rev = wrap_principal(ang_rev - delay_corrected);
     let phi = (corrected_fwd - corrected_rev).mul_scalar(0.5);

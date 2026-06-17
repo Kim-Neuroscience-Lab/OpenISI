@@ -19,8 +19,8 @@
 mod tests {
     use crate::compute::responsiveness::reliability;
     use crate::compute::{
-        amp_weighted_complex_smooth, compute_magnification_jacobian, compute_vfs, device,
-        gaussian_smooth, phase_gradients, position_amplitude, position_gaussian_smooth,
+        amp_weighted_complex_smooth, compute_magnification_jacobian, compute_vfs, delay_map,
+        device, gaussian_smooth, phase_gradients, position_amplitude, position_gaussian_smooth,
         position_phasor_delay_subtracted, real_gradients, tensor_to_array2_f64, Backend, Complex2,
     };
     use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
@@ -157,6 +157,41 @@ mod tests {
         }
         eprintln!("Kalatsky combine vs SNLC Gprocesskret: max phasor diff = {maxd:.3e}");
         assert!(maxd < 1e-5, "combine diverges from Gprocesskret: {maxd:.3e}");
+    }
+
+    /// `delay_map` vs SNLC `Gprocesskret.m:88-96` `delay_hor`/`delay_vert`: the
+    /// hemodynamic delay (the symmetric fwd+rev component), forced into (0, π].
+    /// Compared directly in radians — delay is single-valued in (0, π], so no
+    /// wrap ambiguity. Fixture `combine_delay.bin` from `gen_combine_golden.m`
+    /// (same ang0/ang2 inputs as the kmap golden, so the two are consistent).
+    #[test]
+    fn delay_map_matches_snlc_gprocesskret() {
+        let a0 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang0.bin"));
+        let a2 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang2.bin"));
+        let delay = load_f64(include_bytes!("../../tests/golden/fixtures/combine_delay.bin"));
+
+        let fwd = Complex2::from_phase(phase_tensor(&a0));
+        let rev = Complex2::from_phase(phase_tensor(&a2));
+        let ours = tensor_to_array2_f64(delay_map(&fwd, &rev)).unwrap();
+
+        let mut maxd = 0.0f64;
+        for i in 0..N {
+            for j in 0..N {
+                maxd = maxd.max((ours[[i, j]] - delay[i * N + j]).abs());
+            }
+        }
+        // Delay is an angular phase quantity (radians), so it bounds as an
+        // absolute atol = K·ε_f32 — the same class as the phase maps in
+        // tolerances.toml (azi/alt_phase, K=512). The f32 backend's atan2 plus
+        // the (0,π] sign correction drift most near the delay flip region
+        // (here ~half the product grid crosses it); observed max ≈ 4.79e-5 over
+        // the full (−π,π)² grid vs the f64 oracle. K=512 bounds it with margin.
+        let tol = 512.0 * f64::from(f32::EPSILON); // 512·ε_f32 ≈ 6.10e-5 rad
+        eprintln!("delay_map vs SNLC Gprocesskret delay: max diff = {maxd:.3e} rad (tol {tol:.3e})");
+        assert!(
+            maxd < tol,
+            "delay_map diverges from Gprocesskret: {maxd:.3e} > {tol:.3e}"
+        );
     }
 
     /// `math::eccentricity_pixel_deg` (the core of
