@@ -26,7 +26,7 @@ mod tests {
     };
     use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
     use crate::test_support::{count_differing, load_f32, load_f64};
-    use approx::abs_diff_eq;
+    use agreement::{Eps, Tol};
     use burn_tensor::{Tensor, TensorData};
     use ndarray::Array2;
 
@@ -218,49 +218,21 @@ mod tests {
         let axis = tensor_to_array2_f64(axis_t).unwrap();
         let dist = tensor_to_array2_f64(dist_t).unwrap();
 
-        // ── Tolerances grounded in IEEE-754 ε_f32 = 2⁻²³ (no magic numbers) ──
-        let eps = f64::from(f32::EPSILON);
-        // `Distortion = |Res|` is WELL-CONDITIONED (the modulus of a complex
-        // number has condition number ≈ 1). Its absolute error is the
-        // forward-error of the ~20-flop formula: atol = K·ε_f32 with K the
-        // operation-count factor. K=16 bounds the op count (observed ≈ 1.7·ε).
-        let dist_tol = 16.0 * eps; // ≈ 1.9e-6
-        // `axis = ∠Res/2` is the ARGUMENT of a complex number, whose analytic
-        // condition number is κ = 1/|z| = 1/Distortion — so it is ill-conditioned
-        // exactly where the map is isotropic (Distortion → 0), the same structure
-        // as magnification's 1/det at near-singular pixels (see tolerances.toml).
-        // Ground it as κ_max·2·ε (the magnification convention), with κ_max the
-        // MEASURED conditioning of this fixture and ×90/π converting ∠Res/2 → deg.
+        // Grounded via the shared `agreement` comparator — no hand-rolled loop,
+        // no magic numbers. `distortion = |Res|` is well-conditioned (modulus,
+        // κ≈1) → absolute op-count K=16·ε_f32. `axis = ∠Res/2` is the argument of
+        // a complex number, whose analytic condition number is κ = 1/|Res| =
+        // 1/distortion (ill-conditioned where isotropic) → wrap-180 (an axis),
+        // ×90/π (∠Res/2 → deg), scaled by the MEASURED κ_max from this fixture.
         let kappa_max = 1.0 / dist_gold.iter().copied().fold(f64::INFINITY, f64::min);
-        let axis_tol = 2.0 * eps * (90.0 / std::f64::consts::PI) * kappa_max; // ≈ 8.3e-5 deg
-
-        // Compare per element with `approx` (the project's standard comparator),
-        // mirroring equivalence.rs: an absolute check on distortion, and on the
-        // axis's CIRCULAR distance to zero (an axis wraps at 180°).
-        let (mut max_axis, mut max_dist) = (0.0f64, 0.0f64);
-        let (mut n_fail_axis, mut n_fail_dist) = (0usize, 0usize);
-        for i in 0..M {
-            for j in 0..M {
-                let dd = (dist[[i, j]] - dist_gold[i * M + j]).abs();
-                max_dist = max_dist.max(dd);
-                if !abs_diff_eq!(dist[[i, j]], dist_gold[i * M + j], epsilon = dist_tol) {
-                    n_fail_dist += 1;
-                }
-                let d = (axis[[i, j]] - axis_gold[i * M + j]).abs();
-                let circ = d.min(180.0 - d);
-                max_axis = max_axis.max(circ);
-                if !abs_diff_eq!(circ, 0.0, epsilon = axis_tol) {
-                    n_fail_axis += 1;
-                }
-            }
-        }
-        eprintln!(
-            "maganiso vs SNLC getMagFactors: axis max {max_axis:.3e} deg \
-             (κ·ε atol {axis_tol:.3e}, κ_max={kappa_max:.2}); \
-             distortion max {max_dist:.3e} (atol {dist_tol:.3e})"
+        Tol::abs(16, Eps::F32).assert(
+            "maganiso distortion",
+            dist.as_slice().expect("contiguous"),
+            &dist_gold,
         );
-        assert_eq!(n_fail_dist, 0, "{n_fail_dist} px exceed distortion atol {dist_tol:.3e}");
-        assert_eq!(n_fail_axis, 0, "{n_fail_axis} px exceed axis κ·ε atol {axis_tol:.3e}");
+        Tol::wrap(180.0, 2, Eps::F32, 90.0 / std::f64::consts::PI)
+            .with_kappa(kappa_max)
+            .assert("maganiso axis", axis.as_slice().expect("contiguous"), &axis_gold);
     }
 
     /// `math::eccentricity_pixel_deg` (the core of

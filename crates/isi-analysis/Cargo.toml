@@ -82,3 +82,6 @@ proptest = "1"
 approx = "0.5"
 # Cross-implementation equivalence harness reads tolerances.toml.
 toml = "0.8"
+# Shared ε-grounded numerical-agreement comparator (Tol + one NaN/wrap-aware
+# drift check), used by the in-crate goldens and the equivalence harness.
+agreement = { path = "../agreement" }

@@ -18,6 +18,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agreement"
+version = "0.1.0"
+dependencies = [
+ "approx",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3431,6 +3438,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 name = "isi-analysis"
 version = "0.1.0"
 dependencies = [
+ "agreement",
  "approx",
  "blake3",
  "burn-cuda",

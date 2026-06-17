@@ -9,6 +9,9 @@ members = [
     # Dev-only task runner (oracle golden regeneration + freshness gate).
     # Nothing depends on it, so the app/release build never compiles it.
     "xtask",
+    # Dev-only numerical-agreement test utility (ε-grounded Tol + one
+    # comparator), shared by the goldens and the equivalence harness.
+    "crates/agreement",
 ]
 
 # Optimize compute-heavy crates even in dev builds.

@@ -1,0 +1,11 @@
+[package]
+name = "agreement"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Numerical-agreement test utility: ε-grounded tolerances (Tol) + one NaN/wrap-aware comparator, shared by the in-crate goldens and the integration equivalence harness. Dev-only — never a runtime dependency."
+
+# `approx` is the project's standard float comparator; this crate wraps it with
+# the IEEE-754-ε grounding vocabulary so no test hand-rolls either piece.
+[dependencies]
+approx = "0.5"
