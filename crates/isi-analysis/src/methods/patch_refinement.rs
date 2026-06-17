@@ -896,6 +896,7 @@ mod allen {
     #[cfg(test)]
     mod golden {
         use super::*;
+        use agreement::{Eps, Tol};
         use crate::test_support::{load_f64, load_i32};
 
         /// `watershed_from_markers` vs `skimage.segmentation.watershed`
@@ -1048,12 +1049,10 @@ mod allen {
                 let det = Array2::from_shape_fn((H, W), |(r, c)| dv[r * W + c]);
                 let exp = f64::from_le_bytes(exp_b[0..8].try_into().unwrap());
                 let got = sigma_area(&mask, &det);
-                eprintln!("  sigma_area {name:10} got={got} exp={exp}");
-                if exp.is_nan() {
-                    assert!(got.is_nan(), "{name}: expected NaN, got {got}");
-                } else {
-                    assert!((got - exp).abs() < 1e-6, "{name}: {got} != {exp}");
-                }
+                // Area-sum, f64; observed ≈ ε_f64 relative. The comparator's
+                // NaN-position match handles the NaN fixtures (both NaN → pass).
+                // Was a magic 1e-6.
+                Tol::rel(64, Eps::F64, 64).assert(&format!("sigma_area {name}"), &[got], &[exp]);
             }
             run(
                 "finiteall",
@@ -1108,30 +1107,24 @@ mod allen {
             let exp_alt_c = f64::from_le_bytes(center_b[0..8].try_into().unwrap());
             let exp_azi_c = f64::from_le_bytes(center_b[8..16].try_into().unwrap());
 
-            // (b) centre.
+            // (b) centre — pure f64 vs Allen; observed ≈ 3e-15 → K=128, F64.
             let (alt_c, azi_c) = patch_visual_center(&mask, &azi, &alt);
-            eprintln!("center: alt_c={alt_c} (exp {exp_alt_c}), azi_c={azi_c} (exp {exp_azi_c})");
-            assert!(
-                (alt_c - exp_alt_c).abs() < 1e-9 && (azi_c - exp_azi_c).abs() < 1e-9,
-                "patch_visual_center diverges from Allen getPixelVisualCenter"
+            Tol::abs(128, Eps::F64).assert(
+                "patch_visual_center vs Allen",
+                &[alt_c, azi_c],
+                &[exp_alt_c, exp_azi_c],
             );
 
             // (a) full-image great-circle formula + NaN propagation, at the
-            // oracle centre.
+            // oracle centre. Pure f64 vs Allen; observed ≈ 7e-15 → K=128, F64.
+            // The comparator's NaN-position match replaces the manual NaN branch.
+            // (Was a magic 1e-9 — ~6 orders too loose for an f64 match.)
             let ecc = eccentricity_full_image(&azi, &alt, exp_alt_c, exp_azi_c);
-            let mut md = 0.0f64;
-            for r in 0..N {
-                for c in 0..N {
-                    let (o, g) = (ecc[[r, c]], ev[r * N + c]);
-                    if o.is_nan() || g.is_nan() {
-                        assert_eq!(o.is_nan(), g.is_nan(), "NaN mismatch at {r},{c}");
-                    } else {
-                        md = md.max((o - g).abs());
-                    }
-                }
-            }
-            eprintln!("eccentricity_full_image max diff = {md:.2e}");
-            assert!(md < 1e-9, "eccentricity_full_image diverges from Allen: {md:.2e}");
+            Tol::abs(128, Eps::F64).assert(
+                "eccentricity_full_image vs Allen",
+                ecc.as_slice().expect("contiguous"),
+                &ev,
+            );
         }
 
         /// `local_min_markers` vs verbatim Allen `localMin`

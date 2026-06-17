@@ -240,6 +240,7 @@ mod golden {
     fn threshold_mask(metric: &Array2<f64>, threshold: f64) -> Array2<bool> {
         metric.mapv(|v| v.is_finite() && v >= threshold)
     }
+    use agreement::{Eps, Tol};
     use crate::compute::backend::device;
     use crate::compute::conversions::tensor_to_array2_f64;
     use std::f64::consts::PI;
@@ -311,15 +312,13 @@ mod golden {
             let dev = device();
             let dff = Tensor::<Backend, 3>::from_data(TensorData::new(dff_f32, [n, H, W]), &dev);
             let got = tensor_to_array2_f64(spectral_snr(dff, &ts)).expect("snr to array");
-            let mut maxrel = 0.0f64;
-            for r in 0..H {
-                for c in 0..W {
-                    let (g, e) = (got[[r, c]], exp[r * W + c]);
-                    maxrel = maxrel.max((g - e).abs() / e.abs().max(1e-12));
-                }
-            }
-            eprintln!("spectral_snr {name}: max rel diff = {maxrel:.2e}");
-            assert!(maxrel < 1e-3, "spectral_snr {name} diverges: {maxrel:.2e}");
+            // f32 SNR ratio vs numpy f64; observed ≤ 1.0e-6 ≈ 8.5·ε_f32 → K=16
+            // relative (was a magic 1e-3).
+            Tol::rel(16, Eps::F32, 16).assert(
+                &format!("spectral_snr {name}"),
+                got.as_slice().expect("contiguous"),
+                &exp,
+            );
         }
         run(
             "small",
@@ -414,17 +413,14 @@ mod golden {
         );
         let device_z = tensor_to_array2_f64(allen_power_snr_device(movie_t, 4)).expect("z");
 
-        let mut maxrel = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                let (g, e) = (device_z[[r, c]], host[[r, c]]);
-                if g.is_finite() && e.is_finite() {
-                    maxrel = maxrel.max((g - e).abs() / e.abs().max(1e-6));
-                }
-            }
-        }
-        eprintln!("allen_power_snr device vs host: max rel diff = {maxrel:.2e}");
-        assert!(maxrel < 1e-3, "device allen_power_snr diverges from host: {maxrel:.2e}");
+        // f32 device path vs f64 host (a cross-backend compare); observed ≈
+        // 1.78e-5 ≈ 149·ε_f32 → K=256 relative. NaN positions handled by the
+        // comparator. (Was a magic 1e-3.)
+        Tol::rel(256, Eps::F32, 256).assert(
+            "allen_power_snr device vs host",
+            device_z.as_slice().expect("contiguous"),
+            host.as_slice().expect("contiguous"),
+        );
     }
 
     /// The shared threshold semantics: keep finite `≥ threshold`, drop sub-threshold

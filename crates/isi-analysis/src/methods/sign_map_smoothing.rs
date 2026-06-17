@@ -59,7 +59,9 @@ mod tests {
     #[test]
     fn sigma_px_at_20um_per_px() {
         let m = SignMapSmoothingMethod::Gaussian { sigma_um: 60.0 };
-        assert!((m.sigma_px(20.0) - 3.0).abs() < 1e-9, "σ_px=3 at 20 µm/px");
+        // 60/20 = 3 is exact in f64 (both representable, division rounds exactly)
+        // — a domain identity, not an agreement tolerance, so assert exactly.
+        assert_eq!(m.sigma_px(20.0), 3.0, "σ_px=3 at 20 µm/px");
     }
 
     // Property: σ=0 is identity (gaussian_smooth_f64 short-circuits to clone).
