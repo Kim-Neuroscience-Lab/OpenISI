@@ -1,0 +1,58 @@
+name: Golden freshness
+
+# Oracle golden-fixture freshness gate. Regenerates every golden fixture from
+# its oracle generator (SNLC/Garrett under Octave, Allen/Zhuang transcriptions
+# under Python) and asserts byte-identity with the committed copies — catching
+# the case where a generator is edited but its fixture isn't regenerated.
+#
+# Kept SEPARATE from the main `Test` workflow (which stays hermetic and
+# toolchain-free): only this job installs Octave + the pinned Python toolchain,
+# and only when oracle/fixture/harness files change.
+#
+# Runs on ubuntu (cheap, reliable apt-Octave). The committed fixtures must be
+# reproducible on this toolchain; if a float-valued fixture proves OS-sensitive,
+# regenerate it on this runner (or pin the toolchain to its origin) — the gate
+# documenting that is the gate working.
+
+on:
+  push:
+    paths:
+      - "crates/isi-analysis/tests/golden/**"
+      - "xtask/**"
+      - "tools/golden/**"
+      - ".github/workflows/goldens.yml"
+  pull_request:
+    paths:
+      - "crates/isi-analysis/tests/golden/**"
+      - "xtask/**"
+      - "tools/golden/**"
+      - ".github/workflows/goldens.yml"
+  workflow_dispatch:
+
+jobs:
+  goldens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Octave (oracle .m generators)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y octave
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Python oracle toolchain
+        run: python -m pip install -r tools/golden/requirements.txt
+
+      - name: Golden freshness gate
+        env:
+          OPENISI_PYTHON: python
+          OPENISI_OCTAVE: octave-cli
+        run: cargo xtask goldens --check

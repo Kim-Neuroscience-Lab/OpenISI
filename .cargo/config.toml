@@ -3,3 +3,9 @@
 # are ordinary Cargo crates with no vendored C++ runtime to locate. The
 # former `LIBTORCH` / vendored-libtorch staging was removed when the tch
 # (libtorch) backend was retired — see docs/UNIFIED_COMPUTE_ARCHITECTURE.md.
+
+# Dev-task ergonomics: `cargo xtask <task>` → the dev-only task runner.
+# Used for oracle golden-fixture regeneration + the freshness gate
+# (`cargo xtask goldens [--check]`). See tools/golden/README.md.
+[alias]
+xtask = "run --quiet --package xtask --"

@@ -6,6 +6,9 @@ members = [
     "crates/pco-sdk",
     "crates/openisi-params",
     "crates/isi-analysis",
+    # Dev-only task runner (oracle golden regeneration + freshness gate).
+    # Nothing depends on it, so the app/release build never compiles it.
+    "xtask",
 ]
 
 # Optimize compute-heavy crates even in dev builds.

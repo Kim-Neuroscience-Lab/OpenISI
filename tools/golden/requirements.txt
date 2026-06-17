@@ -1,0 +1,24 @@
+# Pinned Python toolchain for the OpenISI oracle golden generators
+# (crates/isi-analysis/tests/golden/gen_*_golden.py and render_*.py).
+#
+# These versions are the toolchain the golden-fixture freshness gate
+# (`cargo xtask goldens --check`) runs against. Float-valued fixtures are
+# sensitive to library version (reduction order, special-function impls), so
+# the toolchain is PINNED — bumping a version is a deliberate change that may
+# require regenerating + reviewing fixtures, exactly like changing an oracle.
+#
+# Setup (one time):
+#   python -m venv tools/golden/.venv
+#   tools/golden/.venv/Scripts/pip install -r tools/golden/requirements.txt   # Windows
+#   tools/golden/.venv/bin/pip     install -r tools/golden/requirements.txt   # Unix
+# then point the harness at it:
+#   $env:OPENISI_PYTHON = "tools/golden/.venv/Scripts/python.exe"             # Windows
+#   export OPENISI_PYTHON="tools/golden/.venv/bin/python"                     # Unix
+#
+# The Octave toolchain (for the *.m generators) is separate — install Octave
+# and set OPENISI_OCTAVE (or put octave-cli on PATH). See README.md.
+
+numpy==2.2.4
+scipy==1.15.3
+scikit-image==0.25.2
+matplotlib==3.10.1

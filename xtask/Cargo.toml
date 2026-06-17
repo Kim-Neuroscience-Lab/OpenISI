@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Dev-only task runner for OpenISI (oracle golden-fixture regeneration + freshness gate). Never a dependency of the app or library crates."
+
+# Zero external dependencies: pure std (subprocess + fs). Keeps the dev-task
+# runner trivially auditable and fast to build, and avoids pulling anything new
+# into the workspace lockfile for a tool the release build never compiles.
+[dependencies]
