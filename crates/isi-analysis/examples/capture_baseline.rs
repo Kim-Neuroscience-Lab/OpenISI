@@ -98,19 +98,15 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Step 4: run the full pipeline. Writes /complex_maps/* (cached) and
-    // /results/* in place.
+    // /results/* atomically, stamping the params tree into /analysis_params in
+    // the same transaction (so the baseline carries the params it was made with
+    // and subsequent equivalence tests reuse them).
     println!("[capture-baseline] running isi_analysis::analyze");
     let progress = SilentProgress;
     let cancel = AtomicBool::new(false);
-    isi_analysis::analyze(output, &params, &progress, &cancel)?;
-
-    // Step 5: stamp the params tree we used into /analysis_params for
-    // provenance. `analyze` itself doesn't write the tree; the Tauri shell
-    // does that step after a successful run. The baseline file needs the
-    // same stamp so subsequent equivalence tests use the same params.
     let tree = serde_json::to_value(openisi_params::config::AnalysisConfig::from(&params))
         .map_err(|e| AnalysisError::Validation(format!("serialize analysis params: {e}")))?;
-    isi_analysis::io::write_analysis_params_attr(output, &tree)?;
+    isi_analysis::analyze(output, &params, Some(&tree), &progress, &cancel)?;
 
     let final_bytes = output.metadata()?.len();
     println!(

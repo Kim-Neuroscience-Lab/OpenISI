@@ -91,20 +91,19 @@ fn spawn_inner(
 
             let progress = isi_analysis::SilentProgress;
 
-            let result = isi_analysis::analyze(&req.path, &req.params, &progress, &cancel_clone);
+            // The config tree is stamped into /analysis_params atomically with
+            // the results (inside analyze's single write transaction), so a
+            // crash can't leave results without their provenance.
+            let result = isi_analysis::analyze(
+                &req.path,
+                &req.params,
+                Some(&req.params_tree),
+                &progress,
+                &cancel_clone,
+            );
 
             match result {
                 Ok(()) => {
-                    // Stamp the config tree into /analysis_params for provenance.
-                    if let Err(e) =
-                        isi_analysis::io::write_analysis_params_attr(&req.path, &req.params_tree)
-                    {
-                        let _ = evt_tx.send(AnalysisEvt::Failed {
-                            path: req.path,
-                            error: format!("write /analysis_params: {e}"),
-                        });
-                        return;
-                    }
                     let _ = evt_tx.send(AnalysisEvt::Complete {
                         path: req.path,
                         message: "Analysis complete".into(),

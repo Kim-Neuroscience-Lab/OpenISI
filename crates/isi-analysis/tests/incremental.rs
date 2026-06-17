@@ -265,7 +265,7 @@ fn cache_restores_retinotopy_from_disk() {
     let cancel = AtomicBool::new(false);
 
     // Run A — computes retinotopy, writes /results + the fingerprint.
-    isi_analysis::analyze(&out, &params, &progress, &cancel).expect("run A");
+    isi_analysis::analyze(&out, &params, None, &progress, &cancel).expect("run A");
     assert!(
         isi_analysis::io::read_stage_fingerprint(&out, "retinotopy")
             .unwrap()
@@ -280,7 +280,7 @@ fn cache_restores_retinotopy_from_disk() {
     // Run B — identical params → retinotopy fingerprint matches → restore from
     // disk. The pipeline reads the tampered map, so the sentinel flows into the
     // result and back to /results. A recompute would have produced real values.
-    isi_analysis::analyze(&out, &params, &progress, &cancel).expect("run B");
+    isi_analysis::analyze(&out, &params, None, &progress, &cancel).expect("run B");
 
     let after = read_f64_2d(&out, "results/azi_phase_degrees");
     assert_eq!(after.dim(), (h, w));
@@ -350,7 +350,7 @@ fn setup_fixture(tag: &str) -> Option<(PathBuf, AnalysisParams)> {
 
 fn run_analyze(path: &Path, params: &AnalysisParams) {
     let cancel = AtomicBool::new(false);
-    isi_analysis::analyze(path, params, &SilentProgress, &cancel).expect("analyze");
+    isi_analysis::analyze(path, params, None, &SilentProgress, &cancel).expect("analyze");
 }
 
 /// Overwrite an i32 `/results` dataset in place with a constant sentinel.

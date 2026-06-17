@@ -351,9 +351,17 @@ pub fn compute_analysis(
 ///   computed, and we don't fall back to anatomy-derived cortex (per
 ///   the `feedback_no_anatomy_inference` principle). The caller must
 ///   supply a user-drawn cortex mask in a future revision.
+///
+/// `params_tree` is the tagged-`AnalysisConfig` JSON to stamp into
+/// `/analysis_params` for provenance. When `Some`, it is written **inside the
+/// same atomic transaction** as the results (so results + provenance publish
+/// together — no separate in-place attribute write that a crash could leave
+/// half-applied). Pass `None` when the caller stamps params itself, separately,
+/// or not at all (e.g. test harnesses that pre-stamp before analyzing).
 pub fn analyze(
     path: &Path,
     params: &AnalysisParams,
+    params_tree: Option<&serde_json::Value>,
     progress: &dyn ProgressSink,
     cancel: &AtomicBool,
 ) -> Result<()> {
@@ -502,6 +510,12 @@ pub fn analyze(
         // yields a missing fingerprint → safe recompute, never a premature one).
         for (key, value) in fps.tail_pairs() {
             io::write_stage_fingerprint(tmp, key, value)?;
+        }
+
+        // Provenance stamp, inside the SAME transaction as the results it
+        // describes — results and their `/analysis_params` publish atomically.
+        if let Some(tree) = params_tree {
+            io::write_analysis_params_attr(tmp, tree)?;
         }
         Ok(())
     })?;

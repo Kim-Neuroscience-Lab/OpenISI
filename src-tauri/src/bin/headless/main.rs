@@ -1361,6 +1361,7 @@ fn cmd_acquire(duration_sec: Option<f64>, primary: bool, validate: bool) -> AppR
             match isi_analysis::analyze(
                 &output_path,
                 &params,
+                None,
                 &isi_analysis::SilentProgress,
                 &cancel,
             ) {
@@ -1657,9 +1658,8 @@ fn cmd_analyze(
     let cancel = std::sync::atomic::AtomicBool::new(false);
 
     println!("Analyzing {}...", path.display());
-    isi_analysis::analyze(path, &params, &progress, &cancel)?;
-    // Stamp the config tree into /analysis_params for provenance.
-    isi_analysis::io::write_analysis_params_attr(path, &params_tree)?;
+    // Stamp the config tree into /analysis_params atomically with the results.
+    isi_analysis::analyze(path, &params, Some(&params_tree), &progress, &cancel)?;
     println!("Analysis complete");
     // Export figures (`--figures [dir]`). `Some(None)` = flag with no value →
     // auto-tag into `<repo_root>/dev_figures/<stem>/<tag>/`; `Some(Some(dir))` =

@@ -118,7 +118,7 @@ fn run_analyze_into(input: &Path, output: &Path) {
 
     let progress = SilentProgress;
     let cancel = AtomicBool::new(false);
-    isi_analysis::analyze(output, &params, &progress, &cancel).expect("isi_analysis::analyze");
+    isi_analysis::analyze(output, &params, None, &progress, &cancel).expect("isi_analysis::analyze");
 }
 
 // ─── Per-dataset comparators ─────────────────────────────────────────

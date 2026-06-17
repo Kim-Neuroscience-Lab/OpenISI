@@ -129,7 +129,7 @@ fn compare_stage_variants<V, Apply, Label>(
         let mut params = base_params.clone();
         apply(&mut params, variant);
 
-        match isi_analysis::analyze(&temp_oisi, &params, &progress, &cancel) {
+        match isi_analysis::analyze(&temp_oisi, &params, None, &progress, &cancel) {
             Ok(()) => {
                 if let Err(e) = std::fs::create_dir_all(&variant_dir) {
                     tracing::error!(stage = %stage_name, variant = %variant_label, error = %e, "mkdir failed");
