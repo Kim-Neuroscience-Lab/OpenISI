@@ -149,16 +149,13 @@ mod tests {
         let re = tensor_to_array2_f64(result.real()).unwrap();
         let im = tensor_to_array2_f64(result.imag()).unwrap();
 
-        let mut maxd = 0.0f64;
-        for i in 0..N {
-            for j in 0..N {
-                let k = kmap[i * N + j];
-                maxd = maxd.max((re[[i, j]] - k.cos()).abs());
-                maxd = maxd.max((im[[i, j]] - k.sin()).abs());
-            }
-        }
-        eprintln!("Kalatsky combine vs SNLC Gprocesskret: max phasor diff = {maxd:.3e}");
-        assert!(maxd < 1e-5, "combine diverges from Gprocesskret: {maxd:.3e}");
+        // Compare the phasor (re, im) against cos/sin of the oracle kmap — the
+        // phasor form sidesteps ±2π wrap false-diffs. f32 backend, observed
+        // ≈ 2.1·ε_f32 → K=4.
+        let cos_ref: Vec<f64> = kmap.iter().map(|k| k.cos()).collect();
+        let sin_ref: Vec<f64> = kmap.iter().map(|k| k.sin()).collect();
+        Tol::abs(4, Eps::F32).assert("kalatsky combine re", re.as_slice().expect("contiguous"), &cos_ref);
+        Tol::abs(4, Eps::F32).assert("kalatsky combine im", im.as_slice().expect("contiguous"), &sin_ref);
     }
 
     /// `delay_map` vs SNLC `Gprocesskret.m:88-96` `delay_hor`/`delay_vert`: the
@@ -176,23 +173,14 @@ mod tests {
         let rev = Complex2::from_phase(phase_tensor(&a2));
         let ours = tensor_to_array2_f64(delay_map(&fwd, &rev)).unwrap();
 
-        let mut maxd = 0.0f64;
-        for i in 0..N {
-            for j in 0..N {
-                maxd = maxd.max((ours[[i, j]] - delay[i * N + j]).abs());
-            }
-        }
-        // Delay is an angular phase quantity (radians), so it bounds as an
-        // absolute atol = K·ε_f32 — the same class as the phase maps in
-        // tolerances.toml (azi/alt_phase, K=512). The f32 backend's atan2 plus
-        // the (0,π] sign correction drift most near the delay flip region
-        // (here ~half the product grid crosses it); observed max ≈ 4.79e-5 over
-        // the full (−π,π)² grid vs the f64 oracle. K=512 bounds it with margin.
-        let tol = 512.0 * f64::from(f32::EPSILON); // 512·ε_f32 ≈ 6.10e-5 rad
-        eprintln!("delay_map vs SNLC Gprocesskret delay: max diff = {maxd:.3e} rad (tol {tol:.3e})");
-        assert!(
-            maxd < tol,
-            "delay_map diverges from Gprocesskret: {maxd:.3e} > {tol:.3e}"
+        // Delay is an absolute angular magnitude in (0, π] (no wrap). f32 atan2 +
+        // the (0,π] sign correction drift most near the flip region (here ~half
+        // the product grid crosses it); observed ≈ 4.79e-5 ≈ 402·ε_f32 → K=512
+        // (the phase-map class in tolerances.toml).
+        Tol::abs(512, Eps::F32).assert(
+            "delay_map vs SNLC Gprocesskret",
+            ours.as_slice().expect("contiguous"),
+            &delay,
         );
     }
 
@@ -247,13 +235,13 @@ mod tests {
         const ALT_C: f64 = 5.0;
         const AZI_C: f64 = 10.0;
 
-        let mut maxd = 0.0f64;
-        for i in 0..N * N {
-            let e = crate::math::eccentricity_pixel_deg(alt[i], azi[i], ALT_C, AZI_C);
-            maxd = maxd.max((e - golden[i]).abs());
-        }
-        eprintln!("Garrett eccentricity vs Allen eccentricityMap: max diff = {maxd:.3e} deg");
-        assert!(maxd < 1e-9, "eccentricity diverges from Allen: {maxd:.3e}");
+        // Pure f64 on both sides (our formula == Allen's) → machine precision;
+        // observed ≈ 2.1e-14 ≈ 96·ε_f64 → K=128, F64 base. (Was a magic 1e-9 —
+        // ~5 orders too loose to catch a real f64 regression.)
+        let ours: Vec<f64> = (0..N * N)
+            .map(|i| crate::math::eccentricity_pixel_deg(alt[i], azi[i], ALT_C, AZI_C))
+            .collect();
+        Tol::abs(128, Eps::F64).assert("garrett eccentricity vs Allen", &ours, &golden);
     }
 
     /// `compute_magnification_jacobian` (our `magnification_raw`, |det J|) vs Allen
@@ -279,26 +267,17 @@ mod tests {
         let mag = compute_magnification_jacobian(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, 1.0, 1.0);
         let got = tensor_to_array2_f64(mag).unwrap();
 
-        let mut maxd = 0.0f64;
-        for r in 0..MG {
-            for c in 0..MG {
-                maxd = maxd.max((got[[r, c]] - det_g[r * MG + c]).abs());
-            }
-        }
-        eprintln!("|det J| vs Allen _getDeterminantMap: max diff = {maxd:.3e}");
-        assert!(maxd < 1e-3, "magnification Jacobian diverges from Allen: {maxd:.3e}");
+        // f32 gradients + a cancellation difference in det; observed ≈ 4.7e-6 ≈
+        // 40·ε_f32 → K=64. (Was a magic 1e-3.)
+        Tol::abs(64, Eps::F32).assert("det J vs Allen", got.as_slice().expect("contiguous"), &det_g);
 
-        // Inversion check: the `magnification` leaf is the reciprocal CMF.
+        // Inversion check: the `magnification` leaf is the reciprocal CMF. The
+        // 1/det amplifies f32 error; observed ≈ 1.55e-5 ≈ 130·ε_f32 → K=256 (on
+        // this smooth synthetic det stays away from zero, so a flat K suffices;
+        // the production map is κ-grounded in tolerances.toml). Was a magic 1e-2.
         let labels = Array2::from_elem((MG, MG), 1i32); // all in-ROI
         let cmf = crate::math::cortical_magnification_factor(&got, &labels);
-        let mut maxc = 0.0f64;
-        for r in 0..MG {
-            for c in 0..MG {
-                maxc = maxc.max((cmf[[r, c]] - cmf_g[r * MG + c]).abs());
-            }
-        }
-        eprintln!("CMF (1/|det J|) vs golden: max diff = {maxc:.3e}");
-        assert!(maxc < 1e-2, "cortical magnification factor diverges: {maxc:.3e}");
+        Tol::abs(256, Eps::F32).assert("CMF (1/|det J|)", cmf.as_slice().expect("contiguous"), &cmf_g);
     }
 
     /// patch_threshold: `AllenZhuang2017FixedSignMapThr` (|signMapf|≥0.35) and
@@ -340,14 +319,13 @@ mod tests {
         let t = Tensor::<Backend, 2>::from_data(TensorData::new(f32s, [G, G]), &device());
         let out = gaussian_smooth(t, 4.0);
         let ours = tensor_to_array2_f64(out).unwrap();
-        let mut maxd = 0.0f64;
-        for r in 0..G {
-            for c in 0..G {
-                maxd = maxd.max((ours[[r, c]] - golden[r * G + c]).abs());
-            }
-        }
-        eprintln!("tensor gaussian_smooth vs scipy (f32, sigma=4): max diff = {maxd:.3e}");
-        assert!(maxd < 1e-4, "tensor gaussian diverges from scipy: {maxd:.3e}");
+        // f32 separable convolution vs scipy f64; observed ≈ 5.9e-7 ≈ 5·ε_f32 →
+        // K=8. (Was a magic 1e-4.)
+        Tol::abs(8, Eps::F32).assert(
+            "tensor gaussian_smooth vs scipy",
+            ours.as_slice().expect("contiguous"),
+            &golden,
+        );
     }
 
     /// Stage-0 single-bin F1 DFT (`dft_projection_at_freq`) vs numpy
@@ -372,15 +350,10 @@ mod tests {
         let re = tensor_to_array2_f64(f1.real()).unwrap();
         let im = tensor_to_array2_f64(f1.imag()).unwrap();
 
-        let mut maxd = 0.0f64;
-        for r in 0..HW {
-            for c in 0..HW {
-                maxd = maxd.max((re[[r, c]] - f1_re[r * HW + c]).abs());
-                maxd = maxd.max((im[[r, c]] - f1_im[r * HW + c]).abs());
-            }
-        }
-        eprintln!("F1 DFT vs numpy fft bin1: max diff = {maxd:.3e}");
-        assert!(maxd < 1e-3, "DFT diverges from numpy fft bin 1: {maxd:.3e}");
+        // f32 length-24 DFT reduction vs numpy f64; observed ≈ 8.4e-6 ≈ 70·ε_f32
+        // → K=128. (Was a magic 1e-3.)
+        Tol::abs(128, Eps::F32).assert("F1 DFT re vs numpy", re.as_slice().expect("contiguous"), &f1_re);
+        Tol::abs(128, Eps::F32).assert("F1 DFT im vs numpy", im.as_slice().expect("contiguous"), &f1_im);
     }
 
     /// `responsiveness::reliability` (cross-cycle coherence `|ΣZ_k|/Σ|Z_k|`, the
@@ -405,14 +378,12 @@ mod tests {
             })
             .collect();
         let rel = tensor_to_array2_f64(reliability(&cycles)).expect("reliability");
-        let mut md = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                md = md.max((rel[[r, c]] - exp[r * W + c]).abs());
-            }
-        }
-        eprintln!("reliability vs coherence formula: max diff = {md:.2e}");
-        assert!(md < 1e-5, "reliability diverges from coherence formula: {md:.2e}");
+        // f32 coherence vs numpy f64; observed ≈ 1.9e-7 ≈ 1.6·ε_f32 → K=4.
+        Tol::abs(4, Eps::F32).assert(
+            "reliability vs coherence formula",
+            rel.as_slice().expect("contiguous"),
+            &exp,
+        );
     }
 
     /// `position_amplitude` (`0.5·(|fwd|+|rev|)`, the F1 magnitude = SNLC
@@ -432,14 +403,12 @@ mod tests {
         let fwd = Complex2::new(tensor2(fr, H, W), tensor2(fi, H, W));
         let rev = Complex2::new(tensor2(rr, H, W), tensor2(ri, H, W));
         let amp = tensor_to_array2_f64(position_amplitude(&fwd, &rev)).expect("amplitude");
-        let mut md = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                md = md.max((amp[[r, c]] - exp[r * W + c]).abs());
-            }
-        }
-        eprintln!("position_amplitude vs SNLC magS: max diff = {md:.2e}");
-        assert!(md < 1e-5, "position_amplitude diverges from SNLC magS: {md:.2e}");
+        // f32 magnitude vs numpy f64; observed ≈ 1.2e-7 ≈ 1·ε_f32 → K=2.
+        Tol::abs(2, Eps::F32).assert(
+            "position_amplitude vs SNLC magS",
+            amp.as_slice().expect("contiguous"),
+            &exp,
+        );
     }
 
     /// ΔF/F (`temporal_mean_baseline` + the dF/F formula) vs a verbatim
@@ -464,26 +433,28 @@ mod tests {
         let dff_exp = load_f32(include_bytes!("../../tests/golden/fixtures/dff_dff.bin"));
         let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
 
-        // (1) Baseline F0 = Allen np.mean(movie, axis=0).
+        // (1) Baseline F0 = Allen np.mean(movie, axis=0). Positive magnitude,
+        // f64 — relative, K covers the 20-frame reduction. Observed 0.
         let baseline = temporal_mean_baseline(&frames);
-        let mut f0d = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                f0d = f0d.max((baseline[[r, c]] - f0_exp[r * W + c]).abs());
-            }
-        }
-        assert!(f0d < 1e-9, "baseline F0 diverges from Allen mean: {f0d:.2e}");
+        Tol::rel(64, Eps::F64, 64).assert(
+            "baseline F0 vs Allen mean",
+            baseline.as_slice().expect("contiguous"),
+            &f0_exp,
+        );
 
-        // (2) dF/F (faithful path, floor=0) = Allen (F − F0)/F0.
+        // (2) dF/F (faithful path, floor=0) = Allen (F − F0)/F0, in f32; observed
+        // 0 → K=16 covers the f32 (sub, div) forward error.
         let idx: Vec<usize> = (0..N).collect();
         let dff_t = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0);
-        let got: Vec<f32> = dff_t.into_data().to_vec::<f32>().expect("dff to vec");
-        let mut md = 0.0f32;
-        for i in 0..N * H * W {
-            md = md.max((got[i] - dff_exp[i]).abs());
-        }
-        eprintln!("dF/F vs Allen normalizeMovie: F0 diff={f0d:.2e}, dF/F diff={md:.2e}");
-        assert!(md < 1e-5, "dF/F diverges from Allen normalizeMovie: {md:.2e}");
+        let got: Vec<f64> = dff_t
+            .into_data()
+            .to_vec::<f32>()
+            .expect("dff to vec")
+            .iter()
+            .map(|&v| f64::from(v))
+            .collect();
+        let dff_ref: Vec<f64> = dff_exp.iter().map(|&v| f64::from(v)).collect();
+        Tol::abs(16, Eps::F32).assert("dF/F vs Allen normalizeMovie", &got, &dff_ref);
     }
 
     /// `temporal_median_baseline` vs Allen `normalizeMovie(baselineType=
@@ -504,15 +475,14 @@ mod tests {
         let exp = load_f64(include_bytes!("../../tests/golden/fixtures/dff_f0_median.bin"));
         let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
 
+        // Median is a selection + (even N) average of two middles — essentially
+        // exact f64; observed 0 → K=8 covers the one averaging op.
         let med = temporal_median_baseline(&frames);
-        let mut d = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                d = d.max((med[[r, c]] - exp[r * W + c]).abs());
-            }
-        }
-        eprintln!("median baseline vs np.median: max diff = {d:.2e}");
-        assert!(d < 1e-9, "temporal_median_baseline diverges from np.median: {d:.2e}");
+        Tol::abs(8, Eps::F64).assert(
+            "median baseline vs np.median",
+            med.as_slice().expect("contiguous"),
+            &exp,
+        );
     }
 
     /// Provenance pin: the SNLC amplitude-weighted phasor smoothing's PHASE is
@@ -549,18 +519,12 @@ mod tests {
         let snlc_im = gaussian_smooth(amp_t * z.imag(), sigma);
         let snlc = tensor_to_array2_f64(Complex2::new(snlc_re, snlc_im).angle()).unwrap();
 
-        let mut maxd = 0.0f64;
-        for r in 0..M {
-            for c in 0..M {
-                // Wrap-aware angular difference.
-                let dphi = ours[[r, c]] - snlc[[r, c]];
-                maxd = maxd.max(dphi.sin().atan2(dphi.cos()).abs());
-            }
-        }
-        eprintln!("amp-weighted vs SNLC complex-smoothing phase: max diff = {maxd:.2e}");
-        assert!(
-            maxd < 1e-5,
-            "normalized amp-weighting must be phase-identical to SNLC: {maxd:.2e}"
+        // Phase is angular (radians, period 2π) → wrap-aware; observed ≈ 2.4e-7
+        // ≈ 2·ε_f32 → K=4.
+        Tol::wrap(std::f64::consts::TAU, 4, Eps::F32, 1.0).assert(
+            "amp-weighted vs SNLC complex-smoothing phase",
+            ours.as_slice().expect("contiguous"),
+            snlc.as_slice().expect("contiguous"),
         );
     }
 
@@ -592,16 +556,12 @@ mod tests {
         let scalar =
             tensor_to_array2_f64(gaussian_smooth(tensor2(phase, M, M), sigma)).unwrap();
 
-        let mut maxd = 0.0f64;
-        for r in 0..M {
-            for c in 0..M {
-                maxd = maxd.max((allen[[r, c]] - scalar[[r, c]]).abs());
-            }
-        }
-        eprintln!("Allen position-Gaussian vs scalar gaussian_smooth(phase): max diff = {maxd:.2e}");
-        assert!(
-            maxd < 1e-5,
-            "Allen position-Gaussian must equal the scipy-validated scalar Gaussian on phase: {maxd:.2e}"
+        // Same f32 Gaussian both ways on a non-wrapping ramp; observed ≈ 1.2e-7
+        // ≈ 1·ε_f32 → K=2.
+        Tol::abs(2, Eps::F32).assert(
+            "Allen position-Gaussian vs scalar gaussian on phase",
+            allen.as_slice().expect("contiguous"),
+            scalar.as_slice().expect("contiguous"),
         );
     }
 }
