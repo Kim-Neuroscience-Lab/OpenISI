@@ -90,6 +90,12 @@ pub struct RetinotopyMaps {
     pub alt_amplitude: Array2<f64>,
     pub vfs: Array2<f64>,
     pub magnification_raw: Array2<f64>,
+    /// Hemodynamic delay maps (degrees, `(0, 180]`) — SNLC `Gprocesskret.m`
+    /// `delay_hor`/`delay_vert`. `Some` only under delay-subtraction
+    /// cycle-combine; `None` for the unweighted-average method. Carried with
+    /// the retinotopy bundle so they cache/restore as a unit.
+    pub azi_delay: Option<Array2<f64>>,
+    pub alt_delay: Option<Array2<f64>>,
 }
 
 /// Spectral responsiveness maps — per-orientation signal-quality metrics
@@ -218,6 +224,15 @@ pub struct AnalysisResult {
     /// imported data path where only cycle-averaged complex maps exist.
     /// Source of truth for `cortex_mask` when present.
     pub reliability: Option<ReliabilityMaps>,
+
+    /// Hemodynamic delay maps (degrees, in `(0, 180]`) — the SNLC
+    /// `Gprocesskret.m` `delay_hor`/`delay_vert`: the forward+reverse-symmetric
+    /// phase, separated from the antisymmetric retinotopic position. Present
+    /// only under delay-subtraction cycle-combine (the `UnweightedCycleAverage`
+    /// method does no delay correction, so it has no delay to report); `None`
+    /// otherwise. Full-frame (unmasked), like the phase maps.
+    pub azi_delay: Option<Array2<f64>>,
+    pub alt_delay: Option<Array2<f64>>,
 }
 
 /// Result of raw frame processing: complex maps plus optional spectral

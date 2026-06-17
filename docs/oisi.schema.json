@@ -495,6 +495,42 @@
           "dtype": "f64",
           "shape": "(H, W)"
         },
+        "alt_delay": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Altitude hemodynamic delay (deg, SNLC delay_vert).",
+          "dtype": "f64",
+          "present_when": "delay-subtraction cycle-combine",
+          "shape": "(H, W)"
+        },
         "alt_phase": {
           "attributes": {
             "display_max": {
@@ -673,6 +709,42 @@
           },
           "doc": "Azimuth response amplitude.",
           "dtype": "f64",
+          "shape": "(H, W)"
+        },
+        "azi_delay": {
+          "attributes": {
+            "display_max": {
+              "doc": "Upper bound of the display range.",
+              "dtype": "f64"
+            },
+            "display_min": {
+              "doc": "Lower bound of the display range.",
+              "dtype": "f64"
+            },
+            "nan_means": {
+              "doc": "Semantic of NaN (empty if no NaN).",
+              "dtype": "VarLenUnicode"
+            },
+            "palette": {
+              "doc": "Colormap key (hsv_circular | jet | hot | binary | categorical).",
+              "dtype": "VarLenUnicode"
+            },
+            "units": {
+              "doc": "Value units (rad | deg | unitless | bool | label).",
+              "dtype": "VarLenUnicode"
+            },
+            "wrap_period": {
+              "doc": "Circular wrap period (0 = non-circular).",
+              "dtype": "f64"
+            },
+            "zero_means": {
+              "doc": "Sentinel meaning of literal 0 (empty if 0 is a value).",
+              "dtype": "VarLenUnicode"
+            }
+          },
+          "doc": "Azimuth hemodynamic delay (deg, SNLC delay_hor).",
+          "dtype": "f64",
+          "present_when": "delay-subtraction cycle-combine",
           "shape": "(H, W)"
         },
         "azi_phase": {

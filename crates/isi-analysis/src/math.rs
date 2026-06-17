@@ -118,8 +118,11 @@ pub fn compute_retinotopy(
     let alt_amp_t = compute::position_amplitude(&l_fwd, &l_rev);
 
     check_cancel(cancel)?;
-    // Stage 1 — cycle combine.
+    // Stage 1 — cycle combine. The delay maps (SNLC `Gprocesskret` delay_hor/
+    // _vert) are a byproduct of the same fwd+rev combine — `Some` only when the
+    // method does delay subtraction. Computed lazily here; downloaded below.
     let (azi_z, alt_z) = params.cycle_combine.apply(&a_fwd, &a_rev, &l_fwd, &l_rev);
+    let delays_t = params.cycle_combine.delays(&a_fwd, &a_rev, &l_fwd, &l_rev);
 
     check_cancel(cancel)?;
     // Stage 2 — position phasor smoothing.
@@ -148,6 +151,18 @@ pub fn compute_retinotopy(
     let alt_phase = compute::tensor_to_array2_f64(alt_z_s.angle())?;
     let azi_amplitude = compute::tensor_to_array2_f64(azi_amp_t)?;
     let alt_amplitude = compute::tensor_to_array2_f64(alt_amp_t)?;
+    // Delay maps: radians (0, π] → degrees (0, 180] (SNLC `delay*180/pi`),
+    // unmasked. `None` passes straight through for non-delay-subtraction.
+    let (azi_delay, alt_delay) = match delays_t {
+        Some((az, al)) => {
+            let to_deg = (180.0 / PI) as f32;
+            (
+                Some(compute::tensor_to_array2_f64(az.mul_scalar(to_deg))?),
+                Some(compute::tensor_to_array2_f64(al.mul_scalar(to_deg))?),
+            )
+        }
+        None => (None, None),
+    };
 
     // Assemble the result: derive the degree-scaled phase maps, then pack the
     // struct by named field (so the six same-shaped `Array2<f64>` maps can't be
@@ -171,6 +186,8 @@ pub fn compute_retinotopy(
         alt_amplitude,
         vfs,
         magnification_raw,
+        azi_delay,
+        alt_delay,
     })
 }
 

@@ -146,6 +146,10 @@ fn assemble(st: PipelineState) -> Result<AnalysisResult, AnalysisError> {
         // `Projection` or seeded by the boundary — carried straight through.
         responsiveness: st.responsiveness,
         reliability: st.reliability,
+        // Delay maps ride with the retinotopy bundle (Some only under
+        // delay-subtraction cycle-combine).
+        azi_delay: retino.azi_delay,
+        alt_delay: retino.alt_delay,
     })
 }
 

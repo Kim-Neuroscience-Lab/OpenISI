@@ -216,6 +216,8 @@ pub mod name {
     pub const RELIABILITY_AZI_REV: &str = "reliability_azi_rev";
     pub const RELIABILITY_ALT_FWD: &str = "reliability_alt_fwd";
     pub const RELIABILITY_ALT_REV: &str = "reliability_alt_rev";
+    pub const AZI_DELAY: &str = "azi_delay";
+    pub const ALT_DELAY: &str = "alt_delay";
 
     // /results MapMeta per-dataset attributes.
     pub const PALETTE: &str = "palette";
@@ -405,6 +407,8 @@ const RESULTS_DATASETS: &[Dataset] = &[
     result_f64(n::RELIABILITY_AZI_REV, When("raw acquisition path"), "Azimuth rev cross-cycle reliability."),
     result_f64(n::RELIABILITY_ALT_FWD, When("raw acquisition path"), "Altitude fwd cross-cycle reliability."),
     result_f64(n::RELIABILITY_ALT_REV, When("raw acquisition path"), "Altitude rev cross-cycle reliability."),
+    result_f64(n::AZI_DELAY, When("delay-subtraction cycle-combine"), "Azimuth hemodynamic delay (deg, SNLC delay_hor)."),
+    result_f64(n::ALT_DELAY, When("delay-subtraction cycle-combine"), "Altitude hemodynamic delay (deg, SNLC delay_vert)."),
 ];
 
 /// The canonical `.oisi` layout.

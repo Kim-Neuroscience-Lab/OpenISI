@@ -253,6 +253,11 @@ pub fn read_retinotopy_maps(path: &Path) -> Result<Option<crate::RetinotopyMaps>
             alt_amplitude,
             vfs,
             magnification_raw,
+            // Delay maps are method-conditional (absent under unweighted
+            // combine, or in files from before the leaf existed). Read as
+            // optional — their absence does NOT defeat the retinotopy restore.
+            azi_delay: read_result_map(path, "azi_delay").ok(),
+            alt_delay: read_result_map(path, "alt_delay").ok(),
         })),
         _ => Ok(None),
     }
@@ -916,6 +921,15 @@ pub fn write_results(
     write_mask(name::CONTOURS_AZI, &result.contours_azi)?;
     write_mask(name::CONTOURS_ALT, &result.contours_alt)?;
 
+    // Hemodynamic delay maps (SNLC Gprocesskret delay_hor/_vert) — present only
+    // under delay-subtraction cycle-combine, so written conditionally.
+    if let Some(ref d) = result.azi_delay {
+        write_f64(name::AZI_DELAY, d)?;
+    }
+    if let Some(ref d) = result.alt_delay {
+        write_f64(name::ALT_DELAY, d)?;
+    }
+
     if let Some(ref r) = result.responsiveness {
         write_f64(name::SPECTRAL_SNR_AZI, &r.spectral_snr_azi)?;
         write_f64(name::SPECTRAL_SNR_ALT, &r.spectral_snr_alt)?;
@@ -1446,6 +1460,8 @@ mod tests {
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,
             reliability: None,
+            azi_delay: None,
+            alt_delay: None,
         };
 
         create(tmp.path(), "test").unwrap();
@@ -1531,6 +1547,8 @@ mod tests {
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,
             reliability: None,
+            azi_delay: None,
+            alt_delay: None,
         };
 
         create(tmp.path(), "test").unwrap();
@@ -1655,6 +1673,8 @@ mod tests {
             contours_alt: Array2::from_elem((h, w), false),
             responsiveness: None,
             reliability: None,
+            azi_delay: None,
+            alt_delay: None,
         };
 
         create(tmp.path(), "test").unwrap();

@@ -150,6 +150,22 @@ pub fn meta_for_f64(name: &str, data: &Array2<f64>, acquisition: &AcquisitionPro
                 zero_means: lit(""),
             }
         }
+        // Hemodynamic delay (SNLC Gprocesskret delay_hor/_vert): a full-frame
+        // angular magnitude in degrees, (0, 180]. Non-circular (it's a delay
+        // length, not a wrapping phase) → jet over the finite data range, no
+        // sentinel (0 is a valid near-flip delay, not "no data").
+        "azi_delay" | "alt_delay" => {
+            let (lo, hi) = finite_range(data);
+            MapMeta {
+                palette: lit("jet"),
+                units: lit("deg"),
+                display_min: lo,
+                display_max: hi,
+                wrap_period: 0.0,
+                nan_means: lit(""),
+                zero_means: lit(""),
+            }
+        }
         // Eccentricity: jet over the 2-98 percentile of valid pixels.
         // `0.0` is the native compute_eccentricity sentinel for
         // pixels outside any segmented patch (`area_labels == 0`).

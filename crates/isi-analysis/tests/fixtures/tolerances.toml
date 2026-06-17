@@ -119,6 +119,17 @@ atol = 3.05e-5
 rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max ≈ 85 000 (cancellation in det)
 atol = 3.05e-5
 
+# ── Delay maps (degrees, (0,180], present under delay-subtraction) ──────
+# Angular magnitude → relative, like eccentricity; atol floors the near-zero
+# (flip-region) pixels. Same K=512 propagation as the phase maps the delay is
+# derived from (atan2 + sign correction). Absent for unweighted-average combine.
+[results.azi_delay]
+rtol = 6.10e-5   # 512·ε
+atol = 6.10e-5
+[results.alt_delay]
+rtol = 6.10e-5
+atol = 6.10e-5
+
 # ── Optional responsiveness / reliability (raw-acquisition inputs only) ─
 [results.spectral_snr_azi]
 rtol = 1.22e-4   # 1024·ε

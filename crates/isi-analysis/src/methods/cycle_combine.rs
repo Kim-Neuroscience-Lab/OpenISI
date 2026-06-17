@@ -27,6 +27,22 @@ pub trait CycleCombineExt {
         alt_fwd: &compute::Complex2,
         alt_rev: &compute::Complex2,
     ) -> (compute::Complex2, compute::Complex2);
+
+    /// The per-orientation hemodynamic **delay maps** (radians, in `(0, π]`),
+    /// when this method performs delay subtraction. `Some((azi, alt))` for
+    /// Kalatsky-Stryker; `None` for methods that do no delay correction (the
+    /// delay is *undefined*, not zero — so the output leaf is simply absent).
+    /// Keeping the variant knowledge here, not in `math`, mirrors `apply`.
+    fn delays(
+        &self,
+        azi_fwd: &compute::Complex2,
+        azi_rev: &compute::Complex2,
+        alt_fwd: &compute::Complex2,
+        alt_rev: &compute::Complex2,
+    ) -> Option<(
+        burn_tensor::Tensor<compute::Backend, 2>,
+        burn_tensor::Tensor<compute::Backend, 2>,
+    )>;
 }
 
 impl CycleCombineExt for CycleCombineMethod {
@@ -43,6 +59,26 @@ impl CycleCombineExt for CycleCombineMethod {
                 compute::position_phasor_delay_subtracted(alt_fwd, alt_rev),
             ),
             Self::UnweightedCycleAverage => (azi_fwd.clone(), alt_fwd.clone()),
+        }
+    }
+
+    fn delays(
+        &self,
+        azi_fwd: &compute::Complex2,
+        azi_rev: &compute::Complex2,
+        alt_fwd: &compute::Complex2,
+        alt_rev: &compute::Complex2,
+    ) -> Option<(
+        burn_tensor::Tensor<compute::Backend, 2>,
+        burn_tensor::Tensor<compute::Backend, 2>,
+    )> {
+        match self {
+            Self::KalatskyStryker2003DelaySubtraction => Some((
+                compute::delay_map(azi_fwd, azi_rev),
+                compute::delay_map(alt_fwd, alt_rev),
+            )),
+            // No delay subtraction → no delay map (undefined, not zero).
+            Self::UnweightedCycleAverage => None,
         }
     }
 }
