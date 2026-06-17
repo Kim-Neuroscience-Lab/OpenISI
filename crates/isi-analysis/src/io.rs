@@ -270,6 +270,13 @@ pub fn read_stage_fingerprint(path: &Path, stage: &str) -> Result<Option<String>
     let Ok(group) = file.group("analysis_state") else {
         return Ok(None);
     };
+    // Distinguish "no fingerprint for this stage yet" (benign → None, recompute)
+    // from "the fingerprint attribute is present but won't open" (corruption →
+    // loud error, not silently swallowed as a cache miss).
+    let present = group
+        .attr_names()
+        .map(|names| names.iter().any(|n| n == stage))
+        .unwrap_or(false);
     match group.attr(stage) {
         Ok(a) => {
             let s = a
@@ -277,6 +284,10 @@ pub fn read_stage_fingerprint(path: &Path, stage: &str) -> Result<Option<String>
                 .map_err(|e| AnalysisError::hdf5(format!("reading fingerprint {stage}"), e))?;
             Ok(Some(s.as_str().to_string()))
         }
+        Err(e) if present => Err(AnalysisError::hdf5(
+            format!("fingerprint {stage} present but unreadable (corrupt /analysis_state)"),
+            e,
+        )),
         Err(_) => Ok(None),
     }
 }

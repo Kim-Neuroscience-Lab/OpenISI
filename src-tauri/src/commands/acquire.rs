@@ -203,7 +203,15 @@ pub fn save_acquisition(state: State<'_, SharedState>, path: Option<String>) -> 
         } else {
             std::path::PathBuf::from(data_dir)
         };
-        let _ = std::fs::create_dir_all(&dir);
+        // Surface a save-directory failure (permissions / disk-full) here, with
+        // the path, instead of swallowing it and failing later with a confusing
+        // "file not found / rename failed" whose real cause is hidden.
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            AppError::Io(std::io::Error::new(
+                e.kind(),
+                format!("failed to create output directory {}: {e}", dir.display()),
+            ))
+        })?;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

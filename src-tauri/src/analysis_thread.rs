@@ -42,18 +42,33 @@ pub fn run(cmd_rx: Receiver<AnalysisCmd>, evt_tx: Sender<AnalysisEvt>) {
                 // emits `Cancelled` then exits.
                 if let Some((cancel, handle)) = current.take() {
                     cancel.store(true, Ordering::Relaxed);
-                    let _ = handle.join();
+                    join_worker(handle);
                 }
                 current = Some(spawn_inner(*req, evt_tx.clone()));
             }
             AnalysisCmd::Shutdown => {
                 if let Some((cancel, handle)) = current.take() {
                     cancel.store(true, Ordering::Relaxed);
-                    let _ = handle.join();
+                    join_worker(handle);
                 }
                 break;
             }
         }
+    }
+}
+
+/// Join a preempted/shutdown analysis worker, surfacing a panic instead of
+/// swallowing it. A `join()` error means the worker thread *panicked* (a normal
+/// analysis error is reported via an `AnalysisEvt`, not a panic), which must not
+/// vanish silently — it points to a real bug in the pipeline.
+fn join_worker(handle: JoinHandle<()>) {
+    if let Err(panic) = handle.join() {
+        let msg = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        tracing::error!(panic = msg, "analysis worker thread panicked");
     }
 }
 
