@@ -20,8 +20,9 @@ mod tests {
     use crate::compute::responsiveness::reliability;
     use crate::compute::{
         amp_weighted_complex_smooth, compute_magnification_jacobian, compute_vfs, delay_map,
-        device, gaussian_smooth, phase_gradients, position_amplitude, position_gaussian_smooth,
-        position_phasor_delay_subtracted, real_gradients, tensor_to_array2_f64, Backend, Complex2,
+        device, gaussian_smooth, magnification_anisotropy, phase_gradients, position_amplitude,
+        position_gaussian_smooth, position_phasor_delay_subtracted, real_gradients,
+        tensor_to_array2_f64, Backend, Complex2,
     };
     use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
     use crate::test_support::{count_differing, load_f32, load_f64};
@@ -192,6 +193,51 @@ mod tests {
             maxd < tol,
             "delay_map diverges from Gprocesskret: {maxd:.3e} > {tol:.3e}"
         );
+    }
+
+    /// `magnification_anisotropy` vs SNLC `getMagFactors.m` (`prefAxisMF` +
+    /// `Distrtion`): the doubled-angle anisotropy of the visual-field Jacobian.
+    /// The axis is compared **circularly** (period 180°) so a pixel near the
+    /// 0/180 wrap can't create a false diff; distortion is a bounded `[0,1]`
+    /// magnitude → absolute diff. Fixtures from `gen_maganiso_golden.py` (the
+    /// same four gradients the op consumes).
+    #[test]
+    fn magnification_anisotropy_matches_snlc_getmagfactors() {
+        const M: usize = 48;
+        let g = |b: &[u8]| tensor2(load_f64(b).iter().map(|&v| v as f32).collect(), M, M);
+        let dhdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdx.bin"));
+        let dhdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdy.bin"));
+        let dvdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdx.bin"));
+        let dvdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdy.bin"));
+        let axis_gold = load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_axis.bin"));
+        let dist_gold =
+            load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_distortion.bin"));
+
+        let (axis_t, dist_t) = magnification_anisotropy(dhdx, dhdy, dvdx, dvdy);
+        let axis = tensor_to_array2_f64(axis_t).unwrap();
+        let dist = tensor_to_array2_f64(dist_t).unwrap();
+
+        let (mut max_axis, mut max_dist) = (0.0f64, 0.0f64);
+        for i in 0..M {
+            for j in 0..M {
+                let d = (axis[[i, j]] - axis_gold[i * M + j]).abs();
+                max_axis = max_axis.max(d.min(180.0 - d)); // circular, period 180
+                max_dist = max_dist.max((dist[[i, j]] - dist_gold[i * M + j]).abs());
+            }
+        }
+        eprintln!(
+            "maganiso vs SNLC getMagFactors: max axis diff = {max_axis:.3e} deg, \
+             max distortion diff = {max_dist:.3e}"
+        );
+        // Grounded in the OBSERVED f32-vs-f64 drift on this fixture, rounded UP
+        // to the next power-of-two K·ε_f32 with margin (not a loose round number):
+        //   distortion ≈ 2.1e-7 ≈ 1.7·ε_f32  → K=8   (bounded magnitude → atol)
+        //   axis       ≈ 4.4e-5 deg ≈ 7.7e-7 rad ≈ 6.5·ε_f32 → K=16 (angular,
+        //              bound in radians then scaled to degrees ×180/π)
+        let dist_tol = 8.0 * f64::from(f32::EPSILON); // ≈ 9.5e-7
+        let axis_tol = 16.0 * f64::from(f32::EPSILON) * (180.0 / std::f64::consts::PI); // ≈ 1.09e-4 deg
+        assert!(max_dist < dist_tol, "distortion: {max_dist:.3e} > {dist_tol:.3e}");
+        assert!(max_axis < axis_tol, "axis: {max_axis:.3e} > {axis_tol:.3e}");
     }
 
     /// `math::eccentricity_pixel_deg` (the core of

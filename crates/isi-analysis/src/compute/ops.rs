@@ -194,6 +194,55 @@ pub fn compute_magnification_jacobian(
     det.abs().mul_scalar((scale_azi * scale_alt) as f32)
 }
 
+/// Magnification **anisotropy** — SNLC `getMagFactors.m` `prefAxisMF`
+/// (preferred-axis, degrees in `[0, 180)`) and `Distrtion` (distortion /
+/// anisotropy coherence, dimensionless `[0, 1]`). Returns `(axis_deg,
+/// distortion)`.
+///
+/// Verbatim from `getMagFactors.m` (the post-`gradient` block): take each
+/// retinotopy map's gradient as a complex vector, double its angle after a
+/// +π/2 rotation, magnitude-weight, sum the two, normalize by total magnitude.
+/// The resultant's magnitude is the distortion; half its argument is the
+/// preferred axis.
+///
+/// ```text
+/// vecH = dh/dx + i·dh/dy ;  vecV = dv/dx + i·dv/dy
+/// Res  = ( |vecH|·exp(i·2(∠vecH+π/2)) + |vecV|·exp(i·2(∠vecV+π/2)) )
+///        / ( |vecH| + |vecV| )
+/// Distrtion  = |Res|
+/// prefAxisMF = ∠Res / 2 · 180/π   (+180 where negative → [0, 180))
+/// ```
+///
+/// These are the OTHER invariants of the **same Jacobian** whose determinant is
+/// `compute_magnification_jacobian` — hence the same four gradient fields, no
+/// recomputation. Full-frame and calibration-free (no `pixpermm`, unlike the
+/// determinant's physical units). Reproduced literally (not algebraically
+/// reduced) so the SNLC golden compares directly.
+pub fn magnification_anisotropy(
+    d_azi_dx: Tensor<Backend, 2>,
+    d_azi_dy: Tensor<Backend, 2>,
+    d_alt_dx: Tensor<Backend, 2>,
+    d_alt_dy: Tensor<Backend, 2>,
+) -> (Tensor<Backend, 2>, Tensor<Backend, 2>) {
+    let vec_h = Complex2::new(d_azi_dx, d_azi_dy);
+    let vec_v = Complex2::new(d_alt_dx, d_alt_dy);
+    let abs_h = vec_h.abs();
+    let abs_v = vec_v.abs();
+    // term = |vec| · exp(i·2(∠vec + π/2)); build re/im explicitly.
+    let two = 2.0_f32;
+    let phi_h = vec_h.angle().add_scalar(std::f32::consts::FRAC_PI_2).mul_scalar(two);
+    let phi_v = vec_v.angle().add_scalar(std::f32::consts::FRAC_PI_2).mul_scalar(two);
+    let res_re = abs_h.clone() * phi_h.clone().cos() + abs_v.clone() * phi_v.clone().cos();
+    let res_im = abs_h.clone() * phi_h.sin() + abs_v.clone() * phi_v.sin();
+    let denom = abs_h + abs_v;
+    let res = Complex2::new(res_re / denom.clone(), res_im / denom);
+    let distortion = res.abs();
+    // prefAxisMF = ∠Res/2 · 180/π = ∠Res · (90/π); then +180 where < 0 → [0,180).
+    let axis = res.angle().mul_scalar(90.0_f32 / std::f32::consts::PI);
+    let below = axis.clone().lower_elem(0.0).float().mul_scalar(180.0);
+    (axis + below, distortion)
+}
+
 /// Wrap-free phase gradients via the chain rule on the complex phasor.
 ///
 /// For `z = c + i·s`, `∂φ/∂x = (c·∂s/∂x − s·∂c/∂x) / (c² + s²)`, with the
