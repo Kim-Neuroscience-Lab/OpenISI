@@ -21,6 +21,8 @@ Definition of Done). Everything else is the *how* for one concern:
 | **`.oisi` data format** — the on-disk contract | [`oisi.schema.json`](oisi.schema.json) |
 | Interoperability — NWB / DANDI export | [`INTEROP_NWB.md`](INTEROP_NWB.md) |
 | Scientific-validation status (against the field's oracles) | [`VALIDATION_SCORECARD.md`](VALIDATION_SCORECARD.md) |
+| Synthetic ground-truth validation — the cited forward-model methodology | [`SYNTHETIC_VALIDATION.md`](SYNTHETIC_VALIDATION.md) |
+| Foundation audit — crash/integrity/re-entrancy/determinism state + how to re-verify | [`FOUNDATION_AUDIT.md`](FOUNDATION_AUDIT.md) |
 | UI architecture (the build-less vanilla-JS frontend) | [`UI_ARCHITECTURE.md`](UI_ARCHITECTURE.md) |
 | Release roadmap & milestones (Alpha / Beta / v1) | [`ROADMAP.md`](ROADMAP.md) |
 | Dev workflows (generated figures, etc.) | [`DEV_FIGURES.md`](DEV_FIGURES.md) |

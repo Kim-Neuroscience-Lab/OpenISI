@@ -89,3 +89,8 @@ integrity, error surfacing, re-entrancy, determinism, schema drift), why they ma
 each was verified, and the known residual risk you inherit — read
 [`FOUNDATION_AUDIT.md`](FOUNDATION_AUDIT.md). It also has the exact commands to re-verify
 the foundation holds after your change.
+
+For **how we know the science is correct** (beyond matching the reference oracles): the
+forward-model **synthetic ground-truth** methodology — generate a raw movie from a known
+retinotopy and measure recovery — is designed and cited in
+[`SYNTHETIC_VALIDATION.md`](SYNTHETIC_VALIDATION.md).
