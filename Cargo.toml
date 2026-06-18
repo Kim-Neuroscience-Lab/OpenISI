@@ -12,6 +12,9 @@ members = [
     # Dev-only numerical-agreement test utility (ε-grounded Tol + one
     # comparator), shared by the goldens and the equivalence harness.
     "crates/agreement",
+    # Dev-only synthetic ground-truth retinotopy generator (correctness/stress
+    # validation). See docs/SYNTHETIC_VALIDATION.md.
+    "crates/synth",
 ]
 
 # Optimize compute-heavy crates even in dev builds.

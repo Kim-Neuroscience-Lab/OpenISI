@@ -1,0 +1,9 @@
+[package]
+name = "synth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Dev-only synthetic ground-truth retinotopy generator: analytic forward model (complex-log/wedge-dipole map → Kalatsky-Stryker encoding → realism layer) for correctness/stress validation. See docs/SYNTHETIC_VALIDATION.md. Never a runtime dependency of the app or library."
+
+[dependencies]
+ndarray = "0.17"

@@ -6368,6 +6368,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+]
+
+[[package]]
 name = "sys-locale"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
