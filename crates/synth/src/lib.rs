@@ -16,4 +16,5 @@
 //!
 //! Nothing depends on this crate, so the app/release build never compiles it.
 
+pub mod encode;
 pub mod map;

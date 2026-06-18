@@ -7,3 +7,7 @@ description = "Dev-only synthetic ground-truth retinotopy generator: analytic fo
 
 [dependencies]
 ndarray = "0.17"
+
+[dev-dependencies]
+# The shared ε-grounded comparator, for the encode→DFT recovery tests.
+agreement = { path = "../agreement" }

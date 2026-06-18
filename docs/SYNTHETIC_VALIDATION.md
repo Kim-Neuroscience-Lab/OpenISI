@@ -1,9 +1,38 @@
 # Synthetic ground-truth validation — methodology
 
-Status: **design / methodology** (the generator + stress battery are not yet
-built; this is the cited rationale and plan). Companion to
-[`VALIDATION_SCORECARD.md`](VALIDATION_SCORECARD.md) (what we validate today) and
-[`PIPELINE_METHODS.md`](PIPELINE_METHODS.md) (the methods + their oracles).
+Companion to [`VALIDATION_SCORECARD.md`](VALIDATION_SCORECARD.md) (what we
+validate today) and [`PIPELINE_METHODS.md`](PIPELINE_METHODS.md) (the methods +
+their oracles).
+
+## Status & scope (read this first)
+
+**Built** (`crates/synth`, dev-only): the bedrock forward-model primitives — the
+analytic ground-truth map (`map::LogMap`) and the Kalatsky–Stryker encoder
+(`encode`), both unit-tested against their known properties (conformality ⇒
+field sign +1; closed-form magnification; DFT-recovers-the-encoded-phase;
+delay-subtraction separation).
+
+**Deferred** (designed below, not built): the `.oisi` assembly + full-pipeline
+recover-and-compare, the hardened forward model (multi-area mouse layout, the
+hemodynamic realism layer, the provably-non-circular geometry-mediated mapping),
+the **cross-implementation benchmark**, and publication.
+
+**Why deferred — the honest cost/benefit.** OpenISI's thesis is *faithful
+recapitulation of the field's methods*, and we already validate that
+bit-identically against the field's accepted-correct oracles (SNLC/Garrett,
+Allen/Zhuang). For this tool, "we reproduce the validated standard" is the
+*primary* correctness claim; synthetic ground truth (recovery of an idealized
+model *we* built) is a valuable but **incremental** complement, and it is not on
+the critical path to Alpha (live-rig + UI) or Beta (self-containment). The
+primitives above are a low-cost down payment that keeps the design alive; the
+rest is completed when it is the highest-value work — and the full
+cross-implementation, openly-released benchmark is a **separate paper-scale
+contribution** (it would validate the field's *other* tools against ground truth
+too, the way the pRF validation framework tested four implementations), with its
+own research risk (defending a mouse forward model; showing the synthetic data
+predicts real-data accuracy). The interface seam — "run on an `.oisi`, read back
+`/results`" — is the cheap-now/expensive-later choice that keeps that paper a
+natural extension rather than a rewrite.
 
 ## Why this exists — the gap synthetic data fills
 
