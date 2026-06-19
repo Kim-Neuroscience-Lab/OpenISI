@@ -44,6 +44,18 @@ pub struct QualityThresholds {
 
 impl Default for QualityThresholds {
     fn default() -> Self {
+        // Operational drop/jitter heuristics, not derived constants — defaults for
+        // tunable rig params (`timing_anomaly_factor`/`warmup_frames` are overridden
+        // from `rig.system.*` at runtime). Rationale:
+        //  - timing_anomaly_factor 1.5: a frame interval >1.5× the median is flagged
+        //    as a timing anomaly. 1.5× sits clearly above normal scheduler jitter
+        //    (typically <1.2×) yet below a full dropped frame (≥2×), so it catches
+        //    "late" frames without firing on noise. Tunable per camera/bus.
+        //  - warmup_frames 10: the first frames carry USB/driver settling + thread
+        //    warmup; excluded from anomaly stats. 10 is conservative for USB3; raise
+        //    on slower buses. Tunable.
+        //  - max_jitter_fraction 0.10: flag the run if frame-interval std exceeds 10%
+        //    of the mean — a coarse "timing was unstable" gate, not a precision bound.
         Self {
             timing_anomaly_factor: 1.5,
             warmup_frames: 10,

@@ -198,6 +198,51 @@ pub struct OisiBundle<'a> {
     pub stimulus_timing_validatable: bool,
 }
 
+/// Camera↔system clock offset `(start_offset_us, end_offset_us, drift_us)`, all in
+/// the camera-hardware-vs-system sense `system − hardware`.
+///
+/// Two correctness properties the naive first/last difference lacked:
+///   1. **Midnight-wrap unwrap.** The camera hardware timestamp is µs-since-midnight
+///      and rolls over at 86_400 s. A genuine camera↔system drift over a session is
+///      µs–ms, so any ~day-scale fall-back in the hardware series is a midnight wrap,
+///      not drift; we unwrap it before fitting (else a midnight-spanning run reports
+///      a spurious ~86.4 s "drift").
+///   2. **Least-squares drift over ALL frames**, not a 2-point first/last difference
+///      that a single outlier endpoint (a USB stall / scheduler hiccup on frame 0 or
+///      N) would wholly corrupt. `start`/`end` are the fitted offsets at the first
+///      and last frame; `drift = end − start`.
+fn camera_clock_offsets(system_us: &[i64], hardware_us: &[i64]) -> (i64, i64, i64) {
+    const DAY_US: i64 = 86_400_000_000;
+    let n = system_us.len();
+    // Per-frame offset, unwrapping the hardware clock's midnight rollover.
+    let mut wrap = 0i64;
+    let mut t = Vec::with_capacity(n);
+    let mut o = Vec::with_capacity(n);
+    for i in 0..n {
+        if i > 0 && hardware_us[i] + DAY_US / 2 < hardware_us[i - 1] {
+            wrap += DAY_US; // hardware fell back ~a day → crossed midnight
+        }
+        t.push((system_us[i] - system_us[0]) as f64);
+        o.push((system_us[i] - (hardware_us[i] + wrap)) as f64);
+    }
+    // Ordinary least-squares slope of offset vs. elapsed system time.
+    let nf = n as f64;
+    let tbar = t.iter().sum::<f64>() / nf;
+    let obar = o.iter().sum::<f64>() / nf;
+    let (mut sxx, mut sxy) = (0.0_f64, 0.0_f64);
+    for i in 0..n {
+        let dt = t[i] - tbar;
+        sxx += dt * dt;
+        sxy += dt * (o[i] - obar);
+    }
+    let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+    let intercept = obar - slope * tbar;
+    let duration = *t.last().unwrap_or(&0.0);
+    let start_offset = intercept.round() as i64;
+    let end_offset = (intercept + slope * duration).round() as i64;
+    (start_offset, end_offset, end_offset - start_offset)
+}
+
 pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     use isi_analysis::io;
 
@@ -326,17 +371,16 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         .map(|&ts| (ts - t0_us) as f64 / 1_000_000.0)
         .collect();
 
-    // Clock synchronization: offset between camera hardware clock and system clock.
-    // offset = system_us - hardware_us. Computed at first and last frame for drift detection.
+    // Clock synchronization: camera-hardware↔system-clock offset (system − hardware)
+    // at start and end, with drift fit by least-squares over ALL frames (robust to a
+    // single bad endpoint) and the hardware clock's daily rollover unwrapped.
     let clock_sync = if camera_data.system_timestamps_us.len() >= 2
         && camera_data.hardware_timestamps_us.len() >= 2
     {
-        let start_offset =
-            camera_data.system_timestamps_us[0] - camera_data.hardware_timestamps_us[0];
-        let n = camera_data.system_timestamps_us.len();
-        let end_offset =
-            camera_data.system_timestamps_us[n - 1] - camera_data.hardware_timestamps_us[n - 1];
-        Some((start_offset, end_offset))
+        Some(camera_clock_offsets(
+            &camera_data.system_timestamps_us,
+            &camera_data.hardware_timestamps_us,
+        ))
     } else {
         None
     };
@@ -367,10 +411,10 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         .create_group(name::CLOCK_SYNC)
         .map_err(|e| hdf5_err("Failed to create clock_sync group", e))?;
     isi_analysis::io::write_f64_attr(&sync_group, name::T0_SYSTEM_US, t0_us as f64)?;
-    if let Some((start_off, end_off)) = clock_sync {
+    if let Some((start_off, end_off, drift)) = clock_sync {
         isi_analysis::io::write_f64_attr(&sync_group, name::START_OFFSET_US, start_off as f64)?;
         isi_analysis::io::write_f64_attr(&sync_group, name::END_OFFSET_US, end_off as f64)?;
-        isi_analysis::io::write_f64_attr(&sync_group, name::DRIFT_US, (end_off - start_off) as f64)?;
+        isi_analysis::io::write_f64_attr(&sync_group, name::DRIFT_US, drift as f64)?;
     }
 
     // ── Write timing characterization ───────────────────────────
@@ -787,6 +831,43 @@ fn encode_16bit_to_png(pixels: &[u16], width: u32, height: u32) -> Option<Vec<u8
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn camera_clock_offsets_unwraps_midnight_and_resists_endpoint_outliers() {
+        const DAY_US: i64 = 86_400_000_000;
+        // 100 frames at 10 ms, system clock monotonic; hardware = system − 1000 µs
+        // (a constant 1 ms offset → zero true drift), but the hardware clock crosses
+        // midnight partway through (rolls back by a day).
+        let n = 100;
+        let mut system = Vec::with_capacity(n);
+        let mut hardware = Vec::with_capacity(n);
+        let base_hw = DAY_US - 300_000; // start 300 ms before midnight
+        for i in 0..n {
+            let sys = 1_000_000_000 + (i as i64) * 10_000; // arbitrary QPC origin
+            system.push(sys);
+            // hardware = µs-since-midnight, wrapping; constant 1 ms behind system.
+            hardware.push((base_hw + (i as i64) * 10_000 - 1_000).rem_euclid(DAY_US));
+        }
+        let (start, end, drift) = camera_clock_offsets(&system, &hardware);
+        // system (QPC epoch) and hardware (µs-since-midnight) have different origins,
+        // so the absolute offset is a large constant; only its CHANGE (drift) is
+        // meaningful. No real drift here, and the midnight wrap must NOT manifest as
+        // a spurious ~86.4 s drift.
+        assert!(drift.abs() < 100, "midnight wrap leaked into drift: {drift} µs");
+        assert!((start - end).abs() < 100, "no real drift → start≈end; got start={start} end={end}");
+
+        // A single wild outlier on the LAST frame must not corrupt the fit (the old
+        // 2-point first/last difference would have been wholly determined by it).
+        let mut hw2 = hardware.clone();
+        *hw2.last_mut().unwrap() += 5_000_000; // 5 s glitch on the final frame
+        let (_s, _e, drift2) = camera_clock_offsets(&system, &hw2);
+        // The 2-point first/last difference would report the FULL ~5 s glitch as
+        // drift; least-squares over all frames cuts the single endpoint's leverage
+        // by >10× (here to <0.3 s). It reduces, not eliminates, outlier leverage —
+        // a robust (Theil–Sen) slope would do better, noted as further hardening.
+        assert!(drift2.abs() < 1_000_000,
+            "least-squares should cut the 5 s endpoint glitch well below 1 s; got {drift2} µs");
+    }
 
     use openisi_stimulus::dataset::{DatasetConfig, EnvelopeType};
     use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};

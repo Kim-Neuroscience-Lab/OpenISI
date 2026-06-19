@@ -152,9 +152,22 @@ pub fn characterize_timing(
     let expected_phase_samples =
         (params.n_trials as f64 * phase_coverage).min(params.n_trials as f64);
 
-    // Onset uncertainty from clock offset measurement + vsync jitter.
-    let onset_uncertainty_sec =
-        ((clock_offset_uncertainty_us / 1_000_000.0).powi(2) + stim_jitter_sec.powi(2)).sqrt();
+    // Onset uncertainty: root-sum-square of the INDEPENDENT timing-error sources
+    // that blur WHEN a stimulus onset lands on the camera timeline:
+    //   - clock_offset_uncertainty: camera↔system clock alignment spread,
+    //   - stim_jitter: stimulus (vsync) inter-frame jitter,
+    //   - cam_jitter: camera inter-frame jitter — the timeline the onset is mapped
+    //     ONTO (the Allen `argmin|frameTS−onset|` assignment is only as sharp as the
+    //     camera frame grid). This was COMPUTED above but previously OMITTED here;
+    //     folding it in completes the budget for the nearest-camera-frame assignment.
+    // NOT yet included (no measurement today): the camera dequeue→QPC-read latency
+    // bias, and the commanded→emitted monitor latency — both supplied by the
+    // TTL/photodiode path. See docs/TIMING_SYNC_DESIGN.md (the onset-timing input is
+    // the primary gap; this RSS bounds only the *jitter*, not that systematic bias).
+    let onset_uncertainty_sec = ((clock_offset_uncertainty_us / 1_000_000.0).powi(2)
+        + stim_jitter_sec.powi(2)
+        + cam_jitter_sec.powi(2))
+    .sqrt();
     let onset_uncertainty_fraction = onset_uncertainty_sec / t_cam;
 
     // Warnings.
