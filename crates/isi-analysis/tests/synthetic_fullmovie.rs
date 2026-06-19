@@ -8,34 +8,36 @@
 //! pipeline return the *right answer* for a known input? See
 //! `docs/SYNTHETIC_VALIDATION.md`.
 //!
-//! **Two physical-realism requirements the synthetic surfaced (kept, not worked
-//! around):**
-//!  1. *A positive hemodynamic delay is required.* The cycle-combine inherits
-//!     SNLC `Gprocesskret`'s delay-disambiguation ("force the delay into `(0, π]`")
-//!     which assumes the hemodynamic lag is strictly positive — true of all real
-//!     ISI. A *zero*-delay synthetic sits exactly on that discontinuity, so f32
-//!     noise flips the recovered position by ±range/2 at low-signal pixels. The
-//!     realism layer's HRF (a real positive delay) is therefore not optional for a
-//!     *valid* recording — it is what makes the input physical. (This is itself a
-//!     finding: oracle-faithfulness tests can't see it, because the oracle shares
-//!     the convention.)
-//!  2. *Realistic sweep timing.* The HRF (~1.5 s peak) must be fast relative to the
-//!     stimulus period, or it attenuates the stimulus frequency into its stopband.
-//!     Real ISI sweeps are slow (~10 s/cycle), which is what we use here.
+//! **The hemodynamic-delay VALID-DOMAIN rule (the central finding, grounded
+//! against R43 — real SNLC sample data):** the cycle-combine inherits SNLC
+//! `Gprocesskret`'s delay-disambiguation ("force the delay into `(0, π]`"). With
+//! forward/reverse map phases `±p + ∠H`, the combine forms `delay = ∠H` and the
+//! forcing adds π *iff* the raw hemodynamic phase ∠H is **negative**, leaving
+//! `kmap = p − π` — the recovered position flips by exactly half the range. So the
+//! method is invertible **iff `∠H ∈ (0, π]`** (the general form of the zero-delay
+//! singularity; `position_flips_iff_delay_leaves_valid_domain` proves it
+//! deterministically, no noise). Real ISI lives in-domain: R43's recovered
+//! positions are correct and its per-pixel delays cluster at ~85°
+//! (`azi_delay` median 98° / `alt_delay` 71°), broad, with only a ~2–4%
+//! noise-dominated tail at the 0/π edges where even SNLC flips. The canonical
+//! recording therefore injects a **known positive delay** via
+//! [`synth::realism::Hemodynamic::PhaseLag`] (default = R43's ~85° median, unit
+//! gain) — *not* a difference-of-gamma HRF, whose bin-1 phase is shape/period-
+//! dependent and can wander negative (out of domain). The physical
+//! [`synth::realism::Hemodynamic::Hrf`] remains an optional stress knob.
 //!
-//! **Surfaced systematic (documented, NOT cropped/hidden):** under the physical
-//! config the altitude recovers essentially exactly (median ~0.006°, max ~0.02°),
-//! but the **azimuth carries a small uniform ~0.37° bias**. The
-//! `delay_bias_math_vs_numerical` test establishes its nature decisively: the
-//! Kalatsky–Stryker delay-subtraction formula is mathematically exact (machine-ε)
-//! AND our pipeline is exact on exact complex maps (0.0000) — so the bias is a
+//! **Surfaced systematic (documented, NOT cropped/hidden):** altitude recovers
+//! essentially exactly (median ~0.002°), but the **azimuth carries a small uniform
+//! ~0.34° bias**. `delay_bias_math_vs_numerical` establishes its nature decisively:
+//! the Kalatsky–Stryker formula is mathematically exact (machine-ε) AND our
+//! pipeline is exact on exact complex maps (0.0000) — so the bias is a
 //! **movie→complex-maps front-end numerical artifact** (f32 per-cycle DFT + u16
-//! quantization on the HRF-attenuated tiny signal), azimuth-specific because the
-//! per-pixel errors cancel on the symmetric altitude map but not the fovea-
-//! asymmetric azimuth map. The delay subtraction merely makes it *visible* as a
-//! position offset (see `azimuth_bias_is_a_front_end_numerical_artifact`); it does
-//! not cause it. Reducible by a more realistic HRF (less attenuation) or higher
-//! signal.
+//! quantization), azimuth-specific because the per-pixel errors cancel on the
+//! symmetric altitude map but not the fovea-asymmetric azimuth map. It is **NOT**
+//! driven by HRF attenuation: it is ~0.34° identically under the unit-gain clean
+//! `PhaseLag` delay and the attenuated `Hrf` (so the earlier "reducible by a more
+//! realistic HRF / less attenuation" claim was wrong — it is the asymmetric-map
+//! f32 front-end at this amplitude, full stop).
 
 use std::sync::atomic::AtomicBool;
 
@@ -52,7 +54,7 @@ use openisi_params::config::AnalysisConfig;
 use synth::acquire::{build, RecordingSpec, Synthetic};
 use synth::encode::Stim;
 use synth::map::LogMap;
-use synth::realism::{Corruptions, Hrf, SensorNoise};
+use synth::realism::{Corruptions, Hemodynamic, Hrf, SensorNoise};
 
 fn to_raw(syn: &Synthetic) -> RawAcquisition {
     RawAcquisition {
@@ -123,8 +125,9 @@ fn err_stats(recovered: &Array2<f64>, truth: &Array2<f64>) -> (f64, f64) {
     (errs[errs.len() / 2], *errs.last().unwrap())
 }
 
-/// A physically-valid recording: realistic 10 s sweep period + a positive
-/// hemodynamic delay (HRF). `corruptions` adds noise on top.
+/// A physically-valid recording: realistic 10 s sweep period; the caller supplies
+/// the hemodynamic delay (canonical clean `PhaseLag`, or the physical `Hrf` knob)
+/// + any noise via `corruptions`.
 fn realistic_spec(amplitude: f64, corruptions: Corruptions, seed: u64) -> RecordingSpec {
     RecordingSpec {
         map: LogMap::default(),
@@ -152,7 +155,7 @@ fn clean_recovers_known_retinotopy() {
     let spec = realistic_spec(
         0.02,
         Corruptions {
-            hemodynamic: Some(Hrf::default()),
+            hemodynamic: Some(Hemodynamic::default()), // R43-grounded clean delay (~85°)
             sensor: None,
         },
         0,
@@ -166,8 +169,9 @@ fn clean_recovers_known_retinotopy() {
     eprintln!("CLEAN altitude err°: median {l_med:.4} max {l_max:.4}");
 
     // Altitude recovers essentially exactly; azimuth carries the documented small
-    // uniform bias (~0.37°, module-doc finding). Thresholds pin the MEASURED
-    // accuracy over the full grid — not loosened to hide anything.
+    // uniform front-end bias (~0.34°, module-doc finding — present even at this
+    // clean unit-gain delay). Thresholds pin the MEASURED accuracy over the full
+    // grid — not loosened to hide anything.
     assert!(l_med < 0.05, "altitude median error {l_med:.4}° too large");
     assert!(l_max < 0.2, "altitude max error {l_max:.4}° too large");
     assert!(a_med < 0.5, "azimuth median error {a_med:.4}° too large (bias regressed?)");
@@ -180,15 +184,18 @@ fn clean_recovers_known_retinotopy() {
     assert!(mean_sign.abs() > 0.5, "recovered VFS should be strongly single-signed");
 }
 
-/// The ~0.37° azimuth bias is a movie→complex-maps **front-end numerical artifact**
+/// The ~0.34° azimuth bias is a movie→complex-maps **front-end numerical artifact**
 /// — NOT a delay-correction property. The decisive `delay_bias_math_vs_numerical`
 /// test shows the Kalatsky–Stryker formula AND our cycle-combine are exact (machine-ε
 /// / 0.0000) on exact maps; the bias lives entirely in estimating the maps from the
-/// HRF-attenuated, u16-quantized movie. It is *visible* through the recoverable delay
-/// OUTPUT: on the real HRF recording the symmetric altitude recovers the injected ∠H
-/// exactly, while the fovea-asymmetric azimuth mis-estimates it (the per-pixel
-/// front-end errors don't cancel on the asymmetric axis), which leaks into the
-/// azimuth position.
+/// u16-quantized movie via the f32 per-cycle DFT. It is *visible* through the
+/// recoverable delay OUTPUT: the symmetric altitude recovers the injected ∠H exactly,
+/// while the fovea-asymmetric azimuth mis-estimates it (the per-pixel front-end errors
+/// don't cancel on the asymmetric axis), which leaks into the azimuth position.
+///
+/// Uses the physical `Hrf` here only to keep a delay present; the bias is the SAME
+/// magnitude under the unit-gain clean `PhaseLag` (see `clean_recovers`), so it is
+/// NOT an attenuation effect.
 ///
 /// (NOTE: an earlier version of this test claimed the bias was a *delay-correction*
 /// artifact by comparing a zero-delay big-signal recording against the HRF recording
@@ -205,7 +212,10 @@ fn azimuth_bias_is_a_front_end_numerical_artifact() {
     let mut spec = realistic_spec(
         0.02,
         Corruptions {
-            hemodynamic: Some(Hrf::default()),
+            // The PHYSICAL HRF (attenuated, ∠H=165°) — this front-end artifact is
+            // specific to the HRF's low-pass gain; the canonical clean PhaseLag
+            // delay (unit gain) does not exhibit it (see clean_recovers).
+            hemodynamic: Some(Hemodynamic::Hrf(Hrf::default())),
             sensor: None,
         },
         0,
@@ -327,7 +337,7 @@ fn delay_bias_math_vs_numerical() {
 
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
 
-    for delay_deg in [40.0_f64, 165.0] {
+    for delay_deg in [15.0_f64, 40.0, 165.0] {
         let delta = delay_deg.to_radians();
 
         // ── Part 1: pure-f64 K–S formula on exact phases ─────────────────────
@@ -395,6 +405,76 @@ fn delay_bias_math_vs_numerical() {
     }
 }
 
+/// THE DOMAIN RULE (decisive, deterministic — no noise). The recovered position
+/// flips by exactly half the range **iff** the injected hemodynamic phase ∠H is
+/// *outside* `(0, π]` — i.e. iff SNLC `Gprocesskret`'s `(0, π]` forcing has to
+/// *move* the delay. With fwd/rev phases `±p + ∠H`, the combine forms
+/// `delay = angle(fwd+rev) = ∠H` (cos p>0 on this low-ecc map); the forcing adds
+/// π when ∠H<0, leaving `kmap = p − π`. So a positive (in-domain) ∠H recovers
+/// position exactly; a negative (out-of-domain) ∠H flips it. This is the GENERAL
+/// form of the zero-delay singularity: the Kalatsky–Stryker / SNLC method is only
+/// invertible when the net bin-1 hemodynamic phase lies in `(0, π]`.
+///
+/// Real data lives in-domain: R43's recovered positions are correct (not
+/// half-flipped), and its per-pixel delays cluster at ~85° (the
+/// `R43_MEDIAN_DELAY_RAD` the clean default injects), with only a ~2–4%
+/// noise-dominated tail reaching the 0/π edges where even SNLC flips.
+///
+/// Uses the clean [`Hemodynamic::PhaseLag`] knob to set ∠H directly (a pure phase
+/// shift), so the mechanism is isolated from any HRF-shape / attenuation confound.
+#[test]
+fn position_flips_iff_delay_leaves_valid_domain() {
+    let small_map = LogMap {
+        a: 1.0,
+        u_max: 21.0_f64.ln(),
+        v_ext: std::f64::consts::PI,
+    };
+    let half_range = 140.0 / 2.0; // the flip magnitude (range/2) in degrees
+
+    // (∠H in degrees, expected to flip?) — straddling both forcing edges (0 and π).
+    let cases: [(f64, bool); 5] = [
+        (-120.0, true),  // raw negative ⇒ forcing adds π ⇒ flip
+        (-20.0, true),   // just below 0 ⇒ flip
+        (20.0, false),   // just inside (0,π] ⇒ exact
+        (85.0, false),   // R43 median ⇒ exact (the canonical clean default)
+        (160.0, false),  // near π but still inside ⇒ exact (R43 p95 reaches here)
+    ];
+    for (angle_deg, expect_flip) in cases {
+        let mut spec = realistic_spec(
+            0.02,
+            Corruptions {
+                hemodynamic: Some(Hemodynamic::PhaseLag { angle_rad: angle_deg.to_radians() }),
+                sensor: None,
+            },
+            0,
+        );
+        spec.map = small_map;
+        let syn = build(&spec, 24, 32);
+        let r = recover(&syn, 0.0);
+        let med = {
+            let mut d: Vec<f64> = r
+                .azi_phase_degrees
+                .iter()
+                .zip(syn.ground_truth.azi.iter())
+                .map(|(a, b)| a - b)
+                .collect();
+            d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            d[d.len() / 2]
+        };
+        eprintln!("∠H={angle_deg:+6.0}°  azi median err {med:+7.2}°  (expect {})",
+            if expect_flip { "FLIP" } else { "exact" });
+        if expect_flip {
+            // Flipped by ~ -range/2 (the uncompensated π in kmap = p − π).
+            assert!((med + half_range).abs() < 2.0,
+                "∠H={angle_deg}°: expected ~-{half_range}° flip, got {med:.2}°");
+        } else {
+            // In-domain ⇒ recovered to within the small front-end residual.
+            assert!(med.abs() < 1.0,
+                "∠H={angle_deg}°: in-domain, expected exact, got {med:.2}°");
+        }
+    }
+}
+
 /// A literature-grounded noisy recording (HRF + sensor noise, ΔR/R near the noise
 /// floor) is still recovered — the proof that the input is non-circular yet
 /// recoverable, the precondition for a meaningful full-pass oracle golden.
@@ -406,7 +486,7 @@ fn recovers_under_benchmark_noise() {
     let spec = realistic_spec(
         5.0e-3,
         Corruptions {
-            hemodynamic: Some(Hrf::default()),
+            hemodynamic: Some(Hemodynamic::default()), // R43-grounded clean delay (~85°)
             sensor: Some(SensorNoise::default()),
         },
         2026,

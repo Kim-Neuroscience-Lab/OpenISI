@@ -9,28 +9,39 @@ their oracles).
 **Built** (`crates/synth`, dev-only):
 - The bedrock primitives — the analytic ground-truth map (`map::LogMap`) and the
   Kalatsky–Stryker encoder (`encode`), unit-tested against their known properties.
-- **Phase A (2026-06-18):** the realism layer's hemodynamic HRF (difference-of-
-  gamma, a recoverable positive delay) + sensor noise (`realism`), deterministic
-  seeded randomness (`rng`, ChaCha substreams), recording assembly (`acquire` →
-  `Synthetic`), and the **full-pipeline recover-and-compare correctness test**
-  (`crates/isi-analysis/tests/synthetic_fullmovie.rs`): a physically-valid
-  synthetic movie is run through the real from-raw pipeline and recovers the known
-  retinotopy (altitude median ~0.005°, azimuth ~0.37°; position recovered even with
-  ΔR/R below the shot-noise floor).
-- **Two findings the synthetic surfaced** (oracle-faithfulness tests can't — the
-  oracle shares the conventions): (1) a *zero-delay* recording sits on the SNLC
-  delay-disambiguation singularity (`Gprocesskret` forces the delay into `(0, π]`,
-  assuming a strictly positive hemodynamic lag), so a realistic positive delay is
-  required for a *valid* recording; (2) a small uniform **~0.37° azimuth bias** —
-  *decisively localized* (test `delay_bias_math_vs_numerical`) to the
-  **movie→complex-maps front-end**: the Kalatsky–Stryker delay-subtraction formula
-  is mathematically exact (machine-ε in pure f64) AND our pipeline is exact on exact
-  complex maps (0.0000), so the bias is a floating-point/quantization artifact (f32
-  per-cycle DFT + u16 quantization on the HRF-attenuated tiny signal), azimuth-
-  specific because the per-pixel map errors cancel on the symmetric altitude map but
-  not the fovea-asymmetric azimuth map. The delay subtraction only makes it *visible*
-  as a position offset; it does not cause it. (An earlier note attributing it to the
-  delay subtraction was confounded by signal size — corrected.)
+- **Phase A (2026-06-18; delay model corrected 2026-06-19):** the realism layer's
+  hemodynamic delay (canonical `Hemodynamic::PhaseLag` — a known positive phase ∠H,
+  unit gain; plus the optional physical difference-of-gamma `Hrf` stress knob) +
+  sensor noise (`realism`), deterministic seeded randomness (`rng`, ChaCha
+  substreams), recording assembly (`acquire` → `Synthetic`), and the **full-pipeline
+  recover-and-compare correctness test** (`crates/isi-analysis/tests/
+  synthetic_fullmovie.rs`): a physically-valid synthetic movie is run through the
+  real from-raw pipeline and recovers the known retinotopy (altitude median ~0.002°,
+  azimuth ~0.34°; position recovered even with ΔR/R below the shot-noise floor).
+- **Findings the synthetic surfaced** (oracle-faithfulness tests can't — the oracle
+  shares the conventions), all grounded against **R43 (real SNLC sample data)**:
+  (1) **the hemodynamic-delay valid-domain rule.** The cycle-combine inherits SNLC
+  `Gprocesskret`'s `(0, π]` delay-forcing; with map phases `±p + ∠H` it forms
+  `delay = ∠H` and the forcing adds an uncompensated π **iff ∠H is negative**,
+  flipping the recovered position by half the range. So the method is invertible
+  **iff ∠H ∈ (0, π]** (the general form of the zero-delay singularity;
+  `position_flips_iff_delay_leaves_valid_domain` proves it deterministically). Real
+  ISI lives in-domain: R43's positions are correct and its per-pixel delays cluster
+  at ~85° (`azi_delay` median 98° / `alt_delay` 71°), with only a ~2–4%
+  noise-dominated tail at the 0/π edges where even SNLC flips. The canonical recording
+  therefore injects a known positive delay (`PhaseLag`, default = R43's ~85° median),
+  not a gamma HRF whose bin-1 phase can wander out of domain. (2) a small uniform
+  **~0.34° azimuth bias** — *decisively localized* (`delay_bias_math_vs_numerical`)
+  to the **movie→complex-maps front-end**: the Kalatsky–Stryker formula is exact
+  (machine-ε in pure f64) AND our pipeline is exact on exact complex maps (0.0000),
+  so the bias is an f32-DFT + u16-quantization artifact, azimuth-specific because the
+  per-pixel map errors cancel on the symmetric altitude map but not the fovea-
+  asymmetric azimuth map. It is the **same magnitude under the unit-gain `PhaseLag`
+  delay and the attenuated `Hrf`**, so it is NOT an attenuation effect (an earlier
+  "reducible by a more realistic HRF / less attenuation" note was wrong — corrected).
+  The delay subtraction only makes it *visible* as a position offset; it does not
+  cause it. (An even earlier note attributing it to the delay subtraction was
+  confounded by signal size — also corrected.)
 
 **Deferred** (designed below, not built): the remaining realism knobs (PSF,
 physiological lines, drift, vasculature, saturation), the raw-`.oisi` writer for

@@ -25,22 +25,68 @@ use crate::rng::SynthRng;
 /// clean layer-2 encoder bit-for-bit (pinned by a test).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Corruptions {
-    /// (a) Hemodynamic response — a known, recoverable delay (+ low-pass gain).
-    pub hemodynamic: Option<Hrf>,
+    /// (a) Hemodynamic response — a known, recoverable delay (see [`Hemodynamic`]).
+    pub hemodynamic: Option<Hemodynamic>,
     /// (d) Sensor noise — shot (Poisson, Gaussian-approx) + read (Gaussian).
     pub sensor: Option<SensorNoise>,
     // Phase B: psf, physio, drift, vascular, saturation.
 }
 
 impl Corruptions {
-    /// The literature-grounded "benchmark" recording: a biphasic HRF + realistic
-    /// sensor noise. The default magnitudes put the noise floor near/above the
-    /// ΔR/R signal — the regime that actually tests the frequency-selective DFT.
+    /// The literature-grounded "benchmark" recording: the canonical R43-grounded
+    /// hemodynamic delay + realistic sensor noise. The default magnitudes put the
+    /// noise floor near/above the ΔR/R signal — the regime that actually tests the
+    /// frequency-selective DFT.
     pub fn benchmark() -> Self {
         Self {
-            hemodynamic: Some(Hrf::default()),
+            hemodynamic: Some(Hemodynamic::default()),
             sensor: Some(SensorNoise::default()),
         }
+    }
+}
+
+/// The hemodynamic transfer the neural drive passes through before it is imaged.
+///
+/// Two models, both producing a recoverable delay the pipeline's cycle-combine
+/// must remove (`(fwd+rev)/2 = ∠H`, `(fwd−rev)/2 = position`):
+///
+///  * [`Hemodynamic::PhaseLag`] — the **canonical** model: a pure known phase lag
+///    `∠H ∈ (0, π]` on the stimulus fundamental. Unit gain (no attenuation), and
+///    guaranteed inside the Kalatsky–Stryker / SNLC *valid domain* — the method's
+///    `(0, π]` delay-forcing only inverts correctly when the net bin-1 hemodynamic
+///    phase is positive (a negative ∠H makes the forcing add an uncompensated π,
+///    flipping the recovered position by half the range). Real ISI good-signal
+///    pixels live here: R43's recovered per-pixel delays cluster at ~85°
+///    (`azi_delay` median 98°, `alt_delay` 71°), broad, with only a ~2–4%
+///    noise-dominated tail reaching the 0/π edges where even SNLC flips. The
+///    default angle is grounded to that ~85° median.
+///
+///  * [`Hemodynamic::Hrf`] — the **physical** difference-of-gamma convolution
+///    (Sirotin & Das 2007). Richer (adds the HRF's low-pass gain *and* harmonic
+///    leakage at 2ω, 3ω… the bin-1 DFT must reject), but its bin-1 phase is
+///    shape- *and* period-dependent and can fall *outside* `(0, π]`, so it models
+///    a valid recording only when its `∠H(ω)` stays positive. Use it to stress the
+///    front-end (attenuation, harmonics); use `PhaseLag` for a clean, in-domain,
+///    R43-representative delay.
+#[derive(Clone, Copy, Debug)]
+pub enum Hemodynamic {
+    /// Pure phase lag `∠H` (radians) on the stimulus fundamental; should be in
+    /// `(0, π]` to stay in the method's valid domain.
+    PhaseLag { angle_rad: f64 },
+    /// Physical difference-of-gamma HRF (convolved into the drive).
+    Hrf(Hrf),
+}
+
+/// R43-grounded median hemodynamic delay: `azi_delay` median 98° + `alt_delay`
+/// median 71° → ~85° = 1.4835 rad, dead-center of `(0, π]` (maximally clear of
+/// both the `0` and `π` forcing edges). Measured from `R43_smoke.baseline.oisi`,
+/// our `Gprocesskret`-faithful output (bit-locked by `gen_combine_golden`).
+pub const R43_MEDIAN_DELAY_RAD: f64 = 85.0 * std::f64::consts::PI / 180.0;
+
+impl Default for Hemodynamic {
+    /// The canonical, R43-grounded clean delay.
+    fn default() -> Self {
+        Hemodynamic::PhaseLag { angle_rad: R43_MEDIAN_DELAY_RAD }
     }
 }
 
@@ -185,13 +231,19 @@ pub fn encode_direction_realistic(
     };
     let sign = if reverse { -1.0 } else { 1.0 };
     let t_total = stim.cycles * stim.frames_per_cycle;
-    let kernel = corr.hemodynamic.map(|hrf| hrf.kernel(dt_sec, t_total));
+    // PhaseLag is folded into the cosine argument (a pure delay, unit gain); the
+    // physical HRF is a convolution kernel applied below.
+    let (phase_lag, kernel) = match corr.hemodynamic {
+        Some(Hemodynamic::PhaseLag { angle_rad }) => (angle_rad, None),
+        Some(Hemodynamic::Hrf(hrf)) => (0.0, Some(hrf.kernel(dt_sec, t_total))),
+        None => (0.0, None),
+    };
 
     let mut frames = Array3::zeros((t_total, h, w));
     let mut modulation = vec![0.0_f64; t_total];
     for r in 0..h {
         for c in 0..w {
-            let phase = sign * position_to_phase(pos[[r, c]], stim);
+            let phase = sign * position_to_phase(pos[[r, c]], stim) + phase_lag;
             for (t, m) in modulation.iter_mut().enumerate() {
                 let omega_t = std::f64::consts::TAU * (t as f64) / (stim.frames_per_cycle as f64);
                 *m = stim.amplitude * (omega_t + phase).cos();
@@ -285,7 +337,7 @@ mod tests {
         let stim = Stim::default();
         let rng = SynthRng::from_seed(0);
         let corr = Corruptions {
-            hemodynamic: Some(Hrf::default()),
+            hemodynamic: Some(Hemodynamic::Hrf(Hrf::default())),
             sensor: None,
         };
         let fwd = encode_direction_realistic(&gt, Axis::Altitude, false, &stim, 0.1, &corr, &rng, "TB");
@@ -330,6 +382,56 @@ mod tests {
             .assert("(fwd−rev)/2 = position", &pos_recovered, &pos_expected);
         Tol::wrap(std::f64::consts::TAU, 8192, Eps::F64, 1.0)
             .assert("(fwd+rev)/2 = HRF delay ∠H(ω)", &delay, &delay_expected);
+    }
+
+    /// The canonical `PhaseLag` delay model: `(fwd+rev)/2` recovers the injected
+    /// `∠H` **exactly** (a pure phase shift, not a convolution → no DFT/kernel
+    /// drift, no low-pass gain) and `(fwd−rev)/2` recovers position. This is the
+    /// in-domain, R43-grounded delay the recover-and-compare relies on.
+    #[test]
+    fn phaselag_delay_separates_exactly_from_position() {
+        let gt = LogMap::default().generate(16, 16);
+        let stim = Stim::default();
+        let rng = SynthRng::from_seed(0);
+        let angle = R43_MEDIAN_DELAY_RAD;
+        let corr = Corruptions {
+            hemodynamic: Some(Hemodynamic::PhaseLag { angle_rad: angle }),
+            sensor: None,
+        };
+        let fwd = encode_direction_realistic(&gt, Axis::Altitude, false, &stim, 0.1, &corr, &rng, "TB");
+        let rev = encode_direction_realistic(&gt, Axis::Altitude, true, &stim, 0.1, &corr, &rng, "BT");
+
+        // The naive (fwd±rev)/2 separation is exact only where neither phase
+        // (±p + ∠H) wraps past π (|p| ≤ π − ∠H). Wrap-handling is the pipeline
+        // cycle-combine's job (proven in the isi-analysis recover tests); here we
+        // isolate the *injection* on the non-wrapping pixels.
+        let bound = std::f64::consts::PI - angle - 0.02;
+        let mut pos_rec = Vec::new();
+        let mut pos_exp = Vec::new();
+        let mut delay = Vec::new();
+        for r in 0..16 {
+            for c in 0..16 {
+                let p = position_to_phase(gt.alt[[r, c]], &stim);
+                if p.abs() > bound {
+                    continue;
+                }
+                let pf = bin1_phase(&fwd, r, c, stim.frames_per_cycle);
+                let pr = bin1_phase(&rev, r, c, stim.frames_per_cycle);
+                pos_rec.push(0.5 * (pf - pr));
+                pos_exp.push(p);
+                delay.push(0.5 * (pf + pr));
+            }
+        }
+        assert!(pos_rec.len() > 32, "need enough non-wrapping pixels to be meaningful");
+        let expected_delay = vec![angle; delay.len()];
+        // A pure phase shift: only the bin-1 DFT reduction adds error (no kernel
+        // convolution) ⇒ far tighter than the HRF case. K = 256·ε_f64.
+        Tol::wrap(std::f64::consts::TAU, 256, Eps::F64, 1.0)
+            .assert("(fwd−rev)/2 = position", &pos_rec, &pos_exp);
+        Tol::wrap(std::f64::consts::TAU, 256, Eps::F64, 1.0)
+            .assert("(fwd+rev)/2 = injected ∠H", &delay, &expected_delay);
+        // In-domain by construction: the injected lag is strictly inside (0, π].
+        assert!(angle > 0.0 && angle <= std::f64::consts::PI, "∠H must be in (0,π]");
     }
 
     /// Sensor noise is reproducible from the seed and actually perturbs the movie.
