@@ -427,9 +427,37 @@ Export stays transform-only / lossless (per `docs/INTEROP_NWB.md`).
 Each schema change: SSoT edit → golden regen → contract test → bit-identical
 equivalence gate.
 
+### 9.1 Status & hardware deferral (2026-06-19)
+
+Phase 1 is **split** by hardware-dependence, on an explicit decision to defer all
+rig-hardware-touching timing work until rig commissioning:
+
+- **Done (software-only): (C) per-frame stimulus angle.** Landed —
+  `/acquisition/stimulus/stimulus_position_deg`, a faithful CPU mirror of the bar
+  shader (store-don't-derive). The sync-provenance record (A) landed earlier.
+- **Deferred until we are working on the rig:** (D) light-source timing, (E)
+  camera exposure window, and the (B)/(B′)/(F) scaffolds. These all need hardware
+  facts/edges in hand to declare *correctly* (declaring a TTL channel layout or a
+  light schema without the device risks getting the semantics wrong → a migration
+  anyway, defeating P7's point). (E) additionally depends on the camera
+  hardware-clock timeline (the read-time-vs-exposure-start mapping; tracked
+  separately) and so is paired with that work.
+
+**Detected rig hardware (so we don't re-investigate when we resume):**
+
+| Role | Device | Connection | Notes for the deferred design |
+|---|---|---|---|
+| Illumination (D) | **Excelitas X-Cite XT600** LED source | **serial, COM3** (`USB\VID_04D8&PID_F53D`) | Multi-channel LED → **wavelength-per-channel is configurable** (depends on installed modules → `rig.illumination` config, not a constant). Serial-controllable, so the control model is plausibly `commanded` — but **no app code talks to it today**, so the current honest state is uncommanded/static. The live `light_timing_source = "commanded"` string is therefore a known-false placeholder to correct when (D) is built. |
+| Camera | **pco.panda 4.2** | USB (`USB\VID_1CB2&PID_000C`) | Already integrated (`pco-sdk`). PCO binary timestamp = exposure-start (feeds E). |
+| TTL/DAQ (B) | **Arduino Uno** — *intended* source | **not connected at time of writing** | No Arduino/CH340/FTDI USB-serial bridge was present when checked (2026-06-19). Confirms B stays a scaffold (nothing to populate). Confirm role + clock-relationship (P3) when it's wired. |
+
+**Resume trigger:** pick (D)/(E)/(B)/(B′)/(F) back up when actively bringing the
+rig up — at which point the open questions in §10 get answered *from the hardware
+in front of us*, not guessed.
+
 ---
 
-## 10. Open questions for you (these shape the design; please resolve before build)
+## 10. Open questions for you (resolved *at the rig*, per §9.1 — not before)
 
 1. **What *is* the "monitor TTL" source?** Monitors rarely emit a native TTL. Is
    it (a) a GPU genlock/sync output (e.g. Quadro Sync) — which is still *commanded*

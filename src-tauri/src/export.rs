@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use isi_analysis::oisi_schema::name;
-use openisi_stimulus::dataset::StimulusDataset;
+use openisi_stimulus::dataset::{FrameState, StimulusDataset};
+use openisi_stimulus::geometry::{bar_direction_index, commanded_bar_position_deg};
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
@@ -393,6 +394,50 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         .group(name::STIMULUS)
         .map_err(|e| hdf5_err("Failed to open stimulus group", e))?;
     isi_analysis::io::write_checked_1d(&stim_group, name::TIMESTAMPS_SEC, stimulus_sec)?;
+
+    // ── Per-frame commanded bar position (deg) — store, don't derive (P1, §6.C) ──
+    // A faithful CPU mirror of the bar shader (`commanded_bar_position_deg`): the
+    // exact sweep-axis angle presented on each frame, recorded so analysis reads it
+    // directly rather than re-deriving it from `progress` + geometry downstream.
+    // NaN where no bar is shown (non-stimulus state, or a non-sweep label such as
+    // BLANK) — the honest "no commanded position" marker, not a fabricated 0.
+    let stimulus_position_deg: Vec<f64> = {
+        let geom = &snapshot.experiment.stimulus_geometry;
+        let width_deg = snapshot.experiment.stimulus.params.stimulus_width_deg as f32;
+        let azi_range = geom.azi_angular_range as f32;
+        let alt_range = geom.alt_angular_range as f32;
+        let offset_azi = geom.offset_azi as f32;
+        let offset_alt = geom.offset_alt as f32;
+        stimulus_dataset
+            .progress
+            .iter()
+            .zip(&stimulus_dataset.sweep_indices)
+            .zip(&stimulus_dataset.state_ids)
+            .map(|((&progress, &sweep_idx), &state_id)| {
+                if state_id != FrameState::Stimulus as u8 {
+                    return f64::NAN; // no bar on screen this frame
+                }
+                let dir = schedule
+                    .sweep_sequence
+                    .get(sweep_idx as usize)
+                    .and_then(|label| bar_direction_index(label));
+                let Some(dir) = dir else {
+                    return f64::NAN; // BLANK / unknown sweep label — no commanded bar
+                };
+                let (extent, center) = if dir <= 1 {
+                    (azi_range, offset_azi) // horizontal sweep
+                } else {
+                    (alt_range, offset_alt) // vertical sweep
+                };
+                commanded_bar_position_deg(progress, dir, extent, width_deg, center) as f64
+            })
+            .collect()
+    };
+    isi_analysis::io::write_checked_1d(
+        &stim_group,
+        name::STIMULUS_POSITION_DEG,
+        stimulus_position_deg,
+    )?;
 
     // Write realized sweep schedule (unified seconds).
     write_sweep_schedule_sec(&acq_group, schedule, &sweep_start_sec, &sweep_end_sec)?;
@@ -1109,6 +1154,89 @@ mod tests {
         let frames_ds = file.dataset("acquisition/camera/frames").unwrap();
         let shape = frames_ds.shape();
         assert_eq!(shape, vec![3, 8, 8]);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// End-to-end proof that the export *wiring* (not just the pure mirror) is
+    /// correct: record known baseline + LR-sweep frames, write a real `.oisi`,
+    /// read `/acquisition/stimulus/stimulus_position_deg` back, and assert the
+    /// commanded angles. Guards that export feeds the right per-frame state,
+    /// sweep direction (via the schedule), progress, and config geometry — and
+    /// that non-stimulus frames are honestly NaN, not a fabricated 0.
+    #[test]
+    fn stimulus_position_deg_round_trips_commanded_angles() {
+        use openisi_stimulus::dataset::FrameRecord;
+
+        let tmp = std::env::temp_dir().join("openisi_test_stim_position.oisi");
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut ds = test_stimulus_dataset();
+        ds.start_recording();
+        let rec = |ts: i64, sweep_index: u32, progress: f32, state: FrameState| FrameRecord {
+            timestamp_us: ts,
+            condition_index: 0,
+            sweep_index,
+            frame_in_sweep: 0,
+            sweep_progress: progress,
+            state_id: state,
+            condition_occurrence: 0,
+            is_baseline: matches!(state, FrameState::BaselineStart),
+        };
+        // Frame 0: baseline (no bar). Frames 1–2: LR sweep at progress 0.0 / 0.5.
+        ds.record_frame(&rec(1000, 0, 0.0, FrameState::BaselineStart));
+        ds.record_frame(&rec(2000, 0, 0.0, FrameState::Stimulus));
+        ds.record_frame(&rec(3000, 0, 0.5, FrameState::Stimulus));
+
+        let data = AccumulatedData {
+            frames: vec![vec![0u16; 8 * 8]; 2],
+            hardware_timestamps_us: vec![1000, 2000],
+            system_timestamps_us: vec![1000, 2000],
+            sequence_numbers: vec![1, 2],
+            width: 8,
+            height: 8,
+        };
+        // Sweep 0 is "LR" — the direction the position math reads.
+        let schedule = SweepSchedule {
+            sweep_sequence: vec!["LR".into()],
+            sweep_start_us: vec![2000],
+            sweep_end_us: vec![3000],
+        };
+        // Default config: azi_angular_range=140, stimulus_width_deg=20, offset_azi=0.
+        let snapshot = openisi_params::config::ConfigStore::new(
+            std::path::Path::new("."),
+            std::path::Path::new("."),
+        )
+        .snapshot();
+        write_oisi(
+            &tmp,
+            OisiBundle {
+                stimulus_dataset: &ds,
+                camera_data: data,
+                snapshot: &snapshot,
+                hardware: None,
+                schedule: &schedule,
+                timing: None,
+                session_meta: None,
+                anatomical: None,
+                acquisition_complete: true,
+                stimulus_timing_validatable: true,
+            },
+        )
+        .expect("write_oisi");
+
+        let file = hdf5::File::open(&tmp).expect("open .oisi");
+        let pos: Vec<f64> = file
+            .dataset("acquisition/stimulus/stimulus_position_deg")
+            .expect("stimulus_position_deg missing")
+            .read_1d()
+            .unwrap()
+            .to_vec();
+        assert_eq!(pos.len(), 3);
+        assert!(pos[0].is_nan(), "baseline frame has no commanded bar position");
+        // LR, range 140 + width 20 ⇒ total_travel 160, start −80.
+        assert!((pos[1] - (-80.0)).abs() < 1e-6, "LR p=0 → -80°, got {}", pos[1]);
+        assert!((pos[2] - 0.0).abs() < 1e-6, "LR p=0.5 → 0° (sweep midpoint), got {}", pos[2]);
 
         let _ = std::fs::remove_file(&tmp);
     }

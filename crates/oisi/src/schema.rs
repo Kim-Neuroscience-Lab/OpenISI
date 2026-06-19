@@ -136,6 +136,7 @@ pub mod name {
     pub const CONDITION_INDICES: &str = "condition_indices";
     pub const SWEEP_INDICES: &str = "sweep_indices";
     pub const PROGRESS: &str = "progress";
+    pub const STIMULUS_POSITION_DEG: &str = "stimulus_position_deg";
     pub const FRAME_DELTAS_US: &str = "frame_deltas_us";
     pub const DROPPED_FRAME_INDICES: &str = "dropped_frame_indices";
 
@@ -281,6 +282,7 @@ const STIMULUS_DATASETS: &[Dataset] = &[
     Dataset { name: n::CONDITION_INDICES, dtype: "u8", shape: "(N,)", presence: Always, doc: "Per-frame condition index.", attrs: &[] },
     Dataset { name: n::SWEEP_INDICES, dtype: "u32", shape: "(N,)", presence: Always, doc: "Per-frame sweep index.", attrs: &[] },
     Dataset { name: n::PROGRESS, dtype: "f32", shape: "(N,)", presence: Always, doc: "Per-frame sweep progress.", attrs: &[] },
+    Dataset { name: n::STIMULUS_POSITION_DEG, dtype: "f64", shape: "(N,)", presence: Always, doc: "Per-frame commanded bar-center visual angle (deg) along the sweep axis — a faithful CPU mirror of the bar shader's bar_center (TIMING_SYNC_DESIGN §6.C, store-don't-derive). NaN when no bar is shown (non-stimulus frames / non-sweep labels).", attrs: &[] },
     Dataset { name: n::FRAME_DELTAS_US, dtype: "i64", shape: "(N,)", presence: Always, doc: "Inter-frame deltas.", attrs: &[] },
     Dataset { name: n::DROPPED_FRAME_INDICES, dtype: "u32", shape: "(D,)", presence: Always, doc: "Indices of frames flagged as drops at capture.", attrs: &[] },
 ];

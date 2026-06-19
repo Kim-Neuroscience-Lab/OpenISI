@@ -365,6 +365,63 @@ impl DisplayGeometry {
     }
 }
 
+// =============================================================================
+// Drifting-bar commanded position (CPU mirror of the bar shader)
+// =============================================================================
+
+/// Sweep-direction index used by the bar shader (`shaders/stimulus.wgsl`):
+/// `0=LR, 1=RL, 2=TB, 3=BT`. Returns `None` for a non-sweep label (e.g.
+/// `"BLANK"`), which has no commanded bar position.
+pub fn bar_direction_index(label: &str) -> Option<u32> {
+    match label {
+        "LR" => Some(0),
+        "RL" => Some(1),
+        "TB" => Some(2),
+        "BT" => Some(3),
+        _ => None,
+    }
+}
+
+/// Commanded bar-center visual angle (degrees) along the swept axis for a
+/// drifting-bar frame — a **faithful CPU mirror** of `shaders/stimulus.wgsl`
+/// `bar_envelope` (the `bar_center` computation, lines ~296–326). Evaluated in
+/// `f32` with the same operations and constants the shader uses (the uniforms
+/// it reads are `f32`), so the returned angle equals what was *presented*, not
+/// an `f64` re-derivation of it. This is the "store, don't derive" ground truth
+/// (`docs/TIMING_SYNC_DESIGN.md` P1/§6.C): the per-frame stimulus angle the
+/// analysis needs, recorded rather than reconstructed from `progress` + geometry
+/// downstream.
+///
+/// - `progress` — the frame's sweep progress in `[0, 1]` (recorded per frame).
+/// - `direction` — `0=LR, 1=RL, 2=TB, 3=BT` (see [`bar_direction_index`]).
+/// - `sweep_extent_deg` — the DECLARED angular range of the swept axis
+///   (`azi_angular_range` for horizontal, `alt_angular_range` for vertical).
+/// - `width_deg` — the bar width (`stimulus_width_deg`).
+/// - `swept_center_deg` — the swept-axis offset (`offset_azi` / `offset_alt`).
+///
+/// Returns the absolute sweep-axis angle `swept_center + bar_center`. (Monitor
+/// rotation does not enter: it rotates which pixels light, not the bar's
+/// sweep-axis coordinate — the shader applies it to `pos_deg`, not `bar_center`.)
+pub fn commanded_bar_position_deg(
+    progress: f32,
+    direction: u32,
+    sweep_extent_deg: f32,
+    width_deg: f32,
+    swept_center_deg: f32,
+) -> f32 {
+    let half_width = width_deg * 0.5;
+    let total_travel = sweep_extent_deg + width_deg;
+    let start = -sweep_extent_deg * 0.5 - half_width;
+    let bar_center = if direction == 0 || direction == 3 {
+        // LR or BT: positive sweep (left→right, bottom→top).
+        start + progress * total_travel
+    } else {
+        // RL or TB: negative sweep (right→left, top→bottom).
+        -start - progress * total_travel
+    };
+    swept_center_deg + bar_center
+}
+
 /// Geometry parameters formatted for GPU uniform buffer.
 /// The renderer crate wraps this with `bytemuck::Pod` for GPU upload.
 #[repr(C)]
@@ -561,5 +618,49 @@ mod tests {
             (ecc_centered - ecc_offset).abs() > 0.1,
             "Offset should change max eccentricity"
         );
+    }
+
+    // --- Commanded bar position (CPU mirror of the bar shader) ---
+
+    #[test]
+    fn bar_direction_index_maps_the_four_sweeps_and_rejects_blank() {
+        assert_eq!(bar_direction_index("LR"), Some(0));
+        assert_eq!(bar_direction_index("RL"), Some(1));
+        assert_eq!(bar_direction_index("TB"), Some(2));
+        assert_eq!(bar_direction_index("BT"), Some(3));
+        assert_eq!(bar_direction_index("BLANK"), None);
+        assert_eq!(bar_direction_index(""), None);
+    }
+
+    /// The bar center traverses `[-total_travel/2, +total_travel/2]` (relative to
+    /// `swept_center`) as progress goes 0→1 on a forward sweep, with the midpoint
+    /// at `swept_center` — and the reverse sweep is the mirror image. These are
+    /// the exact endpoints the shader's `start`/`total_travel`/sign logic yields.
+    #[test]
+    fn commanded_bar_position_matches_shader_endpoints() {
+        // extent=140, width=20 ⇒ total_travel=160, start=-80, center=0.
+        let (extent, width, center) = (140.0_f32, 20.0_f32, 0.0_f32);
+        let lr = |p| commanded_bar_position_deg(p, 0, extent, width, center);
+        assert_eq!(lr(0.0), -80.0); // enters from the negative side
+        assert_eq!(lr(0.5), 0.0); // midpoint at the swept center
+        assert_eq!(lr(1.0), 80.0); // exits on the positive side
+
+        // RL is the negative-direction mirror of LR.
+        let rl = |p| commanded_bar_position_deg(p, 1, extent, width, center);
+        assert_eq!(rl(0.0), 80.0);
+        assert_eq!(rl(0.5), 0.0);
+        assert_eq!(rl(1.0), -80.0);
+
+        // TB (dir 2) is reverse like RL; BT (dir 3) is forward like LR.
+        assert_eq!(commanded_bar_position_deg(0.0, 2, 110.0, 20.0, 0.0), 65.0); // -start = (110+20)/2
+        assert_eq!(commanded_bar_position_deg(0.0, 3, 110.0, 20.0, 0.0), -65.0);
+    }
+
+    /// `swept_center` (offset_azi/alt) shifts the whole trajectory rigidly.
+    #[test]
+    fn commanded_bar_position_offset_shifts_rigidly() {
+        let base = commanded_bar_position_deg(0.3, 0, 140.0, 20.0, 0.0);
+        let shifted = commanded_bar_position_deg(0.3, 0, 140.0, 20.0, 10.0);
+        assert_eq!(shifted - base, 10.0);
     }
 }

@@ -175,6 +175,11 @@
               "dtype": "u8",
               "shape": "(N,)"
             },
+            "stimulus_position_deg": {
+              "doc": "Per-frame commanded bar-center visual angle (deg) along the sweep axis — a faithful CPU mirror of the bar shader's bar_center (TIMING_SYNC_DESIGN §6.C, store-don't-derive). NaN when no bar is shown (non-stimulus frames / non-sweep labels).",
+              "dtype": "f64",
+              "shape": "(N,)"
+            },
             "sweep_indices": {
               "doc": "Per-frame sweep index.",
               "dtype": "u32",
