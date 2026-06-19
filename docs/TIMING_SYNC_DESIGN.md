@@ -179,6 +179,14 @@ documentation-clarity gap, not a bug.
   alone.
 - **P6 — Ground in standards; export losslessly.** Every field maps to NWB
   (`ndx-events` / `ndx-openisi`) and is documented against the literature.
+- **P7 — Scaffold for every source now; implement the software tier first.** The
+  data model + provenance enumerate **all** timing sources (photodiode, TTL,
+  vsync-fallback) and the schema reserves the optional (`When`) hardware-channel
+  slots from day one — so TTL and photodiode capture become a *populated variant*
+  later, never a schema migration. Phase 1 implements only the vsync-fallback
+  (software) tier; the rest slot in. *(This is the governing decision for the
+  current work: pure-software correctness now, but the right scaffolding so TTL —
+  and the photodiode — drop in cleanly.)*
 
 ---
 
@@ -192,15 +200,19 @@ documentation-clarity gap, not a bug.
   be related to QPC by a stored mapping** (a co-recorded shared edge, or
   barcode-style alignment), with the residual error stored (P3).
 
-### 5.2 Two timing tiers (recorded per signal, per run)
-| Tier | Source | Signals | Fidelity |
-|---|---|---|---|
-| **Tier 1 — TTL** | DAQ-captured hardware edges | camera **shutter**, monitor **scanout/sync**, **light source** on/off | hardware-edge; highest |
-| **Tier 2 — vsync fallback** | camera hardware timestamps + GPU vsync (`qpcVBlank`) | camera frame, stimulus refresh | software-at-interrupt; current |
+### 5.2 Timing sources, ranked by fidelity (recorded per signal, per run)
+| Source | What it measures | Signals | Fidelity | Status |
+|---|---|---|---|---|
+| **Photodiode** | *actual emitted light* (threshold-crossing) | display onset; optional per-run validation | **highest — the only emitted-light measurement** | scaffolded (optional); also the commissioning-calibration source |
+| **TTL** | hardware edge, but *commanded* | camera **shutter**, monitor **scanout/sync**, **light source** on/off | hardware-edge; needs the monitor-latency calibration | scaffolded (optional); implemented Phase 2 |
+| **vsync-fallback** | software at the vblank interrupt, *commanded* | camera frame, stimulus refresh | software, commanded | **implemented today** |
 
-The file records, **per signal**, which tier produced its timing, the clock
-domain, and the uncertainty (P5). Both tiers can coexist (e.g. camera on TTL,
-light source on vsync) — provenance is per-signal, not per-file.
+The file records, **per signal**, which source produced its timing, the clock
+domain, and the uncertainty (P5). Sources coexist (e.g. camera on TTL, light on
+vsync, a photodiode validating the display) — provenance is **per-signal**, not
+per-file. Note the ordering: a **photodiode is *higher* fidelity than TTL** — TTL
+on a GPU/genlock refresh is still *commanded* time, whereas the photodiode is the
+emitted photons themselves.
 
 ### 5.3 The irreducible gap both tiers share — and how we close it
 Neither a vsync timestamp **nor a TTL on the GPU refresh** is the emitted-photon
@@ -212,6 +224,28 @@ uncertainty. *(The one exception: if the "monitor TTL" is itself a photodiode-
 derived edge, it measures emitted light directly per-run — see open question
 §10.1.)*
 
+### 5.4 Why we scaffold the photodiode, not just TTL (decision: yes)
+The production rig is photodiode-free, but the **format + provenance treat the
+photodiode as a first-class (optional) source**, for three reasons:
+1. **It is the calibration source.** The monitor-latency calibration (§6.F) that
+   corrects every TTL/vsync commanded-onset is *measured with a photodiode at
+   commissioning*. A photodiode slot is therefore not optional infrastructure — it
+   is where the single number that makes the photodiode-free design defensible
+   comes from.
+2. **It is the field-standard ground truth, as an optional per-run validation
+   channel.** Even with TTL primary, a photodiode in a screen corner measures the
+   *actual emitted light* TTL/vsync cannot — closing §5.3's irreducible gap *per
+   run* rather than by calibration. Supporting it (optionally) maximizes scientific
+   defensibility and interoperability: a reviewer who wants photodiode truth can
+   have it, on the same rig, with no format change.
+3. **The scaffolding cost is ~zero** — an optional (`When`) signal slot + one
+   provenance variant — versus a format migration if it is retrofitted later.
+
+So the data model reserves (Phase 1, unwritten) a `/calibration/display` slot
+(populated by a commissioning photodiode) and an optional `/acquisition/photodiode`
+signal + a `photodiode` provenance source, alongside the TTL scaffolding — even
+though Phase 1 writes neither.
+
 ---
 
 ## 6. Proposed data model (schema additions)
@@ -219,39 +253,50 @@ derived edge, it measures emitted light directly per-run — see open question
 All additions are declared once in `crates/oisi/src/schema.rs` (SSoT), golden
 `docs/oisi.schema.json` regenerated, both writers contract-tested, guarded by the
 bit-identical equivalence gate. Names follow the existing convention (snake_case,
-unit suffixes).
+unit suffixes). Each item is marked **[POPULATE]** (written in Phase 1, software
+tier) or **[SCAFFOLD]** (declared as optional `When` now, written when the hardware
+arrives — the format is ready, per P7).
 
-**A. Sync provenance — `/acquisition/sync` (group + attrs).** The file's
-self-declaration of *how it was timed*: `sync_tier` per signal (`ttl` |
-`vsync_fallback`), the clock domain of each, `ttl_present` (bool), DAQ model +
-clock rate (if any), the **DAQ↔QPC mapping** + residual, and a top-level
-`timing_uncertainty_sec` budget. This is what makes a run trustable from the data
-alone (P5). → NWB `/general` + `TimingForensics`.
+**A. Sync provenance — `/acquisition/sync` (group + attrs). [POPULATE]** The file's
+self-declaration of *how it was timed*: a per-signal `source` ∈ {`photodiode` |
+`ttl` | `vsync_fallback`} (the full enum exists from day one, even though Phase 1
+only ever writes `vsync_fallback`), the clock domain of each, `ttl_present` /
+`photodiode_present` (bool), DAQ model + clock rate (if any), the **DAQ↔QPC
+mapping** + residual, and a top-level `timing_uncertainty_sec` budget. This is what
+makes a run trustable from the data alone (P5). → NWB `/general` + `TimingForensics`.
 
-**B. TTL edge channels — `/acquisition/ttl/<channel>`.** Per channel
+**B. TTL edge channels — `/acquisition/ttl/<channel>`. [SCAFFOLD]** Per channel
 (`camera_shutter`, `monitor_scanout`, `light_source`): edge timestamps (raw DAQ +
-unified seconds), polarity, and channel semantics. Drop/gap detection per channel.
-→ NWB `ndx-events` `EventsTable` (one per channel; `timestamp` in s; edge/polarity
-as `CategoricalVectorData`).
+unified seconds), polarity, channel semantics; drop/gap detection per channel.
+Optional (`When` TTL DAQ present). → NWB `ndx-events` `EventsTable` (one per
+channel; `timestamp` in s; edge/polarity as `CategoricalVectorData`).
+
+**B′. Photodiode signal — `/acquisition/photodiode`. [SCAFFOLD]** Optional analog
+trace + derived threshold-crossing onsets (the *emitted-light* measurement, §5.4):
+samples or onset timestamps (unified seconds), threshold, channel placement.
+Optional (`When` a photodiode is connected). → NWB `ndx-events` `EventsTable` +
+analog `TimeSeries`. Doubles as the per-run validation of §5.3's gap.
 
 **C. Per-frame stimulus angle — `/acquisition/stimulus/{azi,alt}_angle_deg`
-(or a unified `stimulus_position_deg`).** The **commanded stimulus angle/position
+(or a unified `stimulus_position_deg`). [POPULATE]** The **commanded stimulus angle/position
 per stimulus frame** — the exact ground truth the analysis needs, *stored, not
 interpolated from `progress`* (P1, the SNLC-trap closure). `progress`/`state_ids`/
 `sweep_indices` remain for context. This is the single highest-value addition.
 
-**D. Light-source timing — `/acquisition/light` (or TTL channel + metadata).**
+**D. Light-source timing — `/acquisition/light` (or TTL channel + metadata).
+[POPULATE commanded on/off + wavelength/intensity; SCAFFOLD the TTL edges]**
 On/off edges (TTL or commanded), wavelength + intensity per epoch, and the
 relationship to camera exposure (ISI signal ∝ illumination, so this is
 load-bearing data, not metadata). → `ndx-events` + `ndx-openisi`.
 
-**E. Camera exposure window — `/acquisition/camera/exposure_{start,end}_us`**
-(or center + width). For fast-moving stimuli the sensor integrates over a window
+**E. Camera exposure window — `/acquisition/camera/exposure_{start,end}_us`.
+[POPULATE]** (or center + width). For fast-moving stimuli the sensor integrates over a window
 that may span multiple monitor scanouts; storing the window (vs only a point
 timestamp + a scalar `camera_exposure_us`) removes an analysis assumption (P1).
 
 **F. Monitor-light-latency calibration — `/calibration/display` (or a versioned
-sidecar referenced by the run).** The photodiode's role, captured once: onset
+sidecar referenced by the run). [SCAFFOLD — populated at commissioning via the
+photodiode (B′)]** The photodiode's role, captured once: onset
 latency (commanded→emitted), scanline dependence (top/center/bottom), rise
 profile / pixel-response, the panel + driver identity it applies to, *how/when it
 was measured*, and its uncertainty. Analysis applies it to lift commanded
@@ -259,7 +304,7 @@ timestamps to emitted-light time (P4). Versioned + provenance-stamped so a run
 records which calibration it used.
 
 **G. Timing forensics — extend the existing `/acquisition/{timing,clock_sync,
-quality}`.** Keep the regime/beat-period/drift/drop model; make its uncertainty
+quality}`. [POPULATE]** Keep the regime/beat-period/drift/drop model; make its uncertainty
 **tier-aware** (a TTL run and a vsync-fallback run carry different uncertainty
 budgets), and fold the DAQ↔QPC residual + calibration uncertainty into the
 top-level budget.
@@ -300,15 +345,19 @@ Export stays transform-only / lossless (per `docs/INTEROP_NWB.md`).
 
 ## 9. Phased implementation plan (design-only here; each phase its own effort)
 
-- **Phase 1 — software-tier completeness (no new hardware).** Store the **per-frame
-  stimulus angle (C)**, **light-source timing (D)** and **camera exposure window
-  (E)** from what we *already* measure, plus the **sync-provenance record (A)** in
-  its `vsync_fallback` form. *This closes the SNLC trap immediately, before any
-  TTL/DAQ hardware exists* — it is the highest value-per-effort phase.
-- **Phase 2 — TTL/DAQ capture (B) + clock-domain mapping (P3).** The hardware
-  Tier-1 path; DAQ↔QPC sync + residual.
-- **Phase 3 — monitor-latency calibration (F)** protocol + stored calibration +
-  analysis application.
+- **Phase 1 — software-tier completeness + full scaffolding (no new hardware).**
+  *Populate* the per-frame stimulus angle (C), light-source timing (D), camera
+  exposure window (E), and the sync-provenance record (A) in its `vsync_fallback`
+  form, from what we *already* measure. *Scaffold* (declare as optional `When`, with
+  the full source enum) the TTL channels (B), the photodiode signal (B′), and the
+  `/calibration/display` slot (F) — so the format is **TTL- and photodiode-ready the
+  day Phase 1 lands**, no later migration (P7). Highest value-per-effort, and the
+  prerequisite scaffolding for everything after.
+- **Phase 2 — TTL/DAQ capture (B) + clock-domain mapping (P3).** Populate the TTL
+  scaffolding; DAQ↔QPC sync + residual.
+- **Phase 3 — monitor-latency calibration (F) + photodiode (B′).** The commissioning
+  photodiode protocol that *populates* the reserved calibration slot, plus optional
+  per-run photodiode validation; analysis applies the calibration.
 - **Phase 4 — NWB export mapping (§8)** + DANDI.
 
 Each schema change: SSoT edit → golden regen → contract test → bit-identical
