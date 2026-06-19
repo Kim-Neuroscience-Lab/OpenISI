@@ -6,16 +6,37 @@ their oracles).
 
 ## Status & scope (read this first)
 
-**Built** (`crates/synth`, dev-only): the bedrock forward-model primitives — the
-analytic ground-truth map (`map::LogMap`) and the Kalatsky–Stryker encoder
-(`encode`), both unit-tested against their known properties (conformality ⇒
-field sign +1; closed-form magnification; DFT-recovers-the-encoded-phase;
-delay-subtraction separation).
+**Built** (`crates/synth`, dev-only):
+- The bedrock primitives — the analytic ground-truth map (`map::LogMap`) and the
+  Kalatsky–Stryker encoder (`encode`), unit-tested against their known properties.
+- **Phase A (2026-06-18):** the realism layer's hemodynamic HRF (difference-of-
+  gamma, a recoverable positive delay) + sensor noise (`realism`), deterministic
+  seeded randomness (`rng`, ChaCha substreams), recording assembly (`acquire` →
+  `Synthetic`), and the **full-pipeline recover-and-compare correctness test**
+  (`crates/isi-analysis/tests/synthetic_fullmovie.rs`): a physically-valid
+  synthetic movie is run through the real from-raw pipeline and recovers the known
+  retinotopy (altitude median ~0.005°, azimuth ~0.37°; position recovered even with
+  ΔR/R below the shot-noise floor).
+- **Two findings the synthetic surfaced** (oracle-faithfulness tests can't — the
+  oracle shares the conventions): (1) a *zero-delay* recording sits on the SNLC
+  delay-disambiguation singularity (`Gprocesskret` forces the delay into `(0, π]`,
+  assuming a strictly positive hemodynamic lag), so a realistic positive delay is
+  required for a *valid* recording; (2) a small uniform **~0.37° azimuth bias** —
+  *decisively localized* (test `delay_bias_math_vs_numerical`) to the
+  **movie→complex-maps front-end**: the Kalatsky–Stryker delay-subtraction formula
+  is mathematically exact (machine-ε in pure f64) AND our pipeline is exact on exact
+  complex maps (0.0000), so the bias is a floating-point/quantization artifact (f32
+  per-cycle DFT + u16 quantization on the HRF-attenuated tiny signal), azimuth-
+  specific because the per-pixel map errors cancel on the symmetric altitude map but
+  not the fovea-asymmetric azimuth map. The delay subtraction only makes it *visible*
+  as a position offset; it does not cause it. (An earlier note attributing it to the
+  delay subtraction was confounded by signal size — corrected.)
 
-**Deferred** (designed below, not built): the `.oisi` assembly + full-pipeline
-recover-and-compare, the hardened forward model (multi-area mouse layout, the
-hemodynamic realism layer, the provably-non-circular geometry-mediated mapping),
-the **cross-implementation benchmark**, and publication.
+**Deferred** (designed below, not built): the remaining realism knobs (PSF,
+physiological lines, drift, vasculature, saturation), the raw-`.oisi` writer for
+committable fixtures, the oracle-handoff adapters (the input layer for the full-
+pass oracle golden), the hardened multi-area wedge-dipole map, the **stress
+battery / cross-implementation benchmark**, and publication.
 
 **Why deferred — the honest cost/benefit.** OpenISI's thesis is *faithful
 recapitulation of the field's methods*, and we already validate that

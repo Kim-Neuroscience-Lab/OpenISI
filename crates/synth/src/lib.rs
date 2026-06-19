@@ -5,16 +5,25 @@
 //! only faithfulness-to-an-oracle. The forward model and its citations are in
 //! [`docs/SYNTHETIC_VALIDATION.md`](../../../docs/SYNTHETIC_VALIDATION.md).
 //!
-//! Built bedrock-up:
-//! 1. [`map`] — the analytic ground-truth map (complex-log / wedge-dipole). The
-//!    primitive everything else consumes: cortex pixel → known visual position,
-//!    field sign, and magnification.
-//! 2. *(next)* the Kalatsky–Stryker forward encoder (truth → periodic movie).
-//! 3. *(next)* the realism layer (delay, hemodynamic PSF, noise — richer than the
-//!    pipeline's assumptions, to avoid circularity).
-//! 4. *(next)* `.oisi` assembly + the recover-and-compare report.
+//! Built bedrock-up (Phase A built):
+//! 1. [`map`] — the analytic ground-truth map (complex-log / wedge-dipole).
+//! 2. [`encode`] — the Kalatsky–Stryker forward encoder (truth → clean movie).
+//! 3. [`realism`] — the realism layer (Phase A: hemodynamic HRF delay + sensor
+//!    noise; Phase B: PSF, physiological lines, drift, vasculature). Richer than
+//!    the pipeline's assumptions, so recovery tests measure robustness to model
+//!    mismatch, not assumptions against themselves.
+//! 4. [`acquire`] — recording assembly: four sweep epochs → a pipeline-ingestible
+//!    [`acquire::Synthetic`]. The conversion to `isi_analysis::RawAcquisition` +
+//!    the recover-and-compare correctness test live in `isi-analysis`'s dev tests
+//!    (this crate stays an independent leaf). Determinism via [`rng`].
+//!
+//! Deferred (Phase B/C): the remaining realism knobs + the oracle-handoff adapters
+//! + the stress battery (see `docs/SYNTHETIC_VALIDATION.md`).
 //!
 //! Nothing depends on this crate, so the app/release build never compiles it.
 
+pub mod acquire;
 pub mod encode;
 pub mod map;
+pub mod realism;
+pub mod rng;
