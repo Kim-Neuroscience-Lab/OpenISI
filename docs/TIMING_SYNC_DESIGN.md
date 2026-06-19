@@ -93,8 +93,11 @@ faithful algorithm accurate — not a nicety.
    → 0.1 ms resolution), and differs by panel technology (CRT vs LCD vs gaming/
    G-Sync) ([Behavior Research Methods 2018](https://link.springer.com/article/10.3758/s13428-018-1018-7);
    [Sci Rep 2020 CRT vs LCD](https://www.nature.com/articles/s41598-020-63853-4)).
-   ⇒ **It is a one-time calibration, not a per-run measurement** ("calibrate once
-   with a photodiode at commissioning, then run photodiode-free").
+   ⇒ **It is a one-time calibration, not a per-run measurement** — characterize the
+   monitor's latency once at commissioning, then run with that stored value. The
+   characterization *method* is pluggable (§5.4): the rig's own camera, datasheet
+   specs, a scanout model, a lag tester, or a photodiode — the photodiode is the
+   most precise option, not a requirement.
 
 4. **TTL synchronization standard** (Open Ephys / Bonsai): route a **camera
    *shutter* TTL per frame** into a master clock; when streams have *different*
@@ -224,27 +227,39 @@ uncertainty. *(The one exception: if the "monitor TTL" is itself a photodiode-
 derived edge, it measures emitted light directly per-run — see open question
 §10.1.)*
 
-### 5.4 Why we scaffold the photodiode, not just TTL (decision: yes)
-The production rig is photodiode-free, but the **format + provenance treat the
-photodiode as a first-class (optional) source**, for three reasons:
-1. **It is the calibration source.** The monitor-latency calibration (§6.F) that
-   corrects every TTL/vsync commanded-onset is *measured with a photodiode at
-   commissioning*. A photodiode slot is therefore not optional infrastructure — it
-   is where the single number that makes the photodiode-free design defensible
-   comes from.
-2. **It is the field-standard ground truth, as an optional per-run validation
-   channel.** Even with TTL primary, a photodiode in a screen corner measures the
-   *actual emitted light* TTL/vsync cannot — closing §5.3's irreducible gap *per
-   run* rather than by calibration. Supporting it (optionally) maximizes scientific
-   defensibility and interoperability: a reviewer who wants photodiode truth can
-   have it, on the same rig, with no format change.
-3. **The scaffolding cost is ~zero** — an optional (`When`) signal slot + one
-   provenance variant — versus a format migration if it is retrofitted later.
+### 5.4 The monitor-latency calibration is REQUIRED; the photodiode is NOT
+The commanded→emitted monitor latency (§2.2, §5.3) must be **characterized** — that
+value is a required input. But it does **not** have to be characterized *by a
+photodiode*; conflating "the latency must be measured" with "by a photodiode" would
+smuggle a photodiode dependency back into a photodiode-free design. The
+characterization **method is pluggable**, and several are genuinely photodiode-free:
 
-So the data model reserves (Phase 1, unwritten) a `/calibration/display` slot
-(populated by a commissioning photodiode) and an optional `/acquisition/photodiode`
-signal + a `photodiode` provenance source, alongside the TTL scaffolding — even
-though Phase 1 writes neither.
+| Method | Photodiode-free? | Precision | Notes |
+|---|---|---|---|
+| **Rig's own camera images the monitor** | ✅ (uses existing hardware) | ~one camera frame (10–33 ms) | A camera is a slow photodiode array; capture the luminance rise of a commanded flash, hardware-timestamped, same clock domain. Bounds the offset; not sub-frame. |
+| **Datasheet / independent-review specs** (input lag + g2g response) | ✅ | ~ms | No measurement; per-unit + settings-dependent. |
+| **Scanout model + panel-response measurement** | partly | scanline-exact + residual | The scanline-dependent geometry is deterministic from refresh+resolution; only the panel-response residual needs measuring. |
+| **Commercial lag tester** (Bodnar, …) | ✅ (rig stays free) | sub-ms | Is itself a photodiode device, used once externally. |
+| **Photodiode** | ✗ (adds the sensor) | ~0.1 ms | Most precise, direct, field-standard; *and* validates per-run. The best, but **optional**. |
+
+So the `/calibration/display` slot stores the **latency value + the method that
+produced it + its uncertainty** (P5). A camera-self-calibrated run and a
+photodiode-calibrated run are both valid — they carry different declared
+uncertainties. The system is **photodiode-free-capable** (camera self-cal /
+datasheet, coarser) *and* **photodiode-ready** (precise, optional).
+
+**Why we still scaffold the photodiode (decision: yes):** it is the *most precise*
+calibration method **and** the field-standard *per-run validation* channel (a
+photodiode in a screen corner measures the emitted light TTL/vsync cannot, closing
+§5.3's gap per-run), for a scaffolding cost of ~zero (an optional `When` signal slot
++ one provenance variant) versus a format migration if retrofitted. It is the best
+*option*, not a *requirement*.
+
+So the data model reserves (Phase 1, unwritten): a method-tagged
+`/calibration/display` slot (populated by *any* of the methods above — camera
+self-cal is the default photodiode-free path) and an optional
+`/acquisition/photodiode` signal + a `photodiode` provenance source, alongside the
+TTL scaffolding.
 
 ---
 
@@ -295,13 +310,15 @@ that may span multiple monitor scanouts; storing the window (vs only a point
 timestamp + a scalar `camera_exposure_us`) removes an analysis assumption (P1).
 
 **F. Monitor-light-latency calibration — `/calibration/display` (or a versioned
-sidecar referenced by the run). [SCAFFOLD — populated at commissioning via the
-photodiode (B′)]** The photodiode's role, captured once: onset
+sidecar referenced by the run). [SCAFFOLD — populated once by *any* method in
+§5.4; camera-self-cal is the default photodiode-free path]** Captured once: onset
 latency (commanded→emitted), scanline dependence (top/center/bottom), rise
-profile / pixel-response, the panel + driver identity it applies to, *how/when it
-was measured*, and its uncertainty. Analysis applies it to lift commanded
-timestamps to emitted-light time (P4). Versioned + provenance-stamped so a run
-records which calibration it used.
+profile / pixel-response, the panel + driver identity it applies to, **the method
+that measured it** (`camera_self_cal` | `datasheet` | `scanout_model` |
+`lag_tester` | `photodiode`), *how/when it was measured*, and its uncertainty
+(method-dependent, P5). Analysis applies it to lift commanded timestamps to
+emitted-light time (P4). Versioned + provenance-stamped so a run records which
+calibration — and which method — it used.
 
 **G. Timing forensics — extend the existing `/acquisition/{timing,clock_sync,
 quality}`. [POPULATE]** Keep the regime/beat-period/drift/drop model; make its uncertainty
@@ -355,9 +372,10 @@ Export stays transform-only / lossless (per `docs/INTEROP_NWB.md`).
   prerequisite scaffolding for everything after.
 - **Phase 2 — TTL/DAQ capture (B) + clock-domain mapping (P3).** Populate the TTL
   scaffolding; DAQ↔QPC sync + residual.
-- **Phase 3 — monitor-latency calibration (F) + photodiode (B′).** The commissioning
-  photodiode protocol that *populates* the reserved calibration slot, plus optional
-  per-run photodiode validation; analysis applies the calibration.
+- **Phase 3 — monitor-latency calibration (F).** The commissioning protocol that
+  *populates* the reserved calibration slot via the chosen method (§5.4 — camera
+  self-cal is the default photodiode-free path; photodiode optional for precision +
+  per-run validation, scaffolded as B′); analysis applies the stored calibration.
 - **Phase 4 — NWB export mapping (§8)** + DANDI.
 
 Each schema change: SSoT edit → golden regen → contract test → bit-identical
