@@ -372,6 +372,23 @@ the VFS — are grounded in *recorded measurements*, not reverse-engineered. Tha
 the concrete, testable definition of "we did not fall into the SNLC trap," and it
 is the doc's success criterion.
 
+### 7.1 The analysis must *consume* the hierarchy (or it's recorded-but-unused)
+A timing hierarchy is only worth building if the analysis uses it. Today the
+cycle-combine DFT is the faithful Allen `get_average_movie`: it assumes **uniform**
+camera-frame spacing (`mean_frame_dur`) and matches each sweep to the **nearest**
+camera frame — it ignores the recorded per-frame timestamps. That is correct and
+oracle-validated when jitter is small, but it leaves the recorded timing on the
+table. So we add a **selectable** *non-uniform-time* projection method (the
+codebase's tagged-enum pattern): a Lomb–Scargle / NUDFT that projects at the
+stimulus frequency using each sample's **actual** `cam_ts_sec` and the
+**best-available** stimulus onset (P0 cascade) corrected by the monitor-latency
+calibration (F) — so camera jitter, non-uniform spacing, and the commanded→emitted
+offset are *corrected from measurement* rather than assumed away. The faithful
+uniform Allen method stays the oracle-validated **default**; the non-uniform method
+is the rigorous path that makes the hierarchy pay off. (This is also what finally
+*uses* the per-frame stimulus state arrays, resolving their "recorded-but-unused"
+status — they were forensic until an estimator consumed them.)
+
 ---
 
 ## 8. NWB / standards grounding (export mapping)
