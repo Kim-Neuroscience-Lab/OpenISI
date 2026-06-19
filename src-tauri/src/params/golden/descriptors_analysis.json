@@ -37,10 +37,6 @@
           "value": "reliability"
         },
         {
-          "label": "User polygon",
-          "value": "user_polygon"
-        },
-        {
           "label": "SNLC ImBound (Garrett 2014)",
           "value": "snlc_garrett2014_im_bound"
         },

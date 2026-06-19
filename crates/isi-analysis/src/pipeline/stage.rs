@@ -13,8 +13,6 @@
 
 use std::sync::atomic::AtomicBool;
 
-use ndarray::Array2;
-
 use crate::{AcquisitionProperties, AnalysisError, AnalysisParams, ProgressSink, RawAcquisition};
 
 use super::state::PipelineState;
@@ -150,17 +148,15 @@ impl StageId {
 }
 
 /// Immutable per-run inputs shared by every stage. These are the pipeline's
-/// *inputs* (the raw acquisition the `Baseline`/`Projection` stages consume, the
-/// caller's `user_polygon`, geometry/calibration, the param set, plus the
-/// cancel/progress channels projection needs) — distinct from the *produced*
-/// intermediates in [`PipelineState`] (incl. `complex_maps`/`reliability`/`snr`).
+/// *inputs* (the raw acquisition the `Baseline`/`Projection` stages consume,
+/// geometry/calibration, the param set, plus the cancel/progress channels
+/// projection needs) — distinct from the *produced* intermediates in
+/// [`PipelineState`] (incl. `complex_maps`/`reliability`/`snr`).
 pub struct StageCtx<'a> {
     /// Raw acquisition (frames + timing + schedule) — consumed by `Baseline`
     /// (F0) and `Projection` (DFT). `None` when the boundary seeded the complex
     /// maps from a cache/import (then both stages are skipped).
     pub raw: Option<&'a RawAcquisition>,
-    /// Caller-supplied cortex polygon — consumed by `CortexSource`.
-    pub user_polygon: Option<&'a Array2<bool>>,
     /// Acquisition geometry/calibration (rotation, angular range, offsets, µm/px).
     pub acquisition: &'a AcquisitionProperties,
     /// The full analysis parameter set (each stage reads its own slice).

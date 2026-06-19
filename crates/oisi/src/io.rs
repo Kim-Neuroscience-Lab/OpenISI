@@ -142,28 +142,6 @@ fn read_root_json_attr(path: &Path, name: &str) -> Result<Option<serde_json::Val
     Ok(Some(value))
 }
 
-/// Read the user-drawn cortex ROI from `/anatomical/cortex_roi`, if
-/// present. Returns `Ok(None)` when the dataset is absent (no user
-/// override for this file). Returns `Err` only on I/O / parse failure.
-///
-/// The dataset is stored as `u8` (0/1) for HDF5 compatibility; this
-/// helper converts to `Array2<bool>`. Source-of-truth path is
-/// `/anatomical/cortex_roi`; consumers (analyze orchestrator, future
-/// UI) write to that path when the user provides an explicit ROI.
-pub fn read_cortex_roi(path: &Path) -> Result<Option<Array2<bool>>, OisiError> {
-    let file = open_read(path)?;
-    if !file.link_exists("anatomical/cortex_roi") {
-        return Ok(None);
-    }
-    let ds = file
-        .dataset("anatomical/cortex_roi")
-        .map_err(|e| OisiError::hdf5("opening anatomical/cortex_roi", e))?;
-    let data: Array2<u8> = ds
-        .read()
-        .map_err(|e| OisiError::hdf5("reading anatomical/cortex_roi", e))?;
-    Ok(Some(data.mapv(|v| v != 0)))
-}
-
 /// Read the anatomical image as u8 grayscale.
 pub fn read_anatomical(path: &Path) -> Result<Array2<u8>, OisiError> {
     let file = open_read(path)?;

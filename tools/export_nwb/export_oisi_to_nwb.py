@@ -270,9 +270,6 @@ def convert(oisi_path: str, nwb_path: str, namespace_path: str, meta: dict | Non
         if "anatomical" in f and isinstance(f["anatomical"], h5py.Dataset):
             images.append(GrayscaleImage(name="anatomical", data=f["anatomical"][()],
                                          description="Anatomical reference image of the cortical surface."))
-        if "anatomical/cortex_roi" in f:
-            images.append(GrayscaleImage(name="cortex_roi", data=f["anatomical/cortex_roi"][()],
-                                         description="User-drawn cortex ROI mask (0/1)."))
         if images:
             nwb.add_acquisition(Images(name="anatomical_images", images=images,
                                        description="Anatomical reference imagery."))

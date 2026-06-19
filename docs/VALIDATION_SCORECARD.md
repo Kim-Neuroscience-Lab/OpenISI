@@ -121,7 +121,7 @@ are **regression-locks on our own current behaviour only**.
 | Method | Status | Note |
 |---|---|---|
 | **Reliability cortex** (`CortexSource::Reliability` → `cortex_from_reliability`) | **OpenISI's own — no oracle for the mask** | The cross-cycle *coherence* metric IS golden (`reliability_matches_coherence_formula`, Engel 1994 / Zhuang 2017). The cortex-MASK derivation on top (min-over-directions threshold → largest-CC → fill) has NO oracle: Zhuang `RetinotopicMapping.py` uses no power/coherence ROI mask and segments full-frame (verified from source 2026-06-16). Pinned only by `cortex_from_reliability_pins_current_threshold_rule`. Threshold is `>=` (inclusive), following the reference's own threshold convention (`signMapf >= signMapThr`); KimLabISI (our predecessor, not an oracle) also used `>=`. |
-| `CortexSource::UserPolygon`, `NoRestriction` | n/a | user input / trivial pass-through — no oracle applies. |
+| `CortexSource::NoRestriction` | n/a | trivial pass-through — no oracle applies. |
 | `PatchRefinement::None` | n/a | identity pass-through (`none_passes_through_unchanged`). |
 
 ## Oracle COVERAGE gaps — outputs/methods the oracles produce that we do NOT

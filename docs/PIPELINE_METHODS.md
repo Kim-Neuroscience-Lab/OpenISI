@@ -301,7 +301,6 @@ test suite 2026-06-18 — every prior `⬜`/`NOT PORTED` mark was **stale**.
 | vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≡ Allen `visualSignMap` on smooth input, stabler at wraps (RM.py 446-478) | Python / A | ✅ `vfs_matches_allen_visual_sign_map_on_smooth_input` (+ `…stable_across_phase_wraps…`) |
 | sign_map_smoothing | `Gaussian` | Allen `_getSignMap` `gaussian_filter` (RM.py) | scipy / A | ✅ `gaussian_smooth_matches_scipy_gaussian_filter` (<1e-6) |
 | cortex_source | `Reliability` | OpenISI's own (NO oracle for the mask; Zhuang does no cortex restriction, verified) | regression-lock | — (OpenISI method; property-pinned `cortex_from_reliability_pins_current_threshold_rule`) |
-| cortex_source | `UserPolygon` | user input | — | — |
 | cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | Octave / A | ✅ `snlc_cortex_endtoend_matches_octave` (+ 5 morph-op goldens) |
 | cortex_source | `SnlcMagThreshold` | SNLC `overlaymaps.m` 205-215 (`norm(mag^1.1) ≥ .12`) | Octave / A | ✅ `snlc_mag_threshold_roi_matches_overlaymaps` (0 diff) |
 | cortex_source | `NoRestriction` | Allen default (trivial) | — | — |

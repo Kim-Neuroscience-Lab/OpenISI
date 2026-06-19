@@ -55,10 +55,9 @@ What enters a stage's fingerprint:
   value therefore correctly invalidates the dependent stages.
 - **Raw-data identity** for inputs not produced by an upstream stage. The first stage
   has no parameters; its fingerprint is the identity of the acquisition recording
-  (root provenance attributes), not a rehash of tens of GB of frames. User inputs
-  that aren't parameters — the drawn `cortex_roi` polygon, raw-derived reliability
-  maps — enter the fingerprint of the stage that consumes them, gated on the variant
-  that uses them.
+  (root provenance attributes), not a rehash of tens of GB of frames. Inputs
+  that aren't parameters — e.g. raw-derived reliability maps — enter the
+  fingerprint of the stage that consumes them, gated on the variant that uses them.
 - **The upstream stages' fingerprints**, in dependency order.
 
 **An algorithm change is a fingerprint change.** The key includes a version tag the

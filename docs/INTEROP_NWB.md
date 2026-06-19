@@ -47,7 +47,7 @@ bridge). PyNWB is the reference implementation; `nwbinspector` is the validator.
 | camera calibration (`rig.camera.um_per_pixel`) | `ImagingPlane.grid_spacing` | core |
 | `/acquisition/camera/frames` `(T,H,W)` + `timestamps_sec` | `OnePhotonSeries` | core |
 | `/acquisition/schedule/*` + `sweep_sequence` | `TimeIntervals` "sweeps" (+ `direction` col) | core |
-| `/anatomical` (+ `cortex_roi`) | `GrayscaleImage` in `Images` | core |
+| `/anatomical` | `GrayscaleImage` in `Images` | core |
 | `/results/area_labels` + `area_signs` | `PlaneSegmentation` (ROI `image_mask` + `sign` col) | core |
 | `/results/*` per-pixel maps (phase/amp/VFS/ecc/mag/SNR/reliability/contours/masks) | `RetinotopyMaps.retinotopy_maps` (`RetinotopyMap`) | **ndx-openisi** |
 | per-map render meta (palette/units/display range/wrap/sentinels) | `RetinotopyMap` attributes | **ndx-openisi** |

@@ -98,7 +98,6 @@ mod tests {
         let ctx = CortexResolveContext {
             shape: (N, N),
             reliability: None,
-            user_polygon: None,
             vfs_smoothed: Some(&vfs),
             response_magnitude: None,
         };

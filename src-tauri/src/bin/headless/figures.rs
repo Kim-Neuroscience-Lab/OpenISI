@@ -44,7 +44,6 @@ pub(crate) fn compare_method_variants(
     let cortex_variants = vec![
         CortexSourceMethod::NoRestriction,
         CortexSourceMethod::Reliability { threshold: 0.5 },
-        CortexSourceMethod::UserPolygon,
         CortexSourceMethod::SnlcGarrett2014ImBound { k, close, dilate },
     ];
 

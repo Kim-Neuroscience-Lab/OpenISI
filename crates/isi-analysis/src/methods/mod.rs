@@ -10,7 +10,7 @@
 //! `Garrett2014SigmaScaled`) must cite its source in the docstring: paper
 //! reference (author year, journal vol:page) plus source-code file and line
 //! range when applicable. Variants without an attribution (e.g.
-//! `UserPolygon`, `NoRestriction`, `None`) must explain why no citation
+//! `NoRestriction`, `None`) must explain why no citation
 //! applies — the variant is named for what it does (not what it cites).
 //!
 //! This is enforced by code review plus the per-method golden tests (see

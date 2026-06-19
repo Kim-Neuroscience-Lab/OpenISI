@@ -39,7 +39,7 @@ use oisi::io::{
 pub use oisi::import_snlc_directory;
 pub use oisi::io::{
     atomic_update, create, read_acquisition_identity, read_anatomical, read_complex_maps,
-    read_cortex_roi, read_experiment_params, read_raw_acquisition, read_rig_params,
+    read_experiment_params, read_raw_acquisition, read_rig_params,
     strip_derived_outputs, verify_format_version, write_anatomical, write_checked_1d,
     write_complex_maps, write_f64_attr, write_str_attr, write_u32_attr, FORMAT_VERSION,
 };

@@ -170,9 +170,6 @@ fn emit_cortex_source(h: &mut Hasher, m: &CortexSourceMethod) {
             h.update(b"reliability:");
             h.update(&threshold.to_le_bytes());
         }
-        CortexSourceMethod::UserPolygon => {
-            h.update(b"user_polygon");
-        }
         CortexSourceMethod::SnlcGarrett2014ImBound { k, close, dilate } => {
             h.update(b"snlc_imbound:");
             h.update(&k.to_le_bytes());
@@ -349,14 +346,10 @@ impl StageFingerprints {
 /// chain captures all input identities and cannot under-invalidate).
 ///
 /// `raw_identity` is the recording's content identity (the pipeline-root input).
-/// `user_polygon_id` identifies the user-drawn cortex ROI read by the
-/// `UserPolygon` cortex source (an external file input, not a stage output);
-/// `None` when the file carries no polygon.
 pub fn compute(
     params: &AnalysisParams,
     acq: &AcquisitionProperties,
     raw_identity: &str,
-    user_polygon_id: Option<&str>,
 ) -> StageFingerprints {
     // Baseline — direct: baseline method + the raw recording identity.
     let baseline = {
@@ -402,14 +395,11 @@ pub fn compute(
         hex(h)
     };
 
-    // CortexSource — direct: cortex_source params + the user-polygon identity
-    // (external file input); deps = [SignSmoothing] (reliability identity is
-    // captured transitively via Retinotopy → Projection).
+    // CortexSource — direct: cortex_source params; deps = [SignSmoothing]
+    // (reliability identity is captured transitively via Retinotopy → Projection).
     let cortex_source = {
         let mut h = base_hasher(StageId::CortexSource);
         emit_cortex_source(&mut h, &params.cortex_source);
-        h.update(b"|user_polygon:");
-        h.update(user_polygon_id.unwrap_or("none").as_bytes());
         dep(&mut h, &sign_smoothing);
         hex(h)
     };
@@ -491,16 +481,16 @@ pub fn compute(
 
 /// Fingerprint of the `Projection` stage (the complex maps). Compatibility
 /// wrapper over the Merkle [`compute`] — gates reuse of a cached `/complex_maps`
-/// when a recording has raw frames. (Acquisition geometry / polygon don't affect
+/// when a recording has raw frames. (Acquisition geometry doesn't affect
 /// projection, so any value yields the same key for this stage.)
 pub fn projection(params: &AnalysisParams, raw_identity: &str) -> String {
-    compute(params, &AcquisitionProperties::default(), raw_identity, None).projection
+    compute(params, &AcquisitionProperties::default(), raw_identity).projection
 }
 
 /// Fingerprint of the `Retinotopy` stage (the expensive device compute).
 /// Compatibility wrapper over the Merkle [`compute`].
 pub fn retinotopy(params: &AnalysisParams, acq: &AcquisitionProperties, raw_identity: &str) -> String {
-    compute(params, acq, raw_identity, None).retinotopy
+    compute(params, acq, raw_identity).retinotopy
 }
 
 // Fingerprint stability/sensitivity is exercised in `tests/incremental.rs`,

@@ -38,8 +38,6 @@ pub struct CortexResolveContext<'a> {
     pub shape: (usize, usize),
     /// Per-direction reliability maps (raw acquisition path only).
     pub reliability: Option<&'a ReliabilityMaps>,
-    /// User-drawn polygon mask from `.oisi /anatomical/cortex_roi`.
-    pub user_polygon: Option<Array2<bool>>,
     /// Smoothed VFS, needed for `SnlcGarrett2014ImBound`.
     pub vfs_smoothed: Option<&'a Array2<f64>>,
     /// Combined per-pixel response magnitude (mean of the azimuth and altitude
@@ -51,7 +49,6 @@ impl CortexSourceExt for CortexSource {
     fn short_label(&self) -> &'static str {
         match self {
             Self::Reliability { .. } => "reliability",
-            Self::UserPolygon => "user_polygon",
             Self::SnlcGarrett2014ImBound { .. } => "snlc_imbound",
             Self::SnlcMagThreshold { .. } => "snlc_magthr",
             Self::NoRestriction => "no_restriction",
@@ -82,12 +79,6 @@ impl CortexSourceExt for CortexSource {
                     *threshold,
                 ))
             }
-            Self::UserPolygon => ctx.user_polygon.clone().ok_or_else(|| {
-                AnalysisError::MissingData(
-                    "CortexSourceMethod::UserPolygon requires /anatomical/cortex_roi in the .oisi file"
-                        .into(),
-                )
-            }),
             Self::NoRestriction => Ok(Array2::from_elem(ctx.shape, true)),
             Self::SnlcGarrett2014ImBound { k, close, dilate } => {
                 let (k, close, dilate) = (*k, *close, *dilate);
@@ -188,7 +179,6 @@ mod tests {
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,
-            user_polygon: None,
             vfs_smoothed: None,
             response_magnitude: None,
         };
@@ -203,7 +193,6 @@ mod tests {
         let ctx = CortexResolveContext {
             shape: (10, 10),
             reliability: None,
-            user_polygon: None,
             vfs_smoothed: None,
             response_magnitude: None,
         };

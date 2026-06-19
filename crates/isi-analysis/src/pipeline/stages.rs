@@ -188,9 +188,6 @@ impl Stage for CortexSource {
         let cortex_ctx = CortexResolveContext {
             shape: vfs_smooth.dim(),
             reliability: st.reliability.as_ref(),
-            // The method clones internally for the UserPolygon variant; we hand
-            // it an owned copy to match the procedural call's data flow exactly.
-            user_polygon: ctx.user_polygon.cloned(),
             vfs_smoothed: Some(vfs_smooth),
             response_magnitude: Some(&response_magnitude),
         };

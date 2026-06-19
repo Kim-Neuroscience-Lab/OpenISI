@@ -53,7 +53,6 @@ pub fn run(
     raw: Option<&RawAcquisition>,
     mut state: PipelineState,
     restored: &HashSet<StageId>,
-    user_polygon: Option<Array2<bool>>,
     env: RunEnv,
 ) -> Result<RunOutput, AnalysisError> {
     let RunEnv {
@@ -68,7 +67,6 @@ pub fn run(
 
     let ctx = StageCtx {
         raw,
-        user_polygon: user_polygon.as_ref(),
         acquisition,
         params,
         cancel,

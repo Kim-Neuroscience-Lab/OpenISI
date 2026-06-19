@@ -212,9 +212,9 @@ fn full_pipeline_segments_two_areas_of_opposite_sign() {
     params.cortex_source = CortexSourceMethod::NoRestriction;
 
     // The pure seeded-maps path: complex maps are the input (stage 0 skipped),
-    // no reliability/polygon, full tail recompute. `compute_analysis` is the
+    // no reliability, full tail recompute. `compute_analysis` is the
     // public wrapper over `pipeline::run` for exactly this case.
-    let result = isi_analysis::compute_analysis(&maps, None, None, &identity_acq(), &params)
+    let result = isi_analysis::compute_analysis(&maps, None, &identity_acq(), &params)
         .expect("full pipeline on synthetic maps");
 
     // Area signs: one ±1 per segmented area (background label 0 excluded).

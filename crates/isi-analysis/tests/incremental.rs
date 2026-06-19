@@ -237,7 +237,7 @@ fn stage_fps(mutate: impl FnOnce(&mut AnalysisConfig)) -> StageFingerprints {
     let mut cfg = AnalysisConfig::default();
     mutate(&mut cfg);
     let params = AnalysisParams::from(&cfg);
-    fingerprint::compute(&params, &fixed_acq(), "rec", None)
+    fingerprint::compute(&params, &fixed_acq(), "rec")
 }
 
 /// The load-bearing correctness property of the Merkle cache: a param change

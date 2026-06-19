@@ -129,7 +129,6 @@ kind_enum!(SignMapSmoothingKind {
 
 kind_enum!(CortexSourceKind {
     Reliability => "Reliability mask",
-    UserPolygon => "User polygon",
     SnlcGarrett2014ImBound => "SNLC ImBound (Garrett 2014)",
     // SNLC response-magnitude ROI gate (overlaymaps.m): normalized mag^1.1 ≥ thr.
     SnlcMagThreshold => "SNLC magnitude threshold (overlaymaps)",

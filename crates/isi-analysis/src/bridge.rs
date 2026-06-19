@@ -118,8 +118,8 @@ mod tests {
         let back = AnalysisParams::from(&cfg);
         let acq = crate::AcquisitionProperties::default();
         assert_eq!(
-            crate::pipeline::fingerprint::compute(&params, &acq, "rec", None),
-            crate::pipeline::fingerprint::compute(&back, &acq, "rec", None),
+            crate::pipeline::fingerprint::compute(&params, &acq, "rec"),
+            crate::pipeline::fingerprint::compute(&back, &acq, "rec"),
         );
     }
 }

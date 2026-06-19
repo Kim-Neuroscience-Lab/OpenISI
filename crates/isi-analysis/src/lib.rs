@@ -284,7 +284,7 @@ pub use math::compute_retinotopy;
 /// Selected methods plus their parameters are recorded in
 /// `.oisi /analysis_params` so re-analysis is bit-reproducible.
 ///
-/// `reliability` and `user_polygon` are inputs to the cortex-source
+/// `reliability` is an input to the cortex-source
 /// stage; if the selected `CortexSourceMethod` variant requires data not
 /// supplied here (e.g. `Reliability` needs reliability maps), the
 /// function returns an `AnalysisError::MissingData` rather than
@@ -303,7 +303,6 @@ pub use math::compute_retinotopy;
 pub fn compute_analysis(
     complex_maps: &ComplexMaps,
     reliability: Option<&ReliabilityMaps>,
-    user_polygon: Option<ndarray::Array2<bool>>,
     acquisition: &AcquisitionProperties,
     params: &AnalysisParams,
 ) -> Result<AnalysisResult> {
@@ -321,7 +320,6 @@ pub fn compute_analysis(
         None,
         seed,
         &std::collections::HashSet::new(),
-        user_polygon,
         pipeline::RunEnv {
             acquisition,
             params,
@@ -343,8 +341,7 @@ pub fn compute_analysis(
 /// - Has complex maps (import or prior run) with no per-cycle data →
 ///   currently unsupported by this orchestrator: reliability can't be
 ///   computed, and we don't fall back to anatomy-derived cortex (per
-///   the `feedback_no_anatomy_inference` principle). The caller must
-///   supply a user-drawn cortex mask in a future revision.
+///   the `feedback_no_anatomy_inference` principle).
 ///
 /// `params_tree` is the tagged-`AnalysisConfig` JSON to stamp into
 /// `/analysis_params` for provenance. When `Some`, it is written **inside the
@@ -390,21 +387,10 @@ pub fn analyze(
         tracing::warn!("{msg}");
     }
 
-    // The user-drawn cortex polygon (an external file input the `UserPolygon`
-    // cortex source reads) and its content identity — folded into the
-    // cortex_source fingerprint so editing the ROI invalidates that stage down.
-    let user_polygon = io::read_cortex_roi(path)?;
-    let user_polygon_id = user_polygon.as_ref().map(polygon_identity);
-
     // The full Merkle fingerprint set — one key per stage, each folding its own
     // inputs and its dependency stages' keys. Computed once; drives both the
     // stage-0 reuse decision and the tail restore cut.
-    let fps = pipeline::fingerprint::compute(
-        params,
-        &acquisition,
-        &raw_identity,
-        user_polygon_id.as_deref(),
-    );
+    let fps = pipeline::fingerprint::compute(params, &acquisition, &raw_identity);
 
     // ── Stage 0 (complex maps): seed from cache/import, or compute from raw ──
     // A cached `/complex_maps` is reused only when it was produced under the
@@ -460,7 +446,6 @@ pub fn analyze(
         raw.as_ref(),
         seed,
         &restored,
-        user_polygon,
         pipeline::RunEnv {
             acquisition: &acquisition,
             params,
@@ -527,26 +512,6 @@ pub fn analyze(
     progress.set_stage("Complete");
     progress.set_progress(1.0);
     Ok(())
-}
-
-/// Content identity of a user-drawn cortex ROI — a blake3 hash over its shape +
-/// bytes — folded into the cortex_source fingerprint so editing the polygon
-/// invalidates that stage (and everything downstream) but nothing above it.
-fn polygon_identity(polygon: &Array2<bool>) -> String {
-    let mut h = blake3::Hasher::new();
-    let (rows, cols) = polygon.dim();
-    h.update(&(rows as u64).to_le_bytes());
-    h.update(&(cols as u64).to_le_bytes());
-    // Hash the mask as one contiguous byte buffer (0/1 per pixel) rather than a
-    // per-pixel `update` — a single pass instead of millions of calls on a
-    // full-frame ROI. Row-major order is fixed by `as_standard_layout`.
-    let bytes: Vec<u8> = polygon
-        .as_standard_layout()
-        .iter()
-        .map(|&b| b as u8)
-        .collect();
-    h.update(&bytes);
-    h.finalize().to_hex().to_string()
 }
 
 // =============================================================================

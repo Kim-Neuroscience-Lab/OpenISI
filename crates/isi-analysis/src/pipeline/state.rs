@@ -19,7 +19,7 @@ use crate::segmentation::Patch;
 use crate::{AnalysisError, ComplexMaps, ReliabilityMaps, ResponsivenessMaps, RetinotopyMaps};
 
 /// Intermediate values produced by the pipeline (Retinotopy → DerivedMaps).
-/// Inputs to the pipeline (`complex_maps`, `reliability`, `user_polygon`,
+/// Inputs to the pipeline (`complex_maps`, `reliability`,
 /// `acquisition`, `params`) live in [`super::stage::StageCtx`], not here —
 /// this holds only what stages *produce*.
 #[derive(Default)]
