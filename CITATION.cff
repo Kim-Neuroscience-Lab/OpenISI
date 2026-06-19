@@ -1,0 +1,120 @@
+# Citation File Format — https://citation-file-format.github.io/ (FORCE11 software-citation standard).
+# GitHub renders a "Cite this repository" button from this file.
+#
+# NOTE: paper DOIs are intentionally OMITTED pending lab verification — add them
+# before any citable release (do not infer DOIs). Author/year/title/journal below
+# are bibliographic facts; the `references` software entries pin the EXACT vendored
+# oracle commits OpenISI's faithful-reproduction goldens validate against
+# (see docs/ORACLE_VERSIONS.md and docs/PIPELINE_METHODS.md §6).
+cff-version: 1.2.0
+message: >-
+  If you use OpenISI, please cite this software (metadata below) AND the upstream
+  methods it faithfully reproduces (see `references`).
+title: OpenISI
+abstract: >-
+  An open-source, interoperable instrument for intrinsic-signal-imaging
+  retinotopy: a Tauri + Rust application that faithfully recapitulates the
+  field's published analysis methods as selectable, oracle-validated pipeline
+  stages.
+type: software
+authors:
+  - family-names: Murray
+    given-names: Adam
+    affiliation: Kim Neuroscience Lab
+  - name: Kim Neuroscience Lab
+version: 1.0.0-alpha
+license: MIT
+repository-code: https://github.com/Kim-Neuroscience-Lab/OpenISI
+keywords:
+  - intrinsic signal imaging
+  - retinotopy
+  - mouse visual cortex
+  - widefield imaging
+  - visual area segmentation
+
+# Upstream methods OpenISI reproduces. Article entries = the methods literature;
+# software entries pin the vendored reference implementations by commit.
+references:
+  - type: article
+    title: "New paradigm for optical imaging: temporally encoded maps of intrinsic signal"
+    authors:
+      - family-names: Kalatsky
+        given-names: Valery A.
+      - family-names: Stryker
+        given-names: Michael P.
+    journal: Neuron
+    year: 2003
+    notes: "Delay-subtraction cycle combination (cycle_combine: KalatskyStryker…)."
+  - type: article
+    title: "Functional specialization of seven mouse visual cortical areas"
+    authors:
+      - family-names: Marshel
+        given-names: James H.
+      - family-names: Garrett
+        given-names: Marina E.
+      - family-names: Nauhaus
+        given-names: Ian
+      - family-names: Callaway
+        given-names: Edward M.
+    journal: Neuron
+    year: 2011
+  - type: article
+    title: "Topography and areal organization of mouse visual cortex"
+    authors:
+      - family-names: Garrett
+        given-names: Marina E.
+      - family-names: Nauhaus
+        given-names: Ian
+      - family-names: Marshel
+        given-names: James H.
+      - family-names: Callaway
+        given-names: Edward M.
+    journal: Journal of Neuroscience
+    year: 2014
+    notes: "SNLC segmentation lineage (splitPatchesX/fusePatchesX, getMouseAreasX)."
+  - type: article
+    title: "An extended retinotopic map of mouse cortex"
+    authors:
+      - family-names: Zhuang
+        given-names: Jun
+      - family-names: Ng
+        given-names: Lydia
+      - family-names: Williams
+        given-names: Derric
+      - family-names: Valley
+        given-names: Matthew
+      - family-names: Li
+        given-names: Yang
+      - family-names: Garrett
+        given-names: Marina
+      - family-names: Waters
+        given-names: Jack
+    journal: eLife
+    year: 2017
+    notes: "Allen/Zhuang segmentation + sign-map methods."
+  - type: software
+    title: retinotopic_mapping
+    authors:
+      - family-names: Zhuang
+        given-names: Jun
+    repository-code: https://github.com/zhuangjun1981/retinotopic_mapping
+    notes: "Allen oracle (canonical published segmentation). Pinned @ eb5a57f00b4e80950c6fc00d58bc0ea0e21b4f3f (2024-08-20)."
+  - type: software
+    title: corticalmapping
+    authors:
+      - family-names: Zhuang
+        given-names: Jun
+    repository-code: https://github.com/zhuangjun1981/corticalmapping
+    notes: "Allen oracle (movie processing: normalize_movie, generatePhaseMap2, isRectify). Pinned @ 0ddd261b3993f5ce5608adfbd98a588afc56d20c (2020-07-13)."
+  - type: software
+    title: "ISI (SNLC intrinsic-signal-imaging analysis, MATLAB)"
+    authors:
+      - name: Callaway Lab (Salk Institute)
+    notes: "SNLC oracle. Pinned @ 175f012d0be1208a851ca26939066ddb4c66756c (2019-11-06)."
+  - type: software
+    title: wfield
+    authors:
+      - family-names: Couto
+        given-names: João
+    repository-code: https://github.com/jcouto/wfield
+    notes: "Widefield-imaging lineage (different method family). Survey candidate, not yet a validated oracle. Pinned @ 0befe16679f2503a5126decabcd2a66e2d55d710 (2025-08-26)."
