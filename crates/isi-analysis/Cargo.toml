@@ -7,6 +7,9 @@ description = "ISI retinotopy analysis — pure library, no GUI dependency"
 
 [dependencies]
 openisi-params = { path = "../openisi-params" }
+# The .oisi file format (schema + HDF5 primitives). isi-analysis composes these
+# to read/write recordings; it re-exports `oisi::schema` as `oisi_schema`.
+oisi = { path = "../oisi" }
 ndarray = { version = "0.17", features = ["approx", "rayon"] }
 rayon = "1"
 num-complex = "0.4"

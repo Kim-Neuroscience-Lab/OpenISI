@@ -14,7 +14,10 @@ pub mod mat5;
 pub mod math;
 pub mod methods;
 pub mod migrate;
-pub mod oisi_schema;
+/// The `.oisi` schema (single source of truth for the on-disk layout) now lives
+/// in the dedicated `oisi` crate; re-exported here so existing
+/// `isi_analysis::oisi_schema::*` paths keep resolving.
+pub use oisi::schema as oisi_schema;
 pub mod params;
 pub mod pipeline;
 pub mod segmentation;

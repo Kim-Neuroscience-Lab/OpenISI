@@ -5,6 +5,9 @@ members = [
     "crates/openisi-stimulus",
     "crates/pco-sdk",
     "crates/openisi-params",
+    # The .oisi file format (schema + HDF5 I/O + import) — light, no analysis
+    # compute, so synth/tools/src-tauri can read/write recordings directly.
+    "crates/oisi",
     "crates/isi-analysis",
     # Dev-only task runner (oracle golden regeneration + freshness gate).
     # Nothing depends on it, so the app/release build never compiles it.
