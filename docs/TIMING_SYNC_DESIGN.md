@@ -162,6 +162,20 @@ documentation-clarity gap, not a bug.
 
 ## 4. Design principles
 
+- **P0 — Best-available cascade, honest at every rung (the GOVERNING principle; the
+  rest are corollaries).** For *each signal*, use the **best source available** and
+  **record which one** — never silently degrade, never overstate. The fidelity
+  cascade: **photodiode** (emitted light) → **TTL** (hardware edge, commanded) →
+  **GPU vsync** (software interrupt, commanded) → **camera-hardware-timestamp +
+  commanded software timing** (best-effort), with **EDID** feeding the monitor-
+  latency model at whatever rung is reached. Whatever rung a run lands on, the file
+  states the **source + value + uncertainty** and flags each quantity as
+  **measured / assumed / unknown**, so a consumer or reviewer always knows exactly
+  what is and isn't grounded. A photodiode run and a no-EDID-no-TTL run are *both
+  valid* — they carry honestly different uncertainties. This is the **same
+  no-silent-fallback philosophy the codebase already enforces** for acquisition
+  geometry (`ProvenanceLevel`: `Full` / `Partial{missing}` / `Defaulted` /
+  `Synthetic`), applied to timing. P1–P7 below are how P0 is realized.
 - **P1 — Store, don't derive.** Anything a measurement (or the stimulus
   controller) *knows at acquisition time* is stored, not reconstructed downstream.
   Directly closes the SNLC trap. (Per-frame stimulus angle is the headline case.)
@@ -274,13 +288,17 @@ unit suffixes). Each item is marked **[POPULATE]** (written in Phase 1, software
 tier) or **[SCAFFOLD]** (declared as optional `When` now, written when the hardware
 arrives — the format is ready, per P7).
 
-**A. Sync provenance — `/acquisition/sync` (group + attrs). [POPULATE]** The file's
-self-declaration of *how it was timed*: a per-signal `source` ∈ {`photodiode` |
-`ttl` | `vsync_fallback`} (the full enum exists from day one, even though Phase 1
-only ever writes `vsync_fallback`), the clock domain of each, `ttl_present` /
-`photodiode_present` (bool), DAQ model + clock rate (if any), the **DAQ↔QPC
-mapping** + residual, and a top-level `timing_uncertainty_sec` budget. This is what
-makes a run trustable from the data alone (P5). → NWB `/general` + `TimingForensics`.
+**A. Sync provenance — `/acquisition/sync` (group + attrs). [POPULATE]** The
+machine-readable form of P0: the file's self-declaration of *how it was timed*, so
+a consumer never has to guess. Per signal: the `source` it landed on in the
+cascade ∈ {`photodiode` | `ttl` | `gpu_vsync` | `camera_hw_best_effort`} (the full
+enum exists from day one; Phase 1 writes `gpu_vsync`/`camera_hw_best_effort`), its
+clock domain, and a `quality` tag ∈ {`measured` | `assumed` | `unknown`} with a
+per-signal `uncertainty_sec`. Plus `ttl_present`/`photodiode_present`/`edid_present`
+(bool), DAQ model + clock rate (if any), the **DAQ↔QPC mapping** + residual, and a
+top-level `timing_uncertainty_sec` budget. A run is trustable from this alone:
+nothing is silently degraded, nothing is overstated. → NWB `/general` +
+`TimingForensics`.
 
 **B. TTL edge channels — `/acquisition/ttl/<channel>`. [SCAFFOLD]** Per channel
 (`camera_shutter`, `monitor_scanout`, `light_source`): edge timestamps (raw DAQ +
