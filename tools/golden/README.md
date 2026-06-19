@@ -23,10 +23,41 @@ cargo xtask goldens combine    # only generators whose name contains "combine"
 cargo xtask goldens --check    # regenerate into a sandbox + diff vs committed
                                #   (the freshness gate; restores the tree)
 cargo xtask figures            # run the render_*.py comparison-figure tools
+cargo xtask figures oracle_state  # just the oracle-state gallery
 ```
 
 `xtask` is its own workspace member that nothing depends on, so the app/release
 build never compiles it and never acquires a Python/Octave dependency.
+
+### The oracle-state gallery
+
+`cargo xtask figures oracle_state` writes one figure per (dataset, group) under
+`target/oracle_state/` (overwritten each run). Each is a grid: every row is a
+method/leaf in pipeline-DAG order, columns are `[oracle|reference | OpenISI |
+difference]`, colormapped by data kind (periodic `twilight` / diverging `RdBu_r`
+/ sequential `viridis`, a 4-way {both, oracle-only, ours-only, neither}
+categorical map for boolean masks, and a differ-highlight for integer label
+maps).
+
+**Two paths** (the dump example `oracle_state.rs` runs first; both by default):
+
+- **synthetic** (`*_{Allen,SNLC,NumLib}_oracle_state.png`) — each method on its
+  committed per-op golden fixture vs the verbatim reference output. Column 1 is a
+  true external **oracle**, recomputed live through the same public op the golden
+  test exercises. The **NumLib** group holds methods whose oracle is a canonical
+  numerical-library primitive (numpy.fft, scipy.gaussian_filter, numpy.median)
+  rather than an Allen/SNLC science method — full coverage, distinct origin.
+
+- **r43** (`r43_{Maps,Segmentation}_oracle_state.png`) — the full pipeline
+  re-run on the real `R43_smoke.oisi` recording, every `/results` leaf vs the
+  committed `R43_smoke.baseline.oisi` (the equivalence harness's reference, so
+  column 1 is the **reference** baseline). This is the real-data regression view;
+  "for the ones possible" = the leaves present in the file. Skipped automatically
+  if the R43 fixture/baseline are absent.
+
+Run one path alone with `cargo run -p isi-analysis --example oracle_state --
+synthetic` (fast; good for iterating on figure style) or `-- r43`. Re-running
+just `render_oracle_state.py` re-renders from the last dump without recomputing.
 
 ## One-time toolchain setup
 

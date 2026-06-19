@@ -7,6 +7,13 @@ description = "Dev-only synthetic ground-truth retinotopy generator: analytic fo
 
 [dependencies]
 ndarray = "0.17"
+# Deterministic, portable, version-stable PRNG for the realism layer's noise
+# (seed → bit-identical movie on any platform; the codebase forbids nondeterminism).
+# Gaussian draws are Box-Muller over ChaCha uniforms, so no rand_distr is needed
+# for the Phase-A sensor noise (shot = Gaussian-approx N(s,√s) for the large ISI
+# counts; read = N(0,σ)).
+rand = "0.9"
+rand_chacha = "0.9"
 
 [dev-dependencies]
 # The shared ε-grounded comparator, for the encode→DFT recovery tests.

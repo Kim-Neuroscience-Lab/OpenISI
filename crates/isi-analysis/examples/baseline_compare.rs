@@ -94,7 +94,7 @@ fn f1_amplitude(
     let mut n_used = 0usize;
     for &onset in cycle_onsets {
         let indices: Vec<usize> = (onset..onset + chunk_frame_dur).collect();
-        let dff = frames_u16_subset_to_dff_tensor(frames, &indices, baseline, floor);
+        let dff = frames_u16_subset_to_dff_tensor(frames, &indices, baseline, floor, true);
         let cm = dft_projection_at_freq(dff, dt, freq);
         let re = isi_analysis::compute::tensor_to_array2_f64(cm.real()).unwrap();
         let im = isi_analysis::compute::tensor_to_array2_f64(cm.imag()).unwrap();

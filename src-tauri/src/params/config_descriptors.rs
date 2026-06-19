@@ -60,7 +60,10 @@ pub(crate) enum EnumKind {
     Order,
     // Analysis per-stage method selectors.
     Baseline,
+    ResponseNormalization,
     CycleAverage,
+    Rectification,
+    DirectionSmoothing,
     CycleCombine,
     PhaseSmoothing,
     VfsComputation,
@@ -76,8 +79,9 @@ impl EnumKind {
     fn options(self) -> Vec<EnumOption> {
         use openisi_params::{
             BaselineKind, Carrier, CortexSourceKind, CycleAverageKind, CycleCombineKind,
-            EccentricityKind, Envelope, Order, PatchExtractionKind, PatchRefinementKind,
-            PatchThresholdKind, PhaseSmoothingKind, Projection, SignMapSmoothingKind, Structure,
+            DirectionSmoothingKind, EccentricityKind, Envelope, Order, PatchExtractionKind,
+            PatchRefinementKind, PatchThresholdKind, PhaseSmoothingKind, Projection,
+            RectificationKind, ResponseNormalizationKind, SignMapSmoothingKind, Structure,
             VfsComputationKind, VisualField,
         };
         match self {
@@ -88,7 +92,10 @@ impl EnumKind {
             EnumKind::Structure => enum_options::<Structure>(),
             EnumKind::Order => enum_options::<Order>(),
             EnumKind::Baseline => enum_options::<BaselineKind>(),
+            EnumKind::ResponseNormalization => enum_options::<ResponseNormalizationKind>(),
             EnumKind::CycleAverage => enum_options::<CycleAverageKind>(),
+            EnumKind::Rectification => enum_options::<RectificationKind>(),
+            EnumKind::DirectionSmoothing => enum_options::<DirectionSmoothingKind>(),
             EnumKind::CycleCombine => enum_options::<CycleCombineKind>(),
             EnumKind::PhaseSmoothing => enum_options::<PhaseSmoothingKind>(),
             EnumKind::VfsComputation => enum_options::<VfsComputationKind>(),
@@ -482,7 +489,10 @@ pub(crate) static UI_STATE_META: &[UiMeta] = &[
 /// Analysis per-stage method selectors — always active (label "Method").
 pub(crate) static ANALYSIS_METHOD_META: &[UiMeta] = &[
     UiMeta { id: "baseline.method", group: GBaseline, label: "Method", unit: "", kind: Enum(Ek::Baseline), bound: NoBound },
+    UiMeta { id: "response_normalization.method", group: GBaseline, label: "Normalization", unit: "", kind: Enum(Ek::ResponseNormalization), bound: NoBound },
     UiMeta { id: "cycle_average.method", group: GCycAvg, label: "Method", unit: "", kind: Enum(Ek::CycleAverage), bound: NoBound },
+    UiMeta { id: "rectification.method", group: GCycAvg, label: "Rectification", unit: "", kind: Enum(Ek::Rectification), bound: NoBound },
+    UiMeta { id: "direction_smoothing.method", group: GCycComb, label: "Pre-combine smoothing", unit: "", kind: Enum(Ek::DirectionSmoothing), bound: NoBound },
     UiMeta { id: "cycle_combine.method", group: GCycComb, label: "Method", unit: "", kind: Enum(Ek::CycleCombine), bound: NoBound },
     UiMeta { id: "phase_smoothing.method", group: GPhase, label: "Method", unit: "", kind: Enum(Ek::PhaseSmoothing), bound: NoBound },
     UiMeta { id: "vfs_computation.method", group: GVfs, label: "Method", unit: "", kind: Enum(Ek::VfsComputation), bound: NoBound },
@@ -497,6 +507,7 @@ pub(crate) static ANALYSIS_METHOD_META: &[UiMeta] = &[
 /// Analysis per-variant tunables (labels/units/groups + canonical defaults),
 /// mirroring the tagged-enum variant fields in `config::analysis`.
 pub(crate) static ANALYSIS_TUNABLE_META: &[ATun] = &[
+    ATun { id: "direction_smoothing.snlc_adaptive_smoother.sigma_px", stage: "direction_smoothing", variant: "snlc_adaptive_smoother", field: "sigma_px", group: GCycComb, label: "Adaptive \u{03c3}", unit: "px", kind: F64, bound: Range(0.1, 50.0), default_f: 2.0 },
     ATun { id: "phase_smoothing.snlc_amp_weighted_phasor.sigma_px", stage: "phase_smoothing", variant: "snlc_amp_weighted_phasor", field: "sigma_px", group: GPhase, label: "Smoothing \u{03c3}", unit: "px", kind: F64, bound: Range(0.0, 50.0), default_f: 1.0 },
     ATun { id: "phase_smoothing.allen_zhuang2017_position_gaussian.sigma_px", stage: "phase_smoothing", variant: "allen_zhuang2017_position_gaussian", field: "sigma_px", group: GPhase, label: "Smoothing \u{03c3}", unit: "px", kind: F64, bound: Range(0.0, 50.0), default_f: 1.0 },
     ATun { id: "sign_map_smoothing.gaussian.sigma_um", stage: "sign_map_smoothing", variant: "gaussian", field: "sigma_um", group: GSign, label: "Smoothing \u{03c3}", unit: "\u{00b5}m", kind: F64, bound: Range(0.0, 500.0), default_f: 60.0 },
@@ -504,6 +515,8 @@ pub(crate) static ANALYSIS_TUNABLE_META: &[ATun] = &[
     ATun { id: "cortex_source.snlc_garrett2014_im_bound.k", stage: "cortex_source", variant: "snlc_garrett2014_im_bound", field: "k", group: GCortex, label: "\u{03c3} multiplier", unit: "", kind: F64, bound: Range(0.0, 10.0), default_f: 1.5 },
     ATun { id: "cortex_source.snlc_garrett2014_im_bound.close", stage: "cortex_source", variant: "snlc_garrett2014_im_bound", field: "close", group: GCortex, label: "Closing radius", unit: "px", kind: I32, bound: Range(0.0, 50.0), default_f: 10.0 },
     ATun { id: "cortex_source.snlc_garrett2014_im_bound.dilate", stage: "cortex_source", variant: "snlc_garrett2014_im_bound", field: "dilate", group: GCortex, label: "Dilation radius", unit: "px", kind: I32, bound: Range(0.0, 50.0), default_f: 3.0 },
+    ATun { id: "cortex_source.snlc_mag_threshold.exponent", stage: "cortex_source", variant: "snlc_mag_threshold", field: "exponent", group: GCortex, label: "Magnitude exponent", unit: "", kind: F64, bound: Range(0.0, 10.0), default_f: 1.1 },
+    ATun { id: "cortex_source.snlc_mag_threshold.threshold", stage: "cortex_source", variant: "snlc_mag_threshold", field: "threshold", group: GCortex, label: "ROI threshold", unit: "", kind: F64, bound: Range(0.0, 1.0), default_f: 0.12 },
     ATun { id: "patch_threshold.allen_zhuang2017_fixed_sign_map_thr.value", stage: "patch_threshold", variant: "allen_zhuang2017_fixed_sign_map_thr", field: "value", group: GPThresh, label: "Threshold", unit: "", kind: F64, bound: Range(0.0, 1.0), default_f: 0.35 },
     ATun { id: "patch_threshold.garrett2014_sigma_scaled.k", stage: "patch_threshold", variant: "garrett2014_sigma_scaled", field: "k", group: GPThresh, label: "\u{03c3} multiplier", unit: "", kind: F64, bound: Range(0.0, 10.0), default_f: 1.5 },
     ATun { id: "patch_extraction.allen_zhuang2017_label_open_close_dilate.open_iter", stage: "patch_extraction", variant: "allen_zhuang2017_label_open_close_dilate", field: "open_iter", group: GPExtract, label: "Opening iterations", unit: "", kind: I32, bound: Range(0.0, 50.0), default_f: 3.0 },

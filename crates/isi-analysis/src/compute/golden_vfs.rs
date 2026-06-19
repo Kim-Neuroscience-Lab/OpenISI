@@ -445,7 +445,7 @@ mod tests {
         // (2) dF/F (faithful path, floor=0) = Allen (F − F0)/F0, in f32; observed
         // 0 → K=16 covers the f32 (sub, div) forward error.
         let idx: Vec<usize> = (0..N).collect();
-        let dff_t = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0);
+        let dff_t = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0, true);
         let got: Vec<f64> = dff_t
             .into_data()
             .to_vec::<f32>()
@@ -455,6 +455,67 @@ mod tests {
             .collect();
         let dff_ref: Vec<f64> = dff_exp.iter().map(|&v| f64::from(v)).collect();
         Tol::abs(16, Eps::F32).assert("dF/F vs Allen normalizeMovie", &got, &dff_ref);
+    }
+
+    /// **Response-normalization equivalence (item 4).** The oracle-faithful
+    /// absolute-ΔF F1 (`OracleAbsoluteDeltaF`, `F − F0`, SNLC `Gf1image.m` /
+    /// Allen `generatePhaseMap2`) and OpenISI's fractional ΔF/F F1
+    /// (`OpenIsiFractionalDff`, `(F − F0)/F0`) are related by a **positive-real
+    /// per-pixel scale** `1/F0`. So the bin-1 DFT obeys, per pixel:
+    ///
+    /// ```text
+    /// F1_fractional · F0  ==  F1_absolute      (complex)
+    /// ```
+    ///
+    /// which proves BOTH halves of the audit finding at once: identical **phase**
+    /// (the `1/F0` factor is invisible to `arg`), and the exact **amplitude**
+    /// divergence `|F1_fractional| = |F1_absolute| / F0` that the oracles don't
+    /// carry. Reuses the `gen_dff_golden.py` movie (all F0 > 0); floor 0 so the
+    /// fractional denominator is exactly `F0`.
+    #[test]
+    fn response_normalization_absolute_vs_fractional_phase_equivalence() {
+        use crate::compute::{
+            dft_projection_at_freq, frames_u16_subset_to_dff_tensor, temporal_mean_baseline,
+        };
+        use ndarray::Array3;
+        const N: usize = 20;
+        const H: usize = 16;
+        const W: usize = 16;
+        let fb: &[u8] = include_bytes!("../../tests/golden/fixtures/dff_frames.bin");
+        let frames_u16: Vec<u16> = fb
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
+        let baseline = temporal_mean_baseline(&frames);
+        let idx: Vec<usize> = (0..N).collect();
+
+        // Fractional ΔF/F (divide=true, floor 0 ⇒ denom = F0) and absolute ΔF
+        // (divide=false, denom = 1) — the two ResponseNormalization variants.
+        let frac = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0, true);
+        let absolute = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0, false);
+
+        // Bin-1 DFT (any dt/freq works — the identity holds for the linear DFT at
+        // any single frequency; the per-pixel 1/F0 factors straight through).
+        let (dt, freq) = (1.0_f64, 1.0 / N as f64);
+        let cm_frac = dft_projection_at_freq(frac, dt, freq);
+        let cm_abs = dft_projection_at_freq(absolute, dt, freq);
+        let fr_re = tensor_to_array2_f64(cm_frac.real()).unwrap();
+        let fr_im = tensor_to_array2_f64(cm_frac.imag()).unwrap();
+        let ab_re = tensor_to_array2_f64(cm_abs.real()).unwrap();
+        let ab_im = tensor_to_array2_f64(cm_abs.imag()).unwrap();
+
+        let f0 = baseline.as_slice().expect("contiguous");
+        let pred_re: Vec<f64> = fr_re.iter().zip(f0).map(|(&v, &b)| v * b).collect();
+        let pred_im: Vec<f64> = fr_im.iter().zip(f0).map(|(&v, &b)| v * b).collect();
+        let ab_re_v: Vec<f64> = ab_re.iter().copied().collect();
+        let ab_im_v: Vec<f64> = ab_im.iter().copied().collect();
+
+        // K grounded to MEASURED drift: the round-trip is f32 DFT, then a divide
+        // (by F0) reintroduced by a multiply, over a ~10³-count F1 magnitude.
+        // Observed max rel ≈ 30·ε_f32 → K = 64 bounds it (power-of-two cover).
+        Tol::rel(64, Eps::F32, 64).assert("Re: F1_fractional·F0 vs F1_absolute", &pred_re, &ab_re_v);
+        Tol::rel(64, Eps::F32, 64).assert("Im: F1_fractional·F0 vs F1_absolute", &pred_im, &ab_im_v);
     }
 
     /// `temporal_median_baseline` vs Allen `normalizeMovie(baselineType=

@@ -31,7 +31,13 @@ pub struct AnalysisConfig {
     #[garde(dive)]
     pub baseline: Baseline,
     #[garde(dive)]
+    pub response_normalization: ResponseNormalization,
+    #[garde(dive)]
     pub cycle_average: CycleAverage,
+    #[garde(dive)]
+    pub rectification: Rectification,
+    #[garde(dive)]
+    pub direction_smoothing: DirectionSmoothing,
     #[garde(dive)]
     pub cycle_combine: CycleCombine,
     #[garde(dive)]
@@ -63,6 +69,29 @@ pub enum Baseline {
     OpenIsiInterSweepMedian,
 }
 
+// ── Stage 0b: response normalization (ΔF/F vs absolute ΔF; no tunables) ──────
+/// How the per-cycle response movie is normalized against the baseline `F0`
+/// before the bin-1 DFT.
+///
+/// The oracles and OpenISI agree on **phase** but differ on **amplitude
+/// weighting**: SNLC (`Gf1image.m`, `acc = Σ(img−f0)·e^{iφ}`) and Allen
+/// (`generatePhaseMap2(aveMov)`, F1 of the raw cycle-average) both form the F1
+/// from the **absolute** response `F−F0` — no per-pixel division. OpenISI's
+/// default divides by `F0` (fractional ΔF/F), so its F1 magnitude carries an
+/// extra per-pixel `1/F0` weighting the oracles don't. The phase is identical
+/// (the `1/F0` factor is a positive real per-pixel scale, invisible to `arg`),
+/// but that magnitude feeds cortex masking and amplitude-weighted smoothing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, Validate)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum ResponseNormalization {
+    /// `(F − F0) / max(F0, floor)` — fractional ΔF/F (OpenISI default).
+    #[default]
+    OpenIsiFractionalDff,
+    /// `F − F0` — absolute response, no division. The oracle-faithful F1
+    /// amplitude (SNLC `Gf1image.m` / Allen `generatePhaseMap2`).
+    OracleAbsoluteDeltaF,
+}
+
 // ── Projection: cycle averaging (no tunables) ───────────────────────────────
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, Validate)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -70,6 +99,57 @@ pub enum CycleAverage {
     #[default]
     SimpleComplexAverage,
     PhaseLockedAverage,
+}
+
+// ── Projection: pre-DFT rectification (Allen isRectify; no tunables) ─────────
+/// Optional half-wave rectification of the per-cycle response movie before the
+/// bin-1 DFT — Allen `HighLevel.getMappingMovies(isRectify=...)`. Default off.
+///
+/// Allen (`HighLevel.py:607-612`) clips the **mean-subtracted** movie's negative
+/// samples to zero (`aveMovNorRec[aveMovNorRec < 0] = 0`) before the FFT when
+/// `isRectify=True` (the default is `False`, FFT of the raw cycle-average).
+/// On OpenISI's response movie the clip zeroes the **same samples** (division by
+/// `F0 > 0` preserves sign), so the rectification semantics port faithfully; the
+/// retained magnitudes inherit whatever [`ResponseNormalization`] is active.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, Validate)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum Rectification {
+    /// No rectification — the response movie passes through unchanged
+    /// (Allen `isRectify=False`, the validated default).
+    #[default]
+    None,
+    /// Half-wave rectify: clip negative samples to zero before the DFT
+    /// (Allen `isRectify=True`).
+    AllenZhuang2017ClipNegative,
+}
+
+// ── Pre-combine per-direction smoothing (SNLC Gprocesskret) ──────────────────
+/// Optional smoothing applied to the **four per-direction complex F1 maps**
+/// *before* cycle-combine — where SNLC `Gprocesskret.m` applies its smoothing
+/// (lines 36-83, ahead of the delay-subtraction at 88-100). Default off, so the
+/// default pipeline is bit-identical (OpenISI smooths *after* combine, via
+/// [`PhaseSmoothing`]).
+///
+/// The `SnlcAdaptiveSmoother` variant is the verbatim Wiener-type
+/// `adaptiveSmoother.m` (local mean/variance with noise = mean local variance),
+/// run on the real and imaginary parts of each complex map. Because it is
+/// **nonlinear**, it is faithful *only* applied per-direction pre-combine (here)
+/// — applying it post-combine on the merged phasor would match neither oracle.
+/// Its low-pass kernel is SNLC's `L = fspecial('gaussian', 15, sigma_px)`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, Validate)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum DirectionSmoothing {
+    /// No pre-combine smoothing (the validated default — OpenISI smooths the
+    /// combined phasor post-combine via [`PhaseSmoothing`]).
+    #[default]
+    None,
+    /// SNLC `adaptiveSmoother.m` (Wiener-type) on each per-direction complex map,
+    /// with low-pass kernel `fspecial('gaussian', 15, sigma_px)`.
+    SnlcAdaptiveSmoother {
+        #[garde(range(min = 0.1, max = 50.0))]
+        #[schemars(range(min = 0.1, max = 50.0))]
+        sigma_px: f64,
+    },
 }
 
 // ── Stage 1: cycle combine (no tunables) ────────────────────────────────────
@@ -146,6 +226,18 @@ pub enum CortexSource {
         #[garde(range(min = 0, max = 50))]
         #[schemars(range(min = 0, max = 50))]
         dilate: i32,
+    },
+    /// SNLC response-magnitude ROI gate — `overlaymaps.m:205-215`: raise the
+    /// response magnitude to `exponent`, min-max normalize to `[0,1]`, keep
+    /// pixels `≥ threshold`. A pure intensity gate (no morphology), unlike the
+    /// VFS-driven `SnlcGarrett2014ImBound`.
+    SnlcMagThreshold {
+        #[garde(range(min = 0.0, max = 10.0))]
+        #[schemars(range(min = 0.0, max = 10.0))]
+        exponent: f64,
+        #[garde(range(min = 0.0, max = 1.0))]
+        #[schemars(range(min = 0.0, max = 1.0))]
+        threshold: f64,
     },
     NoRestriction,
 }
@@ -241,6 +333,12 @@ pub enum PatchRefinement {
         #[schemars(range(min = 0, max = 10_000))]
         small_patch_thr: usize,
     },
+    /// SNLC / Garrett 2014 split + fuse (`splitPatchesX` then `fusePatchesX`):
+    /// split patches that over-represent visual space, then fuse adjacent
+    /// same-sign patches covering unique visual space. No static tunables — the
+    /// SNLC criteria are fixed; the cortical scale comes from the rig's
+    /// `um_per_pixel` at runtime.
+    Garrett2014SplitFuse,
 }
 impl Default for PatchRefinement {
     fn default() -> Self {

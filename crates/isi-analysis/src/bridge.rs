@@ -22,7 +22,10 @@ impl From<&openisi_params::config::AnalysisConfig> for AnalysisParams {
     fn from(c: &openisi_params::config::AnalysisConfig) -> Self {
         AnalysisParams::new(
             c.baseline.clone(),
+            c.response_normalization.clone(),
             c.cycle_average.clone(),
+            c.rectification.clone(),
+            c.direction_smoothing.clone(),
             c.cycle_combine.clone(),
             c.phase_smoothing.clone(),
             c.vfs_computation.clone(),
@@ -44,7 +47,10 @@ impl From<&AnalysisParams> for openisi_params::config::AnalysisConfig {
     fn from(p: &AnalysisParams) -> Self {
         openisi_params::config::AnalysisConfig {
             baseline: p.baseline.clone(),
+            response_normalization: p.response_normalization.clone(),
             cycle_average: p.cycle_average.clone(),
+            rectification: p.rectification.clone(),
+            direction_smoothing: p.direction_smoothing.clone(),
             cycle_combine: p.cycle_combine.clone(),
             phase_smoothing: p.phase_smoothing.clone(),
             vfs_computation: p.vfs_computation.clone(),

@@ -1171,6 +1171,8 @@ pub fn compute_complex_maps_from_raw(
         &raw,
         &base.f0,
         base.floor,
+        &params.response_normalization,
+        &params.rectification,
         &params.cycle_average,
         cancel,
         progress,

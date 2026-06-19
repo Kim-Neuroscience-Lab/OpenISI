@@ -68,7 +68,7 @@ pub fn gaussian_smooth_f64(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
 /// argument disables MATLAB's decomposition into line SEs, so the disk
 /// is exact, not the 4-segment approximation). For r = 0 returns just
 /// the origin.
-fn disk_offsets(radius: i32) -> Vec<(i32, i32)> {
+pub(crate) fn disk_offsets(radius: i32) -> Vec<(i32, i32)> {
     if radius <= 0 {
         return vec![(0, 0)];
     }

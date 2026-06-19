@@ -125,9 +125,10 @@ pub mod observer;
 // the analysis-view dropdowns via the descriptor layer; consumers reference them
 // as `openisi_params::CortexSourceKind`, etc.
 pub use analysis_kinds::{
-    BaselineKind, CortexSourceKind, CycleAverageKind, CycleCombineKind, EccentricityKind,
-    PatchExtractionKind, PatchRefinementKind, PatchThresholdKind, PhaseSmoothingKind,
-    SignMapSmoothingKind, VfsComputationKind,
+    BaselineKind, CortexSourceKind, CycleAverageKind, CycleCombineKind, DirectionSmoothingKind,
+    EccentricityKind, PatchExtractionKind, PatchRefinementKind, PatchThresholdKind,
+    PhaseSmoothingKind, RectificationKind, ResponseNormalizationKind, SignMapSmoothingKind,
+    VfsComputationKind,
 };
 pub use labels::{enum_options, EnumOption};
 pub use observer::ParamChangeObserver;

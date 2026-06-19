@@ -293,7 +293,7 @@ fn patch_refinement_honors_cancellation() {
     let refine = default_params().patch_refinement;
     let v = Array2::<f64>::zeros((H, W));
     let cancelled = std::sync::atomic::AtomicBool::new(true);
-    let result = refine.apply(vec![], &v, &v, &v, &cancelled);
+    let result = refine.apply(vec![], &v, &v, &v, 20.0, &cancelled);
     assert!(
         matches!(result, Err(isi_analysis::AnalysisError::Cancelled)),
         "a cancelled split/merge must abort with Cancelled"

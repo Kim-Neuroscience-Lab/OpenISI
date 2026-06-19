@@ -13,7 +13,9 @@ use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::compute;
-use crate::methods::{CycleCombineExt, PhaseSmoothingExt, VfsComputationExt};
+use crate::methods::{
+    CycleCombineExt, DirectionSmoothingExt, PhaseSmoothingExt, VfsComputationExt,
+};
 use crate::{AcquisitionProperties, AnalysisError, AnalysisParams, ComplexMaps, RetinotopyMaps};
 
 /// Bail out with [`AnalysisError::Cancelled`] when the run was cancelled. The
@@ -106,6 +108,17 @@ pub fn compute_retinotopy(
     cancel: &AtomicBool,
 ) -> crate::Result<RetinotopyMaps> {
     let (azi_fwd, azi_rev, alt_fwd, alt_rev) = rotated_complex_maps(maps, acquisition.rotation_k);
+
+    // Stage 1a — optional per-direction smoothing of the four complex F1 maps,
+    // applied BEFORE cycle-combine (where SNLC `Gprocesskret` applies its
+    // adaptive smoother). `None` (default) is a clone → bit-identical pipeline.
+    let ds = &params.direction_smoothing;
+    let (azi_fwd, azi_rev, alt_fwd, alt_rev) = (
+        ds.apply(&azi_fwd),
+        ds.apply(&azi_rev),
+        ds.apply(&alt_fwd),
+        ds.apply(&alt_rev),
+    );
 
     // Upload the four complex maps to device as Complex2 pairs.
     let a_fwd = compute::array2_complex_to_complex2(&azi_fwd);

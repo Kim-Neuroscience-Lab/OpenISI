@@ -95,6 +95,8 @@ impl Stage for Projection {
             raw,
             f0,
             floor,
+            &ctx.params.response_normalization,
+            &ctx.params.rectification,
             &ctx.params.cycle_average,
             ctx.cancel,
             ctx.progress,
@@ -168,10 +170,21 @@ impl Stage for CortexSource {
         StageId::CortexSource
     }
     fn deps(&self) -> &'static [StageId] {
+        // SignSmoothing supplies the smoothed VFS (`SnlcGarrett2014ImBound`). The
+        // response magnitude (`SnlcMagThreshold`) and reliability (`Reliability`)
+        // are read from earlier stages but captured **transitively** via
+        // SignSmoothing → Retinotopy → Projection (same convention as reliability),
+        // so they are not re-listed here.
         &[StageId::SignSmoothing]
     }
     fn execute(&self, st: &mut PipelineState, ctx: &StageCtx) -> Result<(), AnalysisError> {
         let vfs_smooth = st.vfs_smooth_ref()?;
+        // Combined per-pixel response magnitude = mean of the azimuth and
+        // altitude position amplitudes (the SNLC `magS` cross-orientation
+        // average), for the `SnlcMagThreshold` ROI gate.
+        let retino = st.retino_ref()?;
+        let response_magnitude =
+            (&retino.azi_amplitude + &retino.alt_amplitude).mapv(|v| 0.5 * v);
         let cortex_ctx = CortexResolveContext {
             shape: vfs_smooth.dim(),
             reliability: st.reliability.as_ref(),
@@ -179,6 +192,7 @@ impl Stage for CortexSource {
             // it an owned copy to match the procedural call's data flow exactly.
             user_polygon: ctx.user_polygon.cloned(),
             vfs_smoothed: Some(vfs_smooth),
+            response_magnitude: Some(&response_magnitude),
         };
         st.cortex_mask = Some(ctx.params.cortex_source.apply(&cortex_ctx)?);
         Ok(())
@@ -246,6 +260,7 @@ impl Stage for PatchRefinement {
             &retino.azi_phase_degrees,
             &retino.alt_phase_degrees,
             &retino.magnification_raw,
+            ctx.acquisition.um_per_pixel,
             ctx.cancel,
         )?;
         st.patches = Some(patches);

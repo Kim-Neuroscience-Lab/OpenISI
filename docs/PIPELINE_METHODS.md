@@ -41,8 +41,11 @@ Ordered slots. Each is one selectable method today; `certainty` is new (§7).
 
 | # | stage slot            | consumes                         | produces                  |
 |---|-----------------------|----------------------------------|---------------------------|
-| 0 | `complex_maps` (DFT)  | raw frames, schedule             | per-direction F1 complex  |
+| 0a| `response_normalization` | raw frames, F0                | ΔF/F vs absolute-ΔF movie |
+| 0 | `complex_maps` (DFT)  | (normalized, rectified) movie    | per-direction F1 complex  |
+| 0c| `rectification`       | per-cycle movie (pre-DFT)        | half-wave-rectified movie |
 | 0b| **`certainty`** (new) | raw frames / per-cycle phasors   | per-pixel validity field  |
+| 1a| `direction_smoothing` | per-direction F1 (pre-combine)   | smoothed per-direction F1 |
 | 1 | `cycle_combine`       | F1 fwd+rev (+certainty)          | position phasor           |
 | 2 | `phase_smoothing`     | position phasor (+certainty)     | smoothed phasor           |
 | 3 | `vfs_computation`     | smoothed azi+alt (+certainty)    | visual field sign         |
@@ -146,6 +149,60 @@ A method missing a golden test against its cited source is, by policy, *not* a
 faithful-reproduction method; it must be renamed to drop the attribution or get
 its test.
 
+### 6a. Naming convention (locked 2026-06-18)
+
+There is no formal standard for *naming* method variants; the de-facto
+convention in mature scientific software is the one we adopt — descriptive
+identifier, eponym only where it is the field-standard term, attribution in
+structured metadata (scikit-learn names estimators by what they do;
+scipy.optimize uses eponymous `method=` strings like `'Nelder-Mead'`/`'BFGS'`
+*because the eponym is the recognized term*; FORCE11 / `CITATION.cff` / CodeMeta
+standardize attribution as *metadata*, never as identifiers).
+
+**Rule — `<Lineage><Descriptor>`:**
+- **Descriptor** says what the method does.
+- **Lineage** ∈ {`Allen`, `Snlc`, `KalatskyStryker`, `OpenIsi`} is included **only
+  when the lineage is the semantic choice** — i.e. the variant exists to offer
+  "do it lab X's way" (the direct analogue of scipy's `method=` selector). It is
+  **omitted** for convergent / field-standard / multi-origin methods, which are
+  named descriptively (`AbsoluteDeltaF`, `SimpleComplexAverage`, `Gaussian`,
+  `Reliability`).
+- **No year in the name.** Author / year / DOI / `repo@commit / file:lines` live
+  in the structured per-method citation (§6, point 1), not the type name. The one
+  retained eponym-with-no-year is `KalatskyStryker…` (genuinely eponymous in the
+  field).
+
+Target renames (executed in the 5b pass, with `.oisi`/config migration):
+`AllenZhuang2017PositionGaussian → AllenPositionGaussian`,
+`SnlcGarrett2014ImBound → SnlcImBound`, `Garrett2014SigmaScaled → SnlcSigmaScaled`,
+`Garrett2014SplitFuse → SnlcSplitFuse`, `OracleAbsoluteDeltaF → AbsoluteDeltaF`,
+`KalatskyStryker2003DelaySubtraction → KalatskyStrykerDelaySubtraction`. Already
+conform: `AllenAllFrameMean`, `SnlcAdaptiveSmoother`, `SnlcMagThreshold`,
+`OpenIsi*`.
+
+### 6b. Version-adoption policy (locked 2026-06-18)
+
+When our port differs from a *newer* version of the same oracle method, decide
+**per oracle, per method**, by classifying the diff:
+
+1. **Bug-fix / refactor / version-drift** (newer is strictly more-correct or
+   behavior-identical) → **adopt the newer, ditch the older.** A superseded
+   behavior has no value as a selectable variant. *(Default — the common case.)*
+2. **Deliberate methodological change, both versions in active field use** → the
+   *only* case that may justify keeping both as selectable variants, and only on
+   real demand; otherwise track the latest and document the old.
+3. **Reproducing a specific landmark result** → pin to *that* version, labelled.
+
+Whichever applies, **pin the exact source version** (`repo@commit / file:lines`)
+in the per-method citation, so "faithful to what?" is a checkable fact and future
+drift is *detectable* (re-diff against the pin) rather than stumbled upon. The
+pinned oracle commits live in [`docs/ORACLE_VERSIONS.md`]; the project- and
+method-level citations follow `CITATION.cff` (see repo-root `CITATION.cff`).
+
+*Worked example:* the only Allen 2020↔2024 method diff (`getVisualSpace`
+inclusive `<=` → exclusive `<` boundary) is case (1); we are already on the 2024
+canonical version, so nothing was kept stale.
+
 ## 7. Certainty as a cross-cutting stage
 
 Our rigorous methods (multitaper-F detection, normalized-convolution VFS,
@@ -186,6 +243,19 @@ Open Decisions.
 2. **Enum dispatch vs. trait objects.** Recommendation: stay with enums
    (exhaustive, allocation-free); "extensibility" is adding a variant, which is
    cheap and keeps the menu a closed, audited set.
+3. **Deferred `wfield` preprocessing stages (surveyed 2026-06-18, not adopted).**
+   The `wfield` package (Couto / Churchland) offers two modality-agnostic
+   preprocessing stages OpenISI lacks — **motion correction** (`registration.py`,
+   cv2 phase-correlation / ECC) and **SVD / low-rank denoising**
+   (`decomposition.py`, the compress-then-analyze paradigm). Both are *optional
+   capability adds, not faithfulness gaps* (no oracle compels them), and their
+   value for **anesthetized periodic ISI** retinotopy is unproven (little motion
+   under anesthesia; the bin-1 DFT already isolates one frequency). **Decision:
+   deferred** — revisit motion correction only if real recordings show motion, and
+   SVD denoising only if the compress-then-analyze workflow is specifically wanted.
+   `wfield`'s hemodynamic correction is fluorescence-only and **does not apply** to
+   reflectance ISI. (Its `visual_sign_map` is verbatim Allen — no new retinotopy
+   method; see `docs/ORACLE_VERSIONS.md`.)
 
 ## 10. The golden-test net
 
@@ -209,38 +279,63 @@ Legend: ✅ golden · 🟡 partial · ⬜ gap · — n/a (trivial / our own).
 
 | stage | method | source | ref/tier | status |
 |---|---|---|---|---|
-| complex_maps (F1 DFT) | single-bin DFT | Kalatsky-Stryker 2003 | numpy / A | 🟡 unit-tested vs numpy, no formal golden |
-| cycle_combine | `KalatskyStryker2003DelaySubtraction` | `Gprocesskret.m` 88-99 | Octave / A | ✅ 2.6e-7 |
-| cycle_combine | `UnweightedCycleAverage` | not published | — | — |
-| phase_smoothing | `OpenIsiAmpWeightedPhasor` | ours; ≈ Allen `phaseFilter` @σ=1 (RM.py 269-296) | Python / A | ⬜ equivalence untested |
-| vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≈ Allen `visualSignMap` (RM.py 446-478) | Python / A | ✅ 1.3e-5 + wrap |
-| sign_map_smoothing | `Gaussian` | Allen `_getSignMap` (RM.py 1016) | scipy / A | ⬜ **keystone** |
-| cortex_source | `Reliability` | OpenISI's own (NO oracle for the mask). Coherence *metric* = Engel 1994 / Zhuang 2017, but Zhuang `RetinotopicMapping.py` does NO cortex restriction (full-frame, verified from source) | regression-lock only | ✅ resolved: OpenISI method; `>=` per ref threshold convention |
+Status names the actual validating test (run `cargo test -p isi-analysis`; SNLC
+goldens need the Octave harness, `cargo xtask goldens`). Reconciled against the
+test suite 2026-06-18 — every prior `⬜`/`NOT PORTED` mark was **stale**.
+
+| stage | method | source | ref/tier | status (test) |
+|---|---|---|---|---|
+| complex_maps (F1 DFT) | single-bin DFT | Kalatsky-Stryker 2003 | numpy / A | ✅ `dft_projection_matches_numpy_fft_bin1` |
+| response_normalization | `OpenIsiFractionalDff` | OpenISI default `(F−F0)/F0` | — | — (default; ≈ Allen `normalize_movie` dFoverF) |
+| response_normalization | `OracleAbsoluteDeltaF` | SNLC `Gf1image.m` 72 / Allen `generatePhaseMap2` (`F−F0`, no divide) | internal / A | ✅ `response_normalization_absolute_vs_fractional_phase_equivalence` (`F1_frac·F0 == F1_abs`, 64·ε_f32); `1/F0` amplitude divergence documented |
+| rectification | `None` | Allen `isRectify=False` (default) | — | — |
+| rectification | `AllenZhuang2017ClipNegative` | Allen `HighLevel.getMappingMovies` 607-612 (`isRectify=True`) | Octave/internal / A | ✅ `clip_negative_matches_allen_half_wave_rectify` (0 diff vs `max(x,0)`) |
+| direction_smoothing | `None` | OpenISI default (smooth post-combine) | — | — |
+| direction_smoothing | `SnlcAdaptiveSmoother` | SNLC `adaptiveSmoother.m` + `Gprocesskret.m` 36-41 (pre-combine, per-direction) | Octave / A | ✅ `adaptive_smoother_matches_snlc_octave` (64·ε_f64) |
+| cycle_combine | `KalatskyStryker2003DelaySubtraction` | `Gprocesskret.m` 88-99 | Octave / A | ✅ `kalatsky_combine_matches_snlc_gprocesskret` (2.6e-7) |
+| cycle_combine | `UnweightedCycleAverage` | not published (debug fallback) | — | — |
+| cycle_average | `SimpleComplexAverage` | Allen `get_average_movie` / SNLC `Gf1image` (DFT-linearity) | algebraic / A | ✅ `simple_complex_average_equals_dft_of_averaged_frames` |
+| cycle_average | `PhaseLockedAverage` | OpenISI (no oracle) | — | — (property: `phase_locked_average_preserves_amplitude_under_global_phase_drift`) |
+| phase_smoothing | `SnlcAmpWeightedPhasor` | phase ≡ SNLC complex smooth; amplitude (normalized convolution) is an OpenISI refinement with NO oracle | Octave / A (phase) | 🟡 phase-pinned `amp_weighted_phase_equals_snlc_complex_smoothing`; amplitude is ours by design |
+| phase_smoothing | `AllenZhuang2017PositionGaussian` | Allen `_getSignMap` `gaussian_filter(positionMap)` (RM.py) | scipy / A | ✅ `allen_position_gaussian_matches_scalar_gaussian_on_phase` |
+| vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≡ Allen `visualSignMap` on smooth input, stabler at wraps (RM.py 446-478) | Python / A | ✅ `vfs_matches_allen_visual_sign_map_on_smooth_input` (+ `…stable_across_phase_wraps…`) |
+| sign_map_smoothing | `Gaussian` | Allen `_getSignMap` `gaussian_filter` (RM.py) | scipy / A | ✅ `gaussian_smooth_matches_scipy_gaussian_filter` (<1e-6) |
+| cortex_source | `Reliability` | OpenISI's own (NO oracle for the mask; Zhuang does no cortex restriction, verified) | regression-lock | — (OpenISI method; property-pinned `cortex_from_reliability_pins_current_threshold_rule`) |
 | cortex_source | `UserPolygon` | user input | — | — |
-| cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | Octave / A | ✅ 0 diff (5 ops + e2e) |
+| cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | Octave / A | ✅ `snlc_cortex_endtoend_matches_octave` (+ 5 morph-op goldens) |
+| cortex_source | `SnlcMagThreshold` | SNLC `overlaymaps.m` 205-215 (`norm(mag^1.1) ≥ .12`) | Octave / A | ✅ `snlc_mag_threshold_roi_matches_overlaymaps` (0 diff) |
 | cortex_source | `NoRestriction` | Allen default (trivial) | — | — |
-| patch_threshold | `AllenZhuang2017FixedSignMapThr` | Allen `_getRawPatchMap` (RM.py 1099-1103, 0.35) | Python / A | ⬜ |
-| patch_threshold | `Garrett2014SigmaScaled` | `getMouseAreasX.m` | Octave / A | ⬜ (σ-thr covered inside cortex e2e) |
-| patch_extraction | `AllenZhuang2017LabelOpenCloseDilate` | Allen RM.py 1089-1210 | scipy / A | 🟡 primitives only |
-| patch_refinement | `AllenZhuang2017SplitMerge` | Allen RM.py 1247-1527 | Python / A | ⬜ (complex) |
+| patch_threshold | `AllenZhuang2017FixedSignMapThr` | Allen `_getRawPatchMap` (RM.py, 0.35) | numpy / A | ✅ `patch_threshold_matches_reference` |
+| patch_threshold | `Garrett2014SigmaScaled` | `getMouseAreasX.m` (k·std·0.5, MATLAB N−1 std) | numpy / A | ✅ `patch_threshold_matches_reference` |
+| patch_extraction | `AllenZhuang2017LabelOpenCloseDilate` | Allen RM.py 1089-1210 | scipy / A | 🟡 **component-complete** (`allen_raw_patch_map_matches_scipy`, `allen_cross_morphology_matches_scipy`, `label_4conn_matches_scipy_ndimage_label`, `dilation_patches2_matches_allen`, patch-sign goldens); no single chained-apply golden |
+| patch_refinement | `AllenZhuang2017SplitMerge` | Allen RM.py 1247-1527 | scipy/Python / A | 🟡 **component-complete** (split `split2_matches_allen_watershed_branch`, merge `merge_two_matches_allen_mergepatches`, visual-space `patch_visual_space_matches_allen_get_visual_space`, `sigma_area_matches_allen_get_sigma_area`, `local_min_matches_allen_localmin`); no single chained-apply golden |
+| patch_refinement | `Garrett2014SplitFuse` | SNLC `splitPatchesX.m` / `fusePatchesX.m` | Octave / A | ✅ **end-to-end** `split_patches_x_matches_snlc` + `fuse_patches_x_matches_snlc` (+ 11 atomic SNLC goldens: overRep, watershed, bwdist, interp2-spline, imimposemin, getNLocalMin, …) |
 | patch_refinement | `None` | — | — | — |
-| patch_refinement | *SNLC `splitPatchesX`/`fusePatchesX`* | `reference/ISI/splitPatchesX.m`, `fusePatchesX.m` (Octave/A) | ❌ **NOT PORTED** — verified method gap (2026-06-16). Distinct from Allen `SplitMerge`: splits on visual-space *over-representation* (`overRep`: Jacobian-coverage ÷ actual-coverage > 0.999) + prunes negligible-coverage patches; `fusePatchesX` fuses same-sign adjacent. Large port (new primitives: `imregionalmin`/`imimposemin`/`bwdist`/spherical visual-space coverage). Golden-able vs the in-repo `.m`. |
-| eccentricity | `Garrett2014WholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | 🟡 distance formula only |
-| magnification | *anisotropy outputs* | SNLC `getMagFactors.m` `prefAxisMF` + `Distrtion` | Octave/A | ❌ **NOT PORTED** — verified gap (2026-06-16). We compute only the scalar determinant; SNLC also outputs the **preferred axis** + **distortion/anisotropy** of cortical magnification (from the complex resultant of the two gradient vectors). |
+| eccentricity | `OpenIsiWholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | ✅ `garrett_eccentricity_matches_allen_eccentricitymap` (machine-precision f64) |
+| eccentricity | `SnlcGetAreaBordersV1Center` | SNLC `getAreaBorders.m` (`getV1id` + `getPatchCoM`) | Octave / A | ✅ `compute_eccentricity_snlc_matches_get_area_borders` |
+| baseline | `AllenAllFrameMean` | Allen `normalizeMovie('mean')` | numpy / A | ✅ `dff_matches_allen_normalize_movie_mean` |
+| baseline | `AllenAllFrameMedian` | Allen `normalizeMovie('median')` | numpy / A | ✅ `median_baseline_matches_numpy` |
+| baseline | `OpenIsiInterSweep{Mean,Median}` | OpenISI's own (falls back to the goldened all-frame mean when gapless) | — | — |
+| magnification | determinant `\|det J\|` | Allen `_getDeterminantMap` | numpy / A | ✅ `magnification_jacobian_matches_allen_determinant_map` |
+| magnification | anisotropy (axis + distortion) | SNLC `getMagFactors.m` `prefAxisMF` + `Distrtion` | Octave / A | ✅ `magnification_anisotropy_matches_snlc_getmagfactors` (wrap-180 axis, κ-scaled) |
 
-> **⚠ This gap list is NOT proven exhaustive.** It records only the gaps found by
-> spot-checking the *top-level* retinotopy `.m`; the vendored oracle packages
-> (`reference/corticalmapping/` Python, full `reference/ISI/` MATLAB) have not been
-> traversed function-by-function. A definitive coverage answer needs that systematic
-> enumeration.
+**Coverage conclusion (2026-06-18 reconciliation).** *Every source-named method
+reaches an oracle golden.* The only residual is that the two most complex Allen
+methods — `patch_extraction` and `patch_refinement::AllenZhuang2017SplitMerge` —
+are validated **step-by-step** (every constituent op goldened) but lack a single
+*chained* end-to-end `apply()` golden; both default-path equivalents
+(`Garrett2014SplitFuse` for refinement) are end-to-end goldened, and the whole
+default pipeline is bit-locked by `regression_oisi`. Methods marked `—` are
+OpenISI's own or unpublished (no oracle exists to validate against), not gaps.
 
-**Cross-cutting primitive:** `gaussian_smooth_f64` (`segmentation/morphology.rs`)
-backs `sign_map_smoothing` *and* the amp-weighted phasor smooth — golden it first;
-`gaussian_filter` truncation/border conventions are a classic drift point.
+> **⚠ The remaining epistemic caveat.** This matrix is reconciled against the
+> *implemented* methods. It does NOT prove the *oracle packages* contain no further
+> automated method we haven't ported: the vendored `reference/corticalmapping/`
+> (Python) and full `reference/ISI/` (MATLAB) have not been traversed
+> function-by-function. A definitive "nothing is missing" needs that systematic
+> enumeration (see the standing offer to run it as a parallel audit).
 
-**Worklist order:** (1) gaussian smoothing primitive, (2) patch_threshold (both
-variants — small), (3) patch_extraction full orchestration, (4) eccentricity
-center-of-mass, (5) patch_refinement split/merge, (6) phase_smoothing
-equivalence, (7) Reliability cortex (resolve Tier A vs B first), (8) F1 DFT
-formal golden. Each ⬜→✅ is also a trustworthy *baseline* for old-vs-new
-benchmarking (§1b); fair benchmarks need faithful baselines, not strawmen.
+**Optional belt-and-suspenders worklist (not gaps — redundant with the
+component goldens above):** a single chained-apply golden for (1) Allen
+`patch_extraction` and (2) Allen `AllenZhuang2017SplitMerge`, each running the
+verbatim Allen function end-to-end on a synthetic patch set.

@@ -18,7 +18,8 @@ use hdf5::File as H5File;
 use ndarray::Array2;
 
 use isi_analysis::methods::{
-    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod, EccentricityMethod,
+    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod,
+    DirectionSmoothingMethod, EccentricityMethod, RectificationMethod, ResponseNormalizationMethod,
 };
 use isi_analysis::pipeline::fingerprint::{self, StageFingerprints};
 use isi_analysis::{AcquisitionProperties, AnalysisParams, SilentProgress};
@@ -150,6 +151,66 @@ fn fingerprint_sensitive_to_cycle_average() {
         projection_base,
         fingerprint::projection(&p, "rec"),
         "a cycle-average change must alter the projection fingerprint"
+    );
+}
+
+#[test]
+fn fingerprint_sensitive_to_response_normalization() {
+    // Fractional ΔF/F vs absolute ΔF changes the per-direction complex map
+    // amplitude, so it must invalidate BOTH the projection and retinotopy caches.
+    let a = fixed_acq();
+    let mut p = default_params();
+    p.response_normalization = ResponseNormalizationMethod::OpenIsiFractionalDff;
+    let retino_base = fingerprint::retinotopy(&p, &a, "rec");
+    let projection_base = fingerprint::projection(&p, "rec");
+    p.response_normalization = ResponseNormalizationMethod::OracleAbsoluteDeltaF;
+    assert_ne!(
+        retino_base,
+        fingerprint::retinotopy(&p, &a, "rec"),
+        "a response-normalization change must alter the retinotopy fingerprint"
+    );
+    assert_ne!(
+        projection_base,
+        fingerprint::projection(&p, "rec"),
+        "a response-normalization change must alter the projection fingerprint"
+    );
+}
+
+#[test]
+fn fingerprint_sensitive_to_rectification() {
+    // Pre-DFT rectification changes the per-direction complex map, so it must
+    // invalidate BOTH the projection and retinotopy caches.
+    let a = fixed_acq();
+    let mut p = default_params();
+    p.rectification = RectificationMethod::None;
+    let retino_base = fingerprint::retinotopy(&p, &a, "rec");
+    let projection_base = fingerprint::projection(&p, "rec");
+    p.rectification = RectificationMethod::AllenZhuang2017ClipNegative;
+    assert_ne!(
+        retino_base,
+        fingerprint::retinotopy(&p, &a, "rec"),
+        "a rectification change must alter the retinotopy fingerprint"
+    );
+    assert_ne!(
+        projection_base,
+        fingerprint::projection(&p, "rec"),
+        "a rectification change must alter the projection fingerprint"
+    );
+}
+
+#[test]
+fn fingerprint_sensitive_to_direction_smoothing() {
+    // Pre-combine per-direction smoothing changes the complex maps fed to
+    // cycle-combine, so it must alter the retinotopy fingerprint.
+    let a = fixed_acq();
+    let mut p = default_params();
+    p.direction_smoothing = DirectionSmoothingMethod::None;
+    let base = fingerprint::retinotopy(&p, &a, "rec");
+    p.direction_smoothing = DirectionSmoothingMethod::SnlcAdaptiveSmoother { sigma_px: 2.0 };
+    assert_ne!(
+        base,
+        fingerprint::retinotopy(&p, &a, "rec"),
+        "a direction-smoothing change must alter the retinotopy fingerprint"
     );
 }
 

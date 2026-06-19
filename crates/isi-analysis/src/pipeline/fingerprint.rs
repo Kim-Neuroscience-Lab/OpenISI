@@ -35,8 +35,9 @@ use blake3::Hasher;
 
 use super::StageId;
 use crate::methods::{
-    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod, EccentricityMethod,
-    PatchExtractionMethod, PatchRefinementMethod, PatchThresholdMethod, PhaseSmoothingMethod,
+    BaselineMethod, CortexSourceMethod, CycleAverageMethod, CycleCombineMethod,
+    DirectionSmoothingMethod, EccentricityMethod, PatchExtractionMethod, PatchRefinementMethod,
+    PatchThresholdMethod, PhaseSmoothingMethod, RectificationMethod, ResponseNormalizationMethod,
     SignMapSmoothingMethod, VfsComputationMethod,
 };
 use crate::{AcquisitionProperties, AnalysisParams};
@@ -90,6 +91,35 @@ fn emit_cycle_average(h: &mut Hasher, m: &CycleAverageMethod) {
         CycleAverageMethod::SimpleComplexAverage => b"simple".as_slice(),
         CycleAverageMethod::PhaseLockedAverage => b"phase_locked",
     });
+}
+
+fn emit_response_normalization(h: &mut Hasher, m: &ResponseNormalizationMethod) {
+    h.update(b"|response_normalization:");
+    h.update(match m {
+        ResponseNormalizationMethod::OpenIsiFractionalDff => b"frac_dff".as_slice(),
+        ResponseNormalizationMethod::OracleAbsoluteDeltaF => b"abs_df",
+    });
+}
+
+fn emit_rectification(h: &mut Hasher, m: &RectificationMethod) {
+    h.update(b"|rectification:");
+    h.update(match m {
+        RectificationMethod::None => b"none".as_slice(),
+        RectificationMethod::AllenZhuang2017ClipNegative => b"allen_clip_neg",
+    });
+}
+
+fn emit_direction_smoothing(h: &mut Hasher, m: &DirectionSmoothingMethod) {
+    h.update(b"|direction_smoothing:");
+    match m {
+        DirectionSmoothingMethod::None => {
+            h.update(b"none");
+        }
+        DirectionSmoothingMethod::SnlcAdaptiveSmoother { sigma_px } => {
+            h.update(b"snlc_adaptive:");
+            h.update(&sigma_px.to_le_bytes());
+        }
+    }
 }
 
 fn emit_cycle_combine(h: &mut Hasher, m: &CycleCombineMethod) {
@@ -148,6 +178,14 @@ fn emit_cortex_source(h: &mut Hasher, m: &CortexSourceMethod) {
             h.update(&k.to_le_bytes());
             h.update(&close.to_le_bytes());
             h.update(&dilate.to_le_bytes());
+        }
+        CortexSourceMethod::SnlcMagThreshold {
+            exponent,
+            threshold,
+        } => {
+            h.update(b"snlc_magthr:");
+            h.update(&exponent.to_le_bytes());
+            h.update(&threshold.to_le_bytes());
         }
         CortexSourceMethod::NoRestriction => {
             h.update(b"no_restriction");
@@ -214,6 +252,11 @@ fn emit_patch_refinement(h: &mut Hasher, m: &PatchRefinementMethod) {
             h.update(&ecc_map_filter_sigma.to_le_bytes());
             h.update(&border_width.to_le_bytes());
             h.update(&small_patch_thr.to_le_bytes());
+        }
+        PatchRefinementMethod::Garrett2014SplitFuse => {
+            // No static tunables; its scale dependence (um_per_pixel) is hashed
+            // by the PatchRefinement stage key (see `compute_fingerprints`).
+            h.update(b"garrett_split_fuse");
         }
     }
 }
@@ -324,10 +367,13 @@ pub fn compute(
         hex(h)
     };
 
-    // Projection (per-cycle DFT → complex maps) — direct: cycle_average. The DFT
+    // Projection (per-cycle DFT → complex maps) — direct: response_normalization
+    // (ΔF/F vs absolute ΔF), rectification (pre-DFT clip), cycle_average. The DFT
     // itself is parameterless; deps = [Baseline].
     let projection = {
         let mut h = base_hasher(StageId::Projection);
+        emit_response_normalization(&mut h, &params.response_normalization);
+        emit_rectification(&mut h, &params.rectification);
         emit_cycle_average(&mut h, &params.cycle_average);
         dep(&mut h, &baseline);
         hex(h)
@@ -337,6 +383,7 @@ pub fn compute(
     // cycle_combine, phase_smoothing, vfs, geometry; deps = [Projection].
     let retinotopy = {
         let mut h = base_hasher(StageId::Retinotopy);
+        emit_direction_smoothing(&mut h, &params.direction_smoothing);
         emit_cycle_combine(&mut h, &params.cycle_combine);
         emit_phase_smoothing(&mut h, &params.phase_smoothing);
         emit_vfs(&mut h, &params.vfs_computation);
@@ -385,10 +432,14 @@ pub fn compute(
         hex(h)
     };
 
-    // PatchRefinement — direct: patch_refinement; deps = [PatchExtraction, Retinotopy].
+    // PatchRefinement — direct: patch_refinement + um_per_pixel (the Garrett
+    // split/fuse is scale-dependent, like SignSmoothing); deps = [PatchExtraction,
+    // Retinotopy].
     let patch_refinement = {
         let mut h = base_hasher(StageId::PatchRefinement);
         emit_patch_refinement(&mut h, &params.patch_refinement);
+        h.update(b"|um_per_pixel:");
+        h.update(&acq.um_per_pixel.to_le_bytes());
         dep(&mut h, &patch_extraction);
         dep(&mut h, &retinotopy);
         hex(h)

@@ -18,6 +18,10 @@
 //!   cargo xtask goldens --check    # regenerate to a sandbox + diff vs committed
 //!                                  #   (the CI freshness gate; restores the tree)
 //!   cargo xtask figures            # run the render_*.py comparison-figure tools
+//!                                  #   (a render_X.py with a sibling
+//!                                  #   examples/X.rs runs that dump first, so
+//!                                  #   the figure reflects the current code —
+//!                                  #   e.g. render_oracle_state ← oracle_state)
 //!
 //! Interpreter discovery is declared, not guessed: `OPENISI_OCTAVE` /
 //! `OPENISI_PYTHON` env vars override; otherwise the PATH and a small set of
@@ -60,7 +64,9 @@ tasks:
                                and diff against the committed fixtures (drift gate,
                                restores the working tree). `filter` runs only the
                                generators whose name contains the substring.
-  figures [filter]             run the render_*.py comparison-figure scripts.
+  figures [filter]             run the render_*.py comparison-figure scripts;
+                               a render_X.py with a sibling examples/X.rs runs
+                               that dump example first (e.g. oracle_state).
   help                         show this message.
 
 toolchain (declared, not guessed):
@@ -370,6 +376,37 @@ fn diff_snapshots(
     out
 }
 
+/// If `render_<stem>.py` has a sibling `crates/isi-analysis/examples/<stem>.rs`
+/// dump binary, return `<stem>` — the example to run before rendering.
+fn render_script_example(script: &Path) -> Option<String> {
+    let stem = script.file_stem().and_then(OsStr::to_str)?;
+    let example = stem.strip_prefix("render_")?;
+    let rs = repo_root()
+        .join("crates/isi-analysis/examples")
+        .join(format!("{example}.rs"));
+    rs.exists().then(|| example.to_string())
+}
+
+/// Run a dev-only dump example (`cargo run -p isi-analysis --example <name>`)
+/// from the repo root, surfacing its output on failure.
+fn run_dump_example(name: &str) -> Result<(), String> {
+    println!("  → dumping data: cargo run --example {name}");
+    let out = Command::new("cargo")
+        .args(["run", "-q", "-p", "isi-analysis", "--example", name])
+        .current_dir(repo_root())
+        .output()
+        .map_err(|e| format!("spawning example {name}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "example {name} exited with {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        ));
+    }
+    Ok(())
+}
+
 fn cmd_figures(args: &[String]) -> Result<(), String> {
     let filter = args.iter().find(|a| !a.starts_with("--")).map(String::as_str);
     let py = python()?;
@@ -397,6 +434,18 @@ fn cmd_figures(args: &[String]) -> Result<(), String> {
     let mut failures = Vec::new();
     for s in &scripts {
         let name = s.file_name().and_then(OsStr::to_str).unwrap_or_default();
+        // A `render_X.py` whose data is dumped by an `examples/X.rs` (the
+        // codebase convention — see render_oracle_state.py / oracle_state.rs):
+        // run the dump example first so the figure reflects the current code,
+        // not a stale `target/` blob. No matching example → the script is
+        // self-contained (reads committed fixtures directly).
+        if let Some(example) = render_script_example(s) {
+            if let Err(e) = run_dump_example(&example) {
+                println!("  ✗ {name} (dump step)");
+                failures.push(e);
+                continue;
+            }
+        }
         let mut cmd = Command::new(&py);
         cmd.arg(s).current_dir(&dir);
         force_utf8_stdio(&mut cmd);

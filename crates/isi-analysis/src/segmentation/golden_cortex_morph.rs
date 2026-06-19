@@ -34,6 +34,25 @@ mod tests {
         Array2::from_shape_fn((N, N), |(r, c)| bytes[r * N + c] != 0)
     }
 
+    /// `SnlcMagThreshold` (the `overlaymaps.m` response-magnitude ROI gate)
+    /// matches the verbatim Octave lines: `mag = magf.^1.1; mag = mag − min; mag
+    /// = mag/max; magROI = mag ≥ .12`. Boolean mask ⇒ exact match. Fixtures from
+    /// `gen_magroi_golden.m` (40×48).
+    #[test]
+    fn snlc_mag_threshold_roi_matches_overlaymaps() {
+        use crate::methods::cortex_source::snlc_mag_threshold_roi;
+        let meta = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_meta.bin"));
+        let (h, w) = (meta[0] as usize, meta[1] as usize);
+        let (exponent, threshold) = (meta[2], meta[3]);
+        let inp = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_in.bin"));
+        let magf = Array2::from_shape_fn((h, w), |(r, c)| inp[r * w + c]);
+        let expected: &[u8] = include_bytes!("../../tests/golden/fixtures/magroi_out.bin");
+        let roi = snlc_mag_threshold_roi(&magf, exponent, threshold);
+        let d = count_differing(&roi, expected);
+        eprintln!("snlc_mag_threshold_roi vs overlaymaps.m: differing px = {d}");
+        assert_eq!(d, 0, "mag-threshold ROI diverged from overlaymaps.m");
+    }
+
     #[test]
     fn cortex_morphology_matches_octave_strel_ops() {
         let input = load_mask(include_bytes!("../../tests/golden/fixtures/cortex_morph_input.bin"));
@@ -81,6 +100,7 @@ mod tests {
             reliability: None,
             user_polygon: None,
             vfs_smoothed: Some(&vfs),
+            response_magnitude: None,
         };
         let method = CortexSourceMethod::SnlcGarrett2014ImBound {
             k: 1.5,

@@ -57,6 +57,15 @@ kind_enum!(BaselineKind {
     OpenIsiInterSweepMedian => "Inter-sweep rest median (OpenISI)",
 } default = OpenIsiInterSweepMean);
 
+kind_enum!(ResponseNormalizationKind {
+    // Fractional ΔF/F: (F−F0)/max(F0,floor). OpenISI default; F1 magnitude
+    // carries a per-pixel 1/F0 weighting the oracles don't apply.
+    OpenIsiFractionalDff => "Fractional ΔF/F (OpenISI)",
+    // Absolute response F−F0, no division — the oracle-faithful F1 amplitude
+    // (SNLC Gf1image.m / Allen generatePhaseMap2). Phase identical to ΔF/F.
+    OracleAbsoluteDeltaF => "Absolute ΔF (SNLC / Allen F1)",
+} default = OpenIsiFractionalDff);
+
 kind_enum!(CycleAverageKind {
     // Plain complex average of the per-cycle maps — faithful to Allen
     // `get_average_movie` + single DFT (the per-cycle DFT kernel is identical
@@ -67,6 +76,22 @@ kind_enum!(CycleAverageKind {
     // global phase before averaging. Kept as an explicit option.
     PhaseLockedAverage => "Phase-locked average (OpenISI)",
 } default = SimpleComplexAverage);
+
+kind_enum!(RectificationKind {
+    // No rectification — Allen isRectify=False (validated default).
+    None => "None (Allen isRectify=False)",
+    // Half-wave rectify: clip negatives to zero before the DFT —
+    // Allen isRectify=True (HighLevel.getMappingMovies).
+    AllenZhuang2017ClipNegative => "Clip-negative rectify (Allen isRectify=True)",
+} default = None);
+
+kind_enum!(DirectionSmoothingKind {
+    // No pre-combine smoothing — OpenISI smooths the combined phasor post-combine
+    // (PhaseSmoothing). The validated default.
+    None => "None (post-combine smoothing)",
+    // SNLC adaptiveSmoother.m (Wiener-type), per-direction pre-combine.
+    SnlcAdaptiveSmoother => "Adaptive smoother (SNLC Gprocesskret)",
+} default = None);
 
 kind_enum!(CycleCombineKind {
     // Per-cycle delay subtraction `(φ_fwd − φ_rev) / 2` is Kalatsky &
@@ -106,6 +131,8 @@ kind_enum!(CortexSourceKind {
     Reliability => "Reliability mask",
     UserPolygon => "User polygon",
     SnlcGarrett2014ImBound => "SNLC ImBound (Garrett 2014)",
+    // SNLC response-magnitude ROI gate (overlaymaps.m): normalized mag^1.1 ≥ thr.
+    SnlcMagThreshold => "SNLC magnitude threshold (overlaymaps)",
     // No cortex restriction — analysis runs over the full frame.
     // Allen/Zhuang did not introduce a "full-frame" cortex source as a
     // distinct method; their pipeline just omitted the restriction.

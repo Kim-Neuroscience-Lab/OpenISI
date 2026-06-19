@@ -42,6 +42,9 @@ pub struct CortexResolveContext<'a> {
     pub user_polygon: Option<Array2<bool>>,
     /// Smoothed VFS, needed for `SnlcGarrett2014ImBound`.
     pub vfs_smoothed: Option<&'a Array2<f64>>,
+    /// Combined per-pixel response magnitude (mean of the azimuth and altitude
+    /// position amplitudes), needed for `SnlcMagThreshold`.
+    pub response_magnitude: Option<&'a Array2<f64>>,
 }
 
 impl CortexSourceExt for CortexSource {
@@ -50,6 +53,7 @@ impl CortexSourceExt for CortexSource {
             Self::Reliability { .. } => "reliability",
             Self::UserPolygon => "user_polygon",
             Self::SnlcGarrett2014ImBound { .. } => "snlc_imbound",
+            Self::SnlcMagThreshold { .. } => "snlc_magthr",
             Self::NoRestriction => "no_restriction",
         }
     }
@@ -107,8 +111,57 @@ impl CortexSourceExt for CortexSource {
                 let filled2 = binary_fill_holes(&dilated);
                 Ok(keep_largest_component(&filled2))
             }
+            Self::SnlcMagThreshold {
+                exponent,
+                threshold,
+            } => {
+                let mag = ctx.response_magnitude.ok_or_else(|| {
+                    AnalysisError::MissingData(
+                        "CortexSourceMethod::SnlcMagThreshold requires the response magnitude \
+                     (response_magnitude) from the retinotopy stage"
+                            .into(),
+                    )
+                })?;
+                Ok(snlc_mag_threshold_roi(mag, *exponent, *threshold))
+            }
         }
     }
+}
+
+/// SNLC response-magnitude ROI gate — verbatim `overlaymaps.m:205-215`:
+///
+/// ```text
+/// mag = magf.^1.1;          % raise to the exponent (spreads the values)
+/// mag = mag - min(mag(:));  % normalize to [0, 1] over the whole frame
+/// mag = mag / max(mag(:));
+/// magROI = mag >= thresh;   % keep pixels at/above the threshold
+/// ```
+///
+/// Pure intensity gate — no morphology (faithful to the source, which thresholds
+/// the normalized magnitude directly). Non-finite magnitude pixels are treated
+/// as below threshold. A degenerate constant magnitude (`max == min`) yields an
+/// empty ROI (matches MATLAB: `mag/0 → NaN`, and `NaN >= thresh` is false).
+pub fn snlc_mag_threshold_roi(
+    response_magnitude: &Array2<f64>,
+    exponent: f64,
+    threshold: f64,
+) -> Array2<bool> {
+    // mag = magf.^exponent over finite pixels (non-finite → −inf so it can't be
+    // the running min/max and lands below threshold after normalization).
+    let powered = response_magnitude.mapv(|v| if v.is_finite() { v.powf(exponent) } else { f64::NAN });
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in powered.iter() {
+        if v.is_finite() {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    let span = hi - lo;
+    Array2::from_shape_fn(powered.dim(), |(r, c)| {
+        let v = powered[[r, c]];
+        // mag normalized to [0,1]; degenerate span (≤0) ⇒ empty ROI.
+        v.is_finite() && span > 0.0 && (v - lo) / span >= threshold
+    })
 }
 
 /// σ of finite values in a 2D array. Used by `SnlcGarrett2014ImBound`
@@ -137,6 +190,7 @@ mod tests {
             reliability: None,
             user_polygon: None,
             vfs_smoothed: None,
+            response_magnitude: None,
         };
         let mask = m.apply(&ctx).unwrap();
         assert_eq!(mask.dim(), (10, 10));
@@ -151,6 +205,7 @@ mod tests {
             reliability: None,
             user_polygon: None,
             vfs_smoothed: None,
+            response_magnitude: None,
         };
         assert!(m.apply(&ctx).is_err());
     }

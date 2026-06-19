@@ -23,6 +23,7 @@ use ndarray::Array2;
 
 use crate::compute::{self};
 use crate::io::{classify_cycle_name, nearest_index_sorted};
+use crate::methods::{RectificationExt, ResponseNormalizationExt};
 use crate::{AnalysisError, ProgressSink, RawAcquisition, RawProcessingResult, Result};
 
 /// Run the projection: ΔF/F (using the given per-pixel baseline `F0` and
@@ -40,14 +41,20 @@ use crate::{AnalysisError, ProgressSink, RawAcquisition, RawProcessingResult, Re
 ///      per-cycle complex maps via the selected `CycleAverageMethod` (default
 ///      plain complex average = Allen `get_average_movie`) → per-direction complex
 ///      maps + `Option<ResponsivenessMaps>` + reliability.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     raw: &RawAcquisition,
     baseline: &Array2<f64>,
     dff_floor: f64,
+    response_normalization: &crate::methods::ResponseNormalizationMethod,
+    rectification: &crate::methods::RectificationMethod,
     cycle_average: &crate::methods::CycleAverageMethod,
     cancel: &AtomicBool,
     progress: &dyn ProgressSink,
 ) -> Result<RawProcessingResult> {
+    // Response normalization (fractional ΔF/F vs absolute ΔF) is a per-cycle
+    // movie-formation choice; resolved once here and applied to every cycle.
+    let divide_by_f0 = response_normalization.divides_by_baseline();
     let all_frames = &raw.frames;
     let (t_cam, _h, _w) = all_frames.dim();
     if t_cam < 2 {
@@ -144,7 +151,13 @@ pub fn run(
                 &frame_indices,
                 baseline,
                 dff_floor,
+                divide_by_f0,
             );
+            // Optional pre-DFT half-wave rectification (Allen isRectify). `None`
+            // returns the movie unchanged; applied after normalization (Allen
+            // order: normalize → rectify → fft) so the whole stage — DFT and the
+            // frame-domain SNR — sees one coherent response movie.
+            let cycle_t = rectification.apply(cycle_t);
 
             // `cycle_t` is consumed by the DFT and also kept by the
             // accumulator (frame-domain sum for SNR). Burn tensors are

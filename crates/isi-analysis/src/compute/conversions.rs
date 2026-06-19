@@ -253,17 +253,25 @@ fn aggregate_over_indices(
     }
 }
 
-/// Like [`frames_u16_subset_to_tensor`], but uploads the ΔF/F movie
-/// `(F − F0) / max(F0, denom_floor)` for the indexed subset, given the
-/// per-pixel baseline `F0` from [`temporal_mean_baseline`].
+/// Like [`frames_u16_subset_to_tensor`], but uploads the per-cycle response
+/// movie for the indexed subset, given the per-pixel baseline `F0` from
+/// [`temporal_mean_baseline`]. The normalization is selected by `divide_by_f0`:
 ///
-/// The denominator is *floored* (not offset by a small eps): pixels outside
-/// the illuminated cortex have `F0 → 0`, and a naive `(F − F0)/(F0 + eps)`
-/// blows those up into amplitude outliers that hijack masking/weighting (one
-/// such recording collapsed a real gradient to 2 signal pixels). Flooring at
-/// a fraction of the median baseline (the cortical scale) leaves real cortex
-/// undistorted while bounding dark/vignette pixels. See
-/// [`dff_denominator_floor`] for the floor.
+/// - `true` — fractional ΔF/F `(F − F0) / max(F0, denom_floor)` (OpenISI
+///   default). The denominator is *floored* (not offset by a small eps): pixels
+///   outside the illuminated cortex have `F0 → 0`, and a naive
+///   `(F − F0)/(F0 + eps)` blows those up into amplitude outliers that hijack
+///   masking/weighting (one such recording collapsed a real gradient to 2
+///   signal pixels). Flooring at a fraction of the median baseline (the cortical
+///   scale) leaves real cortex undistorted while bounding dark/vignette pixels.
+///   See [`dff_denominator_floor`] for the floor.
+/// - `false` — absolute response `F − F0`, no division (the oracle-faithful F1
+///   amplitude: SNLC `Gf1image.m` / Allen `generatePhaseMap2`). `denom_floor`
+///   is unused in this mode.
+///
+/// Both modes yield the same F1 **phase**; they differ only in F1 magnitude (the
+/// fractional mode carries a per-pixel `1/F0` weighting). Selected at runtime via
+/// [`crate::methods::ResponseNormalizationExt`].
 ///
 /// Frames read from HDF5 are standard (row-major) layout, so `frames`' inner
 /// `[H, W]` planes and `baseline`'s contiguous slice iterate in the same
@@ -273,6 +281,7 @@ pub fn frames_u16_subset_to_dff_tensor(
     indices: &[usize],
     baseline: &Array2<f64>,
     denom_floor: f64,
+    divide_by_f0: bool,
 ) -> Tensor<Backend, 3> {
     let (_, h, w) = frames.dim();
     let n = indices.len();
@@ -286,7 +295,10 @@ pub fn frames_u16_subset_to_dff_tensor(
         let dst = out_i * plane;
         for (px, &v) in src_plane.iter().enumerate() {
             let base = f0[px];
-            flat[dst + px] = ((v as f64 - base) / base.max(denom_floor)) as f32;
+            let delta = v as f64 - base;
+            // Absolute ΔF (oracle) divides by 1; fractional ΔF/F by the floored F0.
+            let denom = if divide_by_f0 { base.max(denom_floor) } else { 1.0 };
+            flat[dst + px] = (delta / denom) as f32;
         }
     }
     Tensor::<Backend, 3>::from_data(TensorData::new(flat, [n, h, w]), &device())

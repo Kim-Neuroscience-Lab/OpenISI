@@ -45,6 +45,10 @@
           "value": "snlc_garrett2014_im_bound"
         },
         {
+          "label": "SNLC magnitude threshold (overlaymaps)",
+          "value": "snlc_mag_threshold"
+        },
+        {
           "label": "No restriction (full frame)",
           "value": "no_restriction"
         }
@@ -110,6 +114,32 @@
     "value": 1.5
   },
   {
+    "active": false,
+    "constraint": {
+      "max": 10.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.snlc_mag_threshold.exponent",
+    "label": "Magnitude exponent",
+    "param_type": "f64",
+    "unit": "",
+    "value": 1.1
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 1.0,
+      "min": 0.0
+    },
+    "group": "CortexSource",
+    "id": "cortex_source.snlc_mag_threshold.threshold",
+    "label": "ROI threshold",
+    "param_type": "f64",
+    "unit": "",
+    "value": 0.12
+  },
+  {
     "active": true,
     "constraint": {
       "values": [
@@ -150,6 +180,40 @@
     "param_type": "enum",
     "unit": "",
     "value": "kalatsky_stryker2003_delay_subtraction"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "None (post-combine smoothing)",
+          "value": "none"
+        },
+        {
+          "label": "Adaptive smoother (SNLC Gprocesskret)",
+          "value": "snlc_adaptive_smoother"
+        }
+      ]
+    },
+    "group": "CycleCombine",
+    "id": "direction_smoothing.method",
+    "label": "Pre-combine smoothing",
+    "param_type": "enum",
+    "unit": "",
+    "value": "none"
+  },
+  {
+    "active": false,
+    "constraint": {
+      "max": 50.0,
+      "min": 0.1
+    },
+    "group": "CycleCombine",
+    "id": "direction_smoothing.snlc_adaptive_smoother.sigma_px",
+    "label": "Adaptive σ",
+    "param_type": "f64",
+    "unit": "px",
+    "value": 2.0
   },
   {
     "active": true,
@@ -472,6 +536,48 @@
     "param_type": "f64",
     "unit": "px",
     "value": 1.0
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "None (Allen isRectify=False)",
+          "value": "none"
+        },
+        {
+          "label": "Clip-negative rectify (Allen isRectify=True)",
+          "value": "allen_zhuang2017_clip_negative"
+        }
+      ]
+    },
+    "group": "CycleAverage",
+    "id": "rectification.method",
+    "label": "Rectification",
+    "param_type": "enum",
+    "unit": "",
+    "value": "none"
+  },
+  {
+    "active": true,
+    "constraint": {
+      "values": [
+        {
+          "label": "Fractional ΔF/F (OpenISI)",
+          "value": "open_isi_fractional_dff"
+        },
+        {
+          "label": "Absolute ΔF (SNLC / Allen F1)",
+          "value": "oracle_absolute_delta_f"
+        }
+      ]
+    },
+    "group": "Baseline",
+    "id": "response_normalization.method",
+    "label": "Normalization",
+    "param_type": "enum",
+    "unit": "",
+    "value": "open_isi_fractional_dff"
   },
   {
     "active": true,
