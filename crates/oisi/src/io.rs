@@ -36,7 +36,7 @@ use num_complex::Complex64;
 use std::path::Path;
 
 use crate::schema::name;
-use crate::{AcquisitionIdentity, ComplexMaps, OisiError, RawAcquisition};
+use crate::{AcquisitionIdentity, AcquisitionProperties, ComplexMaps, OisiError, RawAcquisition};
 
 // ---------------------------------------------------------------------------
 // Reading
@@ -294,6 +294,136 @@ pub fn create(path: &Path, source_type: &str) -> Result<(), OisiError> {
     write_str_attr(&file, name::SOURCE_TYPE, source_type)?;
     write_str_attr(&file, name::CREATED_AT, &chrono_now())?;
 
+    Ok(())
+}
+
+/// `source_type` for a real raw capture.
+pub const RAW_SOURCE_TYPE: &str = "raw_acquisition";
+
+/// `source_type` marking a **synthetic** raw recording (the `synth` forward
+/// model), so it is never mistaken for a real capture even after a file
+/// round-trip. The read path lifts this back to `ProvenanceLevel::Synthetic`.
+pub const SYNTHETIC_SOURCE_TYPE: &str = "synthetic_raw_acquisition";
+
+/// Read the `/source_type` root attribute (e.g. [`RAW_SOURCE_TYPE`],
+/// [`SYNTHETIC_SOURCE_TYPE`], `"complex_maps_import"`), or `None` if absent.
+pub fn read_source_type(path: &Path) -> Result<Option<String>, OisiError> {
+    let file = open_read(path)?;
+    Ok(read_str_attr(&file, name::SOURCE_TYPE))
+}
+
+/// Write a **schema-conformant raw acquisition** `.oisi` from in-memory arrays —
+/// the symmetric counterpart of [`read_raw_acquisition`].
+///
+/// Writes the *source-agnostic* raw content every raw acquisition genuinely has:
+/// the camera movie (frames + per-frame timestamps + the ideal synthetic camera
+/// clock) and the realized sweep `schedule`, plus the `/rig_params` +
+/// `/experiment_params` geometry attrs — so the file round-trips through
+/// [`read_raw_acquisition`] + [`crate::AcquisitionProperties::from_oisi_attrs`]
+/// **and** passes [`crate::schema::contract_violations`]. Any producer with a raw
+/// movie + its schedule (the `synth` benchmark generator; a future frame-only
+/// importer) can write a genuine `.oisi` with this — no analysis compute, no
+/// capture stack.
+///
+/// It deliberately does **not** write the capture-time telemetry
+/// (`/acquisition/{stimulus,clock_sync,quality}`): those come from the stimulus
+/// presentation system + capture-export QA, which this *stimulus-agnostic* format
+/// layer cannot honestly produce (it would have to invent per-frame stimulus
+/// state). The schema marks those subgroups capture-conditional; the Tauri capture
+/// path (`export::write_oisi`) writes them from the real `StimulusDataset`.
+///
+/// If `acq.provenance` is `Synthetic`, the file is stamped with
+/// [`SYNTHETIC_SOURCE_TYPE`] so a reader can never mistake it for a real capture.
+///
+/// Atomic: writes to a sibling `.partial`, fsyncs, then renames over `path`.
+pub fn write_raw_acquisition(
+    path: &Path,
+    raw: &RawAcquisition,
+    acq: &AcquisitionProperties,
+) -> Result<(), OisiError> {
+    use crate::ProvenanceLevel;
+    let (t, h, w) = raw.frames.dim();
+
+    // The source-agnostic raw content: the camera movie + its ideal synthetic
+    // clock, and the realized sweep schedule. (Capture-time stimulus/clock_sync/
+    // quality telemetry is NOT written here — see the doc above.)
+    let us = |s: f64| (s * 1e6).round() as i64;
+    let cam_us: Vec<i64> = raw.cam_ts_sec.iter().map(|&s| us(s)).collect();
+    let seq: Vec<i64> = (0..t as i64).collect();
+    let sweep_start_us: Vec<i64> = raw.sweep_start_sec.iter().map(|&s| us(s)).collect();
+    let sweep_end_us: Vec<i64> = raw.sweep_end_sec.iter().map(|&s| us(s)).collect();
+    let source_type = if matches!(acq.provenance, ProvenanceLevel::Synthetic) {
+        SYNTHETIC_SOURCE_TYPE
+    } else {
+        RAW_SOURCE_TYPE
+    };
+
+    // ── write atomically: .partial → fsync → rename ────────────────────────
+    let partial = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some("oisi") => "oisi.partial".to_string(),
+        _ => "partial".to_string(),
+    });
+    let _ = std::fs::remove_file(&partial);
+    create(&partial, source_type)?;
+    {
+        let file = open_readwrite(&partial)?;
+        write_str_attr(&file, name::RIG_PARAMS, &acq.to_rig_params_json().to_string())?;
+        write_str_attr(&file, name::EXPERIMENT_PARAMS, &acq.to_experiment_params_json().to_string())?;
+
+        let acquisition = file
+            .create_group(name::ACQUISITION)
+            .map_err(|e| OisiError::hdf5("creating /acquisition", e))?;
+
+        // /acquisition/camera — the raw movie + ideal synthetic camera clock
+        // (hardware == system timestamps, monotonic sequence).
+        let camera = acquisition
+            .create_group(name::CAMERA)
+            .map_err(|e| OisiError::hdf5("creating /acquisition/camera", e))?;
+        camera
+            .new_dataset_builder()
+            .deflate(4)
+            .fletcher32()
+            .chunk((1, h, w))
+            .with_data(&raw.frames)
+            .create(name::FRAMES)
+            .map_err(|e| OisiError::hdf5("writing camera/frames", e))?;
+        write_checked_1d(&camera, name::TIMESTAMPS_SEC, raw.cam_ts_sec.clone())?;
+        write_checked_1d(&camera, name::HARDWARE_TIMESTAMPS_US, cam_us.clone())?;
+        write_checked_1d(&camera, name::SYSTEM_TIMESTAMPS_US, cam_us)?;
+        write_checked_1d(&camera, name::SEQUENCE_NUMBERS, seq)?;
+
+        // /acquisition/schedule — the realized sweep design (source-agnostic).
+        let schedule = acquisition
+            .create_group(name::SCHEDULE)
+            .map_err(|e| OisiError::hdf5("creating /acquisition/schedule", e))?;
+        write_str_attr(
+            &schedule,
+            name::SWEEP_SEQUENCE,
+            &serde_json::to_string(&raw.sweep_sequence).expect("Vec<String> serializes"),
+        )?;
+        write_checked_1d(&schedule, name::SWEEP_START_US, sweep_start_us)?;
+        write_checked_1d(&schedule, name::SWEEP_END_US, sweep_end_us)?;
+        write_checked_1d(&schedule, name::SWEEP_START_SEC, raw.sweep_start_sec.clone())?;
+        write_checked_1d(&schedule, name::SWEEP_END_SEC, raw.sweep_end_sec.clone())?;
+
+        // Explicit drops before flush (HDF5 group handles must close).
+        drop(camera);
+        drop(schedule);
+        drop(acquisition);
+        file.flush()
+            .map_err(|e| OisiError::hdf5("flushing raw acquisition", e))?;
+    }
+
+    let io_err = |ctx: String| OisiError::Io(std::io::Error::other(ctx));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&partial)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| io_err(format!("fsync {}: {e}", partial.display())))?;
+    std::fs::rename(&partial, path).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        io_err(format!("rename {} -> {}: {e}", partial.display(), path.display()))
+    })?;
     Ok(())
 }
 
@@ -589,6 +719,62 @@ mod tests {
             alt_fwd: make(3.0),
             alt_rev: make(4.0),
         }
+    }
+
+    #[test]
+    fn raw_acquisition_write_round_trips_and_conforms() {
+        use crate::{AcquisitionProperties, ProvenanceLevel, RawAcquisition};
+        use ndarray::Array3;
+
+        let (t, h, w) = (12usize, 4usize, 5usize);
+        let frames =
+            Array3::<u16>::from_shape_fn((t, h, w), |(ti, r, c)| (1000 + ti * 10 + r * 3 + c) as u16);
+        let cam_ts_sec: Vec<f64> = (0..t).map(|i| i as f64 * 0.1).collect();
+        let raw = RawAcquisition {
+            frames,
+            cam_ts_sec,
+            sweep_start_sec: vec![0.1, 0.4, 0.7, 1.0],
+            sweep_end_sec: vec![0.3, 0.6, 0.9, 1.1],
+            sweep_sequence: ["LR", "RL", "LR", "RL"].iter().map(|s| s.to_string()).collect(),
+        };
+        let acq = AcquisitionProperties {
+            azi_angular_range: 140.0,
+            alt_angular_range: 110.0,
+            offset_azi: 2.0,
+            offset_alt: -1.0,
+            rotation_k: 1,
+            um_per_pixel: 15.5,
+            provenance: ProvenanceLevel::Synthetic,
+        };
+
+        let tmp = TempFile::new("raw_write_rt");
+        write_raw_acquisition(tmp.path(), &raw, &acq).unwrap();
+
+        // (1) the written file is schema-conformant (both directions).
+        let file = open_read(tmp.path()).unwrap();
+        let violations = crate::schema::contract_violations(&file);
+        drop(file);
+        assert!(violations.is_empty(), "schema violations:\n  {}", violations.join("\n  "));
+
+        // (2) it round-trips through the reader, byte-for-byte.
+        let back = read_raw_acquisition(tmp.path()).unwrap();
+        assert_eq!(back.frames, raw.frames);
+        assert_eq!(back.cam_ts_sec, raw.cam_ts_sec);
+        assert_eq!(back.sweep_start_sec, raw.sweep_start_sec);
+        assert_eq!(back.sweep_end_sec, raw.sweep_end_sec);
+        assert_eq!(back.sweep_sequence, raw.sweep_sequence);
+
+        // (3) geometry reconstructs at Full provenance.
+        let rig = read_rig_params(tmp.path()).unwrap();
+        let exp = read_experiment_params(tmp.path()).unwrap();
+        let p = AcquisitionProperties::from_oisi_attrs(rig.as_ref(), exp.as_ref());
+        assert_eq!(p.provenance, ProvenanceLevel::Full);
+        assert_eq!(p.um_per_pixel, 15.5);
+        assert_eq!(p.azi_angular_range, 140.0);
+        assert_eq!(p.rotation_k, 1);
+
+        // (4) the synthetic marker survives the round-trip (never mistaken for real).
+        assert_eq!(read_source_type(tmp.path()).unwrap().as_deref(), Some(SYNTHETIC_SOURCE_TYPE));
     }
 
     #[test]

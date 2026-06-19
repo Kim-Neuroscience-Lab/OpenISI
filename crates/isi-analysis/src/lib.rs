@@ -379,7 +379,13 @@ pub fn analyze(
     // to restore.
     let rig_attr = io::read_rig_params(path)?;
     let exp_attr = io::read_experiment_params(path)?;
-    let acquisition = AcquisitionProperties::from_oisi_attrs(rig_attr.as_ref(), exp_attr.as_ref());
+    let mut acquisition = AcquisitionProperties::from_oisi_attrs(rig_attr.as_ref(), exp_attr.as_ref());
+    // A synthetic recording (synth forward model) carries complete geometry, so
+    // `from_oisi_attrs` would read it as `Full` — but it must never be mistaken
+    // for a real capture. The `source_type` marker lifts it back to `Synthetic`.
+    if oisi::io::read_source_type(path)?.as_deref() == Some(oisi::io::SYNTHETIC_SOURCE_TYPE) {
+        acquisition.provenance = ProvenanceLevel::Synthetic;
+    }
     if let Some(msg) = acquisition.provenance.warning_summary() {
         tracing::warn!("{msg}");
     }

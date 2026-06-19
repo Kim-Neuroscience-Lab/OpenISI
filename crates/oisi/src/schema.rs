@@ -296,7 +296,10 @@ const ACQUISITION_SUBGROUPS: &[Group] = &[
         datasets: CAMERA_DATASETS, subgroups: &[],
     },
     Group {
-        path: "/acquisition/stimulus", presence: Always,
+        // Capture-time presentation telemetry: produced by the stimulus
+        // presentation system (StimulusDataset). Absent for raw sources that do
+        // not present a stimulus (synthetic movies, frame-only imports).
+        path: "/acquisition/stimulus", presence: When("capture-time stimulus presentation"),
         doc: "Per-frame stimulus state arrays.", attrs: &[], dynamic_attrs: None,
         datasets: STIMULUS_DATASETS, subgroups: &[],
     },
@@ -307,7 +310,9 @@ const ACQUISITION_SUBGROUPS: &[Group] = &[
         datasets: SCHEDULE_DATASETS, subgroups: &[],
     },
     Group {
-        path: "/acquisition/clock_sync", presence: Always,
+        // Capture-time: camera↔system-clock offset, computed at export from the
+        // hardware/system timestamp pairs a real capture records.
+        path: "/acquisition/clock_sync", presence: When("capture-time acquisition"),
         doc: "Camera↔QPC clock offset at start/end (drift detection).", dynamic_attrs: None,
         attrs: &[
             Attr { name: n::T0_SYSTEM_US, dtype: "f64", presence: Always, doc: "System timestamp of the first camera frame." },
@@ -342,7 +347,10 @@ const ACQUISITION_SUBGROUPS: &[Group] = &[
         datasets: &[], subgroups: &[],
     },
     Group {
-        path: "/acquisition/quality", presence: Always,
+        // Capture-time: timing/drop QA metrics computed at capture export (some
+        // reference the stimulus presentation). Not produced by stimulus-agnostic
+        // raw writers.
+        path: "/acquisition/quality", presence: When("capture-time acquisition"),
         doc: "Per-acquisition timing/drop quality metrics computed at export.", dynamic_attrs: None,
         attrs: &[
             Attr { name: n::CAMERA_DROPS_TOTAL, dtype: "u32", presence: Always, doc: "Total camera drops." },

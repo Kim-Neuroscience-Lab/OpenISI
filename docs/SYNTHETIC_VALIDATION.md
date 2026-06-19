@@ -43,11 +43,28 @@ their oracles).
   cause it. (An even earlier note attributing it to the delay subtraction was
   confounded by signal size — also corrected.)
 
+**Raw-`.oisi` writer (BUILT 2026-06-19).** `oisi::io::write_raw_acquisition` emits
+a **schema-conformant** raw `.oisi` containing the *source-agnostic* raw content
+every raw acquisition genuinely has — the camera movie (+ ideal synthetic camera
+clock) and the realized sweep `schedule` + geometry attrs. It deliberately does
+**not** write the capture-time telemetry (`/acquisition/{stimulus,clock_sync,
+quality}`): that comes from the stimulus presentation system (`StimulusDataset`) +
+capture-export QA, which the *stimulus-agnostic* `oisi` format layer cannot
+honestly produce — so the schema marks those subgroups `When("capture-time …")`
+(the capture path still writes them, guarded by an explicit presence test in
+`export.rs`). `source_type` marks the file synthetic so it is never mistaken for a
+real capture, and `analyze()` lifts it back to `ProvenanceLevel::Synthetic`. The
+recover-and-compare now routes through it: `synth → write .oisi → analyze() → read
+/results`, so the synthetic exercises the exact `read_raw_acquisition` ingest path
+a real capture uses. Living in the light `oisi` crate (the format's home), it needs
+no analysis compute — the same writer a future frame-only importer would use, and
+the producer of committable fixtures.
+
 **Deferred** (designed below, not built): the remaining realism knobs (PSF,
-physiological lines, drift, vasculature, saturation), the raw-`.oisi` writer for
-committable fixtures, the oracle-handoff adapters (the input layer for the full-
-pass oracle golden), the hardened multi-area wedge-dipole map, the **stress
-battery / cross-implementation benchmark**, and publication.
+physiological lines, drift, vasculature, saturation), the oracle-handoff adapters
+(the input layer for the full-pass oracle golden), the hardened multi-area
+wedge-dipole map, the **stress battery / cross-implementation benchmark**, and
+publication.
 
 **Why deferred — the honest cost/benefit.** OpenISI's thesis is *faithful
 recapitulation of the field's methods*, and we already validate that

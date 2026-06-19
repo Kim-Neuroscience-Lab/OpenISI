@@ -61,7 +61,8 @@
               "dtype": "f64"
             }
           },
-          "doc": "Camera↔QPC clock offset at start/end (drift detection)."
+          "doc": "Camera↔QPC clock offset at start/end (drift detection).",
+          "present_when": "capture-time acquisition"
         },
         "/acquisition/quality": {
           "attributes": {
@@ -113,7 +114,8 @@
               "shape": "(N-1,)"
             }
           },
-          "doc": "Per-acquisition timing/drop quality metrics computed at export."
+          "doc": "Per-acquisition timing/drop quality metrics computed at export.",
+          "present_when": "capture-time acquisition"
         },
         "/acquisition/schedule": {
           "attributes": {
@@ -189,7 +191,8 @@
               "shape": "(N,)"
             }
           },
-          "doc": "Per-frame stimulus state arrays."
+          "doc": "Per-frame stimulus state arrays.",
+          "present_when": "capture-time stimulus presentation"
         },
         "/acquisition/timing": {
           "attributes": {

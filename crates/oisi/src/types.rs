@@ -312,6 +312,30 @@ impl AcquisitionProperties {
             provenance,
         }
     }
+
+    /// The `/rig_params` JSON this acquisition's calibration round-trips through
+    /// — the inverse of the `camera.um_per_pixel` read in [`Self::from_oisi_attrs`].
+    /// A minimal honest object (only the fields the format reads back); a real
+    /// capture writes the full `RigConfig`, of which this is the analysis-relevant
+    /// subset.
+    pub fn to_rig_params_json(&self) -> serde_json::Value {
+        serde_json::json!({ "camera": { "um_per_pixel": self.um_per_pixel } })
+    }
+
+    /// The `/experiment_params` JSON this acquisition's stimulus geometry
+    /// round-trips through — the inverse of the `stimulus_geometry.*` reads in
+    /// [`Self::from_oisi_attrs`].
+    pub fn to_experiment_params_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "stimulus_geometry": {
+                "azi_angular_range": self.azi_angular_range,
+                "alt_angular_range": self.alt_angular_range,
+                "offset_azi": self.offset_azi,
+                "offset_alt": self.offset_alt,
+                "rotation_k": self.rotation_k,
+            }
+        })
+    }
 }
 
 fn navigate<'a>(root: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -485,6 +509,31 @@ mod tests {
         let p = AcquisitionProperties::from_oisi_attrs(Some(&rig), Some(&exp));
         assert_eq!(p.provenance, ProvenanceLevel::Full);
         assert_eq!(p.um_per_pixel, 12.5);
+    }
+
+    #[test]
+    fn to_params_json_round_trips_through_from_oisi_attrs() {
+        // The inverse serializers must reconstruct the same geometry at Full
+        // provenance — the contract `write_raw_acquisition` relies on.
+        let src = AcquisitionProperties {
+            azi_angular_range: 140.0,
+            alt_angular_range: 110.0,
+            offset_azi: 7.5,
+            offset_alt: -4.0,
+            rotation_k: 3,
+            um_per_pixel: 18.25,
+            provenance: ProvenanceLevel::Synthetic,
+        };
+        let rig = src.to_rig_params_json();
+        let exp = src.to_experiment_params_json();
+        let back = AcquisitionProperties::from_oisi_attrs(Some(&rig), Some(&exp));
+        assert_eq!(back.provenance, ProvenanceLevel::Full);
+        assert_eq!(back.azi_angular_range, src.azi_angular_range);
+        assert_eq!(back.alt_angular_range, src.alt_angular_range);
+        assert_eq!(back.offset_azi, src.offset_azi);
+        assert_eq!(back.offset_alt, src.offset_alt);
+        assert_eq!(back.rotation_k, src.rotation_k);
+        assert_eq!(back.um_per_pixel, src.um_per_pixel);
     }
 
     #[test]

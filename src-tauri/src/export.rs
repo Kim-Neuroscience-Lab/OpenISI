@@ -1116,6 +1116,18 @@ mod tests {
             "the acquisition writer produced a .oisi that violates oisi_schema::SCHEMA:\n  {}",
             violations.join("\n  ")
         );
+
+        // The capture-time telemetry subgroups are `When("capture-time …")` in the
+        // schema (so a stimulus-agnostic raw writer like `oisi::write_raw_acquisition`
+        // can omit them), which means `contract_violations` does NOT require them.
+        // A real CAPTURE must still write them — assert that here so the guarantee
+        // keeps its teeth despite the relaxed schema presence.
+        for grp in ["acquisition/stimulus", "acquisition/clock_sync", "acquisition/quality"] {
+            assert!(
+                file.group(grp).is_ok(),
+                "the capture writer must write /{grp} (capture-time telemetry)"
+            );
+        }
         drop(file);
         let _ = std::fs::remove_file(&tmp);
     }

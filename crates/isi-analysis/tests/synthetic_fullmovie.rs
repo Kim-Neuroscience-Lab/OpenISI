@@ -2,11 +2,16 @@
 //!
 //! Generates a synthetic RAW movie from a *known* analytic retinotopy (the `synth`
 //! forward model: complex-log map → Kalatsky–Stryker encoding → realism layer),
-//! runs the REAL pipeline from raw frames, and checks it recovers the known
-//! position/sign. Unlike the oracle goldens (faithfulness to a reference) and
-//! `regression_oisi` (reproducibility), this tests **correctness**: does the
+//! **writes it as a schema-conformant `.oisi` (`oisi::write_raw_acquisition`) and
+//! runs the production `analyze()` over it** — so the pipeline ingests the movie
+//! through the exact `read_raw_acquisition` path a real capture uses, not a
+//! hand-built in-memory struct — then reads `/results` back and checks it recovers
+//! the known position/sign. Unlike the oracle goldens (faithfulness to a reference)
+//! and `regression_oisi` (reproducibility), this tests **correctness**: does the
 //! pipeline return the *right answer* for a known input? See
-//! `docs/SYNTHETIC_VALIDATION.md`.
+//! `docs/SYNTHETIC_VALIDATION.md`. (`delay_bias_math_vs_numerical` keeps a
+//! file-I/O-free direct `compute_retinotopy` path, so an I/O regression and a math
+//! regression stay distinguishable.)
 //!
 //! **The hemodynamic-delay VALID-DOMAIN rule (the central finding, grounded
 //! against R43 — real SNLC sample data):** the cycle-combine inherits SNLC
@@ -39,16 +44,16 @@
 //! realistic HRF / less attenuation" claim was wrong — it is the asymmetric-map
 //! f32 front-end at this amplitude, full stop).
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use ndarray::Array2;
 
-use isi_analysis::methods::BaselineExt;
 use isi_analysis::{
-    compute_retinotopy, AcquisitionProperties, AnalysisParams, ProvenanceLevel, RawAcquisition,
-    RetinotopyMaps, SilentProgress,
+    analyze, compute_retinotopy, AcquisitionProperties, AnalysisParams, ProvenanceLevel,
+    RawAcquisition, SilentProgress,
 };
-use openisi_params::config::analysis::PhaseSmoothing;
+use openisi_params::config::analysis::{CycleCombine, PhaseSmoothing};
 use openisi_params::config::AnalysisConfig;
 
 use synth::acquire::{build, RecordingSpec, Synthetic};
@@ -78,40 +83,72 @@ fn to_acq(syn: &Synthetic) -> AcquisitionProperties {
     }
 }
 
-/// Run the real pipeline from raw frames → retinotopy (the from-raw chain
-/// `analyze()` runs, minus the file I/O).
-fn recover(syn: &Synthetic, sigma_px: f64) -> RetinotopyMaps {
-    recover_with(syn, sigma_px, openisi_params::config::analysis::CycleCombine::default())
+/// A temp `.oisi` path under the system temp dir; removed (with its `.partial`)
+/// on drop. Unique per instance so parallel tests never collide.
+struct TempOisi(PathBuf);
+
+impl TempOisi {
+    fn new(tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "openisi_synth_{tag}_{}_{}.oisi",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self(p)
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
 }
 
-fn recover_with(
-    syn: &Synthetic,
-    sigma_px: f64,
-    cycle_combine: openisi_params::config::analysis::CycleCombine,
-) -> RetinotopyMaps {
+impl Drop for TempOisi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("oisi.partial"));
+    }
+}
+
+/// Position/sign/delay maps read back from a REAL `analyze()` run — the full
+/// production path: `synth → write a schema-conformant .oisi
+/// (oisi::write_raw_acquisition) → analyze() → read /results`. No hand-built
+/// in-memory `RawAcquisition` is fed to the pipeline; it comes from
+/// `read_raw_acquisition`, exactly as a real capture does. (The isolated
+/// maps→position math is checked separately by `delay_bias_math_vs_numerical`,
+/// which drives `compute_retinotopy` on exact `ComplexMaps` with no file I/O.)
+struct Recovered {
+    azi_phase_degrees: Array2<f64>,
+    alt_phase_degrees: Array2<f64>,
+    vfs: Array2<f64>,
+    azi_delay: Option<Array2<f64>>,
+    alt_delay: Option<Array2<f64>>,
+}
+
+fn recover_via_oisi(syn: &Synthetic, sigma_px: f64) -> Recovered {
     let cfg = AnalysisConfig {
         phase_smoothing: PhaseSmoothing::SnlcAmpWeightedPhasor { sigma_px },
-        cycle_combine,
+        cycle_combine: CycleCombine::default(),
         ..Default::default()
     };
     let params = AnalysisParams::from(&cfg);
-    let raw = to_raw(syn);
-    let acq = to_acq(syn);
+    let tmp = TempOisi::new("recover");
+    oisi::io::write_raw_acquisition(tmp.path(), &to_raw(syn), &to_acq(syn))
+        .expect("write synthetic .oisi");
     let cancel = AtomicBool::new(false);
-    let base = params.baseline.apply(&raw);
-    let out = isi_analysis::compute::projection::run(
-        &raw,
-        &base.f0,
-        base.floor,
-        &params.response_normalization,
-        &params.rectification,
-        &params.cycle_average,
-        &cancel,
-        &SilentProgress,
-    )
-    .expect("projection from synthetic raw frames");
-    compute_retinotopy(&out.complex_maps, &acq, &params, &cancel)
-        .expect("retinotopy from synthetic complex maps")
+    analyze(tmp.path(), &params, None, &SilentProgress, &cancel).expect("analyze synthetic .oisi");
+    let map = |name: &str| {
+        isi_analysis::io::read_result_map(tmp.path(), name)
+            .unwrap_or_else(|e| panic!("reading /results/{name}: {e}"))
+    };
+    Recovered {
+        azi_phase_degrees: map("azi_phase_degrees"),
+        alt_phase_degrees: map("alt_phase_degrees"),
+        vfs: map("vfs"),
+        azi_delay: isi_analysis::io::read_result_map(tmp.path(), "azi_delay").ok(),
+        alt_delay: isi_analysis::io::read_result_map(tmp.path(), "alt_delay").ok(),
+    }
 }
 
 /// (median, max) absolute error over the FULL grid (no cropping).
@@ -161,7 +198,7 @@ fn clean_recovers_known_retinotopy() {
         0,
     );
     let syn = build(&spec, 24, 32);
-    let retino = recover(&syn, 0.0); // no smoothing: isolate the DFT recovery
+    let retino = recover_via_oisi(&syn, 0.0); // no smoothing: isolate the DFT recovery
 
     let (a_med, a_max) = err_stats(&retino.azi_phase_degrees, &syn.ground_truth.azi);
     let (l_med, l_max) = err_stats(&retino.alt_phase_degrees, &syn.ground_truth.alt);
@@ -222,7 +259,7 @@ fn azimuth_bias_is_a_front_end_numerical_artifact() {
     );
     spec.map = small_map;
     let syn = build(&spec, 24, 32);
-    let rk = recover(&syn, 0.0); // Kalatsky–Stryker delay subtraction (default)
+    let rk = recover_via_oisi(&syn, 0.0); // KalatskyStryker delay subtraction (default)
 
     let mean = |rec: &Array2<f64>, truth: &Array2<f64>| {
         rec.iter().zip(truth.iter()).map(|(a, b)| a - b).sum::<f64>() / rec.len() as f64
@@ -450,7 +487,7 @@ fn position_flips_iff_delay_leaves_valid_domain() {
         );
         spec.map = small_map;
         let syn = build(&spec, 24, 32);
-        let r = recover(&syn, 0.0);
+        let r = recover_via_oisi(&syn, 0.0);
         let med = {
             let mut d: Vec<f64> = r
                 .azi_phase_degrees
@@ -492,7 +529,7 @@ fn recovers_under_benchmark_noise() {
         2026,
     );
     let syn = build(&spec, 24, 32);
-    let retino = recover(&syn, 1.0); // default smoothing
+    let retino = recover_via_oisi(&syn, 1.0); // default smoothing
 
     let (a_med, _a_max) = err_stats(&retino.azi_phase_degrees, &syn.ground_truth.azi);
     let (l_med, _l_max) = err_stats(&retino.alt_phase_degrees, &syn.ground_truth.alt);
