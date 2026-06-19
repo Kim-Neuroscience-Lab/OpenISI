@@ -206,7 +206,7 @@ documentation-clarity gap, not a bug.
 ### 5.2 Timing sources, ranked by fidelity (recorded per signal, per run)
 | Source | What it measures | Signals | Fidelity | Status |
 |---|---|---|---|---|
-| **Photodiode** | *actual emitted light* (threshold-crossing) | display onset; optional per-run validation | **highest — the only emitted-light measurement** | scaffolded (optional); also the commissioning-calibration source |
+| **Photodiode** | *actual emitted light* (threshold-crossing) | display onset; optional per-run validation | **highest — the only emitted-light measurement** | scaffolded (optional); the most precise calibration method + per-run validator (§5.4) |
 | **TTL** | hardware edge, but *commanded* | camera **shutter**, monitor **scanout/sync**, **light source** on/off | hardware-edge; needs the monitor-latency calibration | scaffolded (optional); implemented Phase 2 |
 | **vsync-fallback** | software at the vblank interrupt, *commanded* | camera frame, stimulus refresh | software, commanded | **implemented today** |
 
@@ -238,12 +238,14 @@ characterization **method is pluggable**, and several are genuinely photodiode-f
 |---|---|---|---|
 | **Rig's own camera images the monitor** | ✅ (uses existing hardware) | ~one camera frame (10–33 ms) | A camera is a slow photodiode array; capture the luminance rise of a commanded flash, hardware-timestamped, same clock domain. Bounds the offset; not sub-frame. |
 | **Datasheet / independent-review specs** (input lag + g2g response) | ✅ | ~ms | No measurement; per-unit + settings-dependent. |
-| **Scanout model + panel-response measurement** | partly | scanline-exact + residual | The scanline-dependent geometry is deterministic from refresh+resolution; only the panel-response residual needs measuring. |
+| **EDID scanout model + panel-response measurement** | ✅ (EDID is free) | scanline-exact + residual | EDID's Detailed Timing (pixel clock + h/v active/blank/sync) gives the scanline-dependent scanout geometry *deterministically* — only the panel-response + input-lag residual needs measuring. We already parse EDID for size (`monitor.rs`) but discard the timing; extracting it makes this method largely free. (EDID's CEA/HDMI VSDB *may* also self-report a coarse `video_latency`.) |
 | **Commercial lag tester** (Bodnar, …) | ✅ (rig stays free) | sub-ms | Is itself a photodiode device, used once externally. |
 | **Photodiode** | ✗ (adds the sensor) | ~0.1 ms | Most precise, direct, field-standard; *and* validates per-run. The best, but **optional**. |
 
 So the `/calibration/display` slot stores the **latency value + the method that
-produced it + its uncertainty** (P5). A camera-self-calibrated run and a
+produced it + its uncertainty** (P5). The deterministic scanline-geometry term is
+**EDID-derived** regardless of which method supplies the panel-response/input-lag
+residual. A camera-self-calibrated run and a
 photodiode-calibrated run are both valid — they carry different declared
 uncertainties. The system is **photodiode-free-capable** (camera self-cal /
 datasheet, coarser) *and* **photodiode-ready** (precise, optional).
@@ -319,6 +321,15 @@ that measured it** (`camera_self_cal` | `datasheet` | `scanout_model` |
 (method-dependent, P5). Analysis applies it to lift commanded timestamps to
 emitted-light time (P4). Versioned + provenance-stamped so a run records which
 calibration — and which method — it used.
+
+**H. Monitor descriptor (EDID) — `/hardware/edid` (raw) + parsed fields.
+[POPULATE — extend existing]** We already parse EDID for physical size
+(`monitor.rs::parse_edid_physical_size`) but discard the rest. Fully extract +
+store: identity (mfr/model/serial), physical size, and the **Detailed Timing**
+(pixel clock + h/v active/blank/sync) that deterministically yields the
+scanline-dependent scanout geometry feeding F's `scanout_model`; plus the CEA/HDMI
+VSDB `video_latency` when present (coarse, optional). Zero new hardware — the data
+is already on the wire. → NWB `/general/devices` + `ndx-openisi`.
 
 **G. Timing forensics — extend the existing `/acquisition/{timing,clock_sync,
 quality}`. [POPULATE]** Keep the regime/beat-period/drift/drop model; make its uncertainty
@@ -418,7 +429,8 @@ point of this design. The secondary forensics-rigor gaps (cam-jitter in the
 uncertainty RSS, midnight-wrap guard, grounding the magic-number thresholds,
 warmup-robust `t0`, clock-domain documentation) are real, bounded, and fixed
 immediately. The thesis throughout: *measure-and-store what hardware can give,
-calibrate-once what only a photodiode could, declare the provenance and
-uncertainty, derive nothing* — grounded in the ISI literature and the NWB standard.
+calibrate-once the monitor latency (by any method in §5.4 — EDID + the rig's own
+camera need no photodiode), declare the provenance and uncertainty, derive
+nothing* — grounded in the ISI literature and the NWB standard.
 Phase 1 (per-frame angle, light-source timing, exposure window, sync-provenance
 record) closes the storage side with zero new hardware and goes first.
