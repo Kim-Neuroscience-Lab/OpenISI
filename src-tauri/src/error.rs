@@ -150,6 +150,18 @@ impl From<openisi_params::ParamsError> for AppError {
     }
 }
 
+// The capture-write path composes the `oisi` format-I/O primitives directly
+// (re-exported as `isi_analysis::io::*`), so handlers can surface an
+// `OisiError` from `?`. Lift it onto the `Analysis` variant via
+// `AnalysisError: From<OisiError>` — the format error's four variants carry the
+// same IPC codes there (E_IO / E_HDF5 / E_INVALID_PACKAGE / E_MISSING_DATA), so
+// the wire format is unchanged.
+impl From<isi_analysis::OisiError> for AppError {
+    fn from(e: isi_analysis::OisiError) -> Self {
+        AppError::Analysis(isi_analysis::AnalysisError::from(e))
+    }
+}
+
 // ----------------------------------------------------------------------------
 // AppErrorWire — structured IPC payload for the frontend
 // ----------------------------------------------------------------------------

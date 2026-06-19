@@ -6,18 +6,18 @@
 
 use std::path::Path;
 
-use super::{create, write_anatomical, write_complex_maps};
-use crate::{mat5, AnalysisError, ComplexMaps};
+use crate::io::{create, write_anatomical, write_complex_maps};
+use crate::{mat5, ComplexMaps, OisiError};
 
-pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), AnalysisError> {
+pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), OisiError> {
     // Find .mat files in the directory
-    let entries = std::fs::read_dir(dir_path).map_err(AnalysisError::Io)?;
+    let entries = std::fs::read_dir(dir_path).map_err(OisiError::Io)?;
 
     let mut data_mats: Vec<std::path::PathBuf> = Vec::new();
     let mut grab_mat: Option<std::path::PathBuf> = None;
 
     for entry in entries {
-        let entry = entry.map_err(AnalysisError::Io)?;
+        let entry = entry.map_err(OisiError::Io)?;
         let path = entry.path();
         if let Some(ext) = path.extension() {
             if ext.eq_ignore_ascii_case("mat") {
@@ -38,7 +38,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     data_mats.sort();
 
     if data_mats.len() < 2 {
-        return Err(AnalysisError::MissingData(format!(
+        return Err(OisiError::MissingData(format!(
             "need at least 2 .mat data files in {}, found {}",
             dir_path.display(),
             data_mats.len()
@@ -50,7 +50,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     //             second file (higher number) = vertical = altitude
     let azi_cells = mat5::read_snlc_f1m(&data_mats[0])?;
     if azi_cells.len() < 2 {
-        return Err(AnalysisError::InvalidPackage(format!(
+        return Err(OisiError::InvalidPackage(format!(
             "{}: f1m has {} cells, expected 2",
             data_mats[0].display(),
             azi_cells.len()
@@ -59,7 +59,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
 
     let alt_cells = mat5::read_snlc_f1m(&data_mats[1])?;
     if alt_cells.len() < 2 {
-        return Err(AnalysisError::InvalidPackage(format!(
+        return Err(OisiError::InvalidPackage(format!(
             "{}: f1m has {} cells, expected 2",
             data_mats[1].display(),
             alt_cells.len()
@@ -74,7 +74,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     let azi_fwd = azi_iter
         .next()
         .ok_or_else(|| {
-            AnalysisError::InvalidPackage(format!(
+            OisiError::InvalidPackage(format!(
                 "{}: f1m missing azi_fwd cell after length check",
                 data_mats[0].display()
             ))
@@ -83,7 +83,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     let azi_rev = azi_iter
         .next()
         .ok_or_else(|| {
-            AnalysisError::InvalidPackage(format!(
+            OisiError::InvalidPackage(format!(
                 "{}: f1m missing azi_rev cell after length check",
                 data_mats[0].display()
             ))
@@ -94,7 +94,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     let alt_fwd = alt_iter
         .next()
         .ok_or_else(|| {
-            AnalysisError::InvalidPackage(format!(
+            OisiError::InvalidPackage(format!(
                 "{}: f1m missing alt_fwd cell after length check",
                 data_mats[1].display()
             ))
@@ -103,7 +103,7 @@ pub fn import_snlc_directory(dir_path: &Path, output_path: &Path) -> Result<(), 
     let alt_rev = alt_iter
         .next()
         .ok_or_else(|| {
-            AnalysisError::InvalidPackage(format!(
+            OisiError::InvalidPackage(format!(
                 "{}: f1m missing alt_rev cell after length check",
                 data_mats[1].display()
             ))

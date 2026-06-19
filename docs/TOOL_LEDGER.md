@@ -57,8 +57,8 @@ toolchain).
 
 | Hand-roll | Why it stays |
 |---|---|
-| The `.oisi` native working format (`isi-analysis/src/io.rs`, `export.rs`) | The instrument's mutable, incremental, self-contained working store. NWB is an archive/interchange format and there is no Rust NWB writer; standardization is met by *exporting* to it, not adopting it as the native format. Domain. |
-| MATLAB v5 `.mat` SNLC importer (`mat5.rs`) | No production-grade Rust v5 reader (cell-arrays/structs/compression). Legacy one-way import; genuine ecosystem gap. |
+| The `.oisi` native working format — the dedicated **`oisi` crate** (`crates/oisi`: schema SSoT + HDF5 I/O + import), plus capture-write in `src-tauri/src/export.rs` and the analysis-semantic readers in `isi-analysis/src/io.rs` that compose `oisi`'s primitives | The instrument's mutable, incremental, self-contained working store. NWB is an archive/interchange format and there is no Rust NWB writer; standardization is met by *exporting* to it, not adopting it as the native format. The format is its own light crate so synth/tools/`src-tauri` read+write `.oisi` without the analysis compute. Domain. |
+| MATLAB v5 `.mat` SNLC importer (`crates/oisi/src/mat5.rs`) | No production-grade Rust v5 reader (cell-arrays/structs/compression). Legacy one-way import; genuine ecosystem gap. |
 | Param/`.oisi` migration (`migrate.rs`) | JSON tree reshaping + named legacy renames; DB-migration frameworks don't apply. Domain, well-tested. |
 | Incremental-cache Merkle DAG (`pipeline/fingerprint.rs`) | `blake3` *is* the hashing tool; the **persist-across-sessions** cache is domain — `salsa`/build systems are in-memory only. |
 | MapMeta render hints, timestamp unification, clock-drift forensics, per-frame QA, atomic-HDF5-export protocol | Domain provenance/visualization contracts; no off-the-shelf equivalent. |

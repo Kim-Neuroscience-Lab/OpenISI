@@ -10,7 +10,8 @@
 
 use ndarray::Array2;
 
-use super::{read_f64_attr, read_str_attr, write_f64_attr, write_str_attr};
+use oisi::io::{read_f64_attr, read_str_attr, write_f64_attr, write_str_attr};
+
 use crate::{AcquisitionProperties, AnalysisError};
 
 /// Per-dataset rendering metadata, attached as HDF5 attrs on the dataset.

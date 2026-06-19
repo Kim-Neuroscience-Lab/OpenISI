@@ -143,7 +143,7 @@ fn extract_zip(zip_path: &Path, extract_dir: &Path) -> Result<(), AppError> {
 fn annotate_subject_error(
     name: &str,
     dir: &Path,
-    source: isi_analysis::AnalysisError,
+    source: isi_analysis::OisiError,
 ) -> isi_analysis::AnalysisError {
     isi_analysis::AnalysisError::MissingData(format!(
         "subject '{name}' at {}: {source}",

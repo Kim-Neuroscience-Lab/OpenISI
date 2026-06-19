@@ -13,7 +13,7 @@ use num_complex::Complex64;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::AnalysisError;
+use crate::OisiError;
 
 // ---------------------------------------------------------------------------
 // MAT v5 type tags
@@ -58,8 +58,8 @@ pub struct MatComplex2D {
 
 /// Read the variable `f1m` from an SNLC .mat file.
 /// Returns a Vec of complex matrices (expected to be 2 — forward and reverse).
-pub fn read_snlc_f1m(path: &Path) -> Result<Vec<MatComplex2D>, AnalysisError> {
-    let bytes = std::fs::read(path).map_err(AnalysisError::Io)?;
+pub fn read_snlc_f1m(path: &Path) -> Result<Vec<MatComplex2D>, OisiError> {
+    let bytes = std::fs::read(path).map_err(OisiError::Io)?;
 
     if bytes.len() < 128 {
         return Err(mat_err("file too small for MAT v5 header"));
@@ -131,8 +131,8 @@ pub fn read_snlc_f1m(path: &Path) -> Result<Vec<MatComplex2D>, AnalysisError> {
 /// Read an anatomical grayscale image from an SNLC grab_ .mat file.
 /// The grab file typically contains a struct with a numeric 2D array field (the image).
 /// This function searches recursively through all variables and struct fields.
-pub fn read_snlc_anatomical(path: &Path) -> Result<Array2<u8>, AnalysisError> {
-    let bytes = std::fs::read(path).map_err(AnalysisError::Io)?;
+pub fn read_snlc_anatomical(path: &Path) -> Result<Array2<u8>, OisiError> {
+    let bytes = std::fs::read(path).map_err(OisiError::Io)?;
 
     if bytes.len() < 128 || !bytes.starts_with(b"MATLAB") {
         return Err(mat_err("not a MATLAB file"));
@@ -262,7 +262,7 @@ enum MatrixData {
 
 /// Read a MAT v5 tag. Handles both regular (8-byte) and "small data element" (4-byte) formats.
 /// Returns (type, size). For small data elements, the data follows immediately in the tag bytes.
-fn read_tag<R: Read + Seek>(r: &mut R) -> Result<(u32, u32), AnalysisError> {
+fn read_tag<R: Read + Seek>(r: &mut R) -> Result<(u32, u32), OisiError> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf)?;
 
@@ -286,7 +286,7 @@ fn read_tag<R: Read + Seek>(r: &mut R) -> Result<(u32, u32), AnalysisError> {
 }
 
 /// Read a tag and its data as bytes. Handles both small and regular formats.
-fn read_tag_data<R: Read + Seek>(r: &mut R) -> Result<(u32, Vec<u8>), AnalysisError> {
+fn read_tag_data<R: Read + Seek>(r: &mut R) -> Result<(u32, Vec<u8>), OisiError> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf)?;
 
@@ -323,7 +323,7 @@ fn read_tag_data<R: Read + Seek>(r: &mut R) -> Result<(u32, Vec<u8>), AnalysisEr
 /// Returns Some(cells) if found, None if this isn't "f1m".
 fn try_read_f1m_matrix<R: Read + Seek>(
     r: &mut R,
-) -> Result<Option<Vec<MatComplex2D>>, AnalysisError> {
+) -> Result<Option<Vec<MatComplex2D>>, OisiError> {
     let (dtype, size) = read_tag(r)?;
     if dtype != MI_MATRIX {
         return Ok(None);
@@ -349,7 +349,7 @@ fn try_read_f1m_matrix<R: Read + Seek>(
 fn parse_matrix_contents<R: Read + Seek>(
     r: &mut R,
     total_size: usize,
-) -> Result<(String, MatrixData), AnalysisError> {
+) -> Result<(String, MatrixData), OisiError> {
     let end_pos = r.stream_position()? as usize + total_size;
 
     // Sub-element 1: Array Flags (miUINT32, 8 bytes of data)
@@ -466,18 +466,18 @@ fn parse_matrix_contents<R: Read + Seek>(
 fn parse_matrix_with_name<R: Read + Seek>(
     r: &mut R,
     size: usize,
-) -> Result<(String, MatrixData), AnalysisError> {
+) -> Result<(String, MatrixData), OisiError> {
     parse_matrix_contents(r, size)
 }
 
 /// Read a numeric sub-element as f64 values.
-fn read_numeric_subelement<R: Read + Seek>(r: &mut R) -> Result<Vec<f64>, AnalysisError> {
+fn read_numeric_subelement<R: Read + Seek>(r: &mut R) -> Result<Vec<f64>, OisiError> {
     let (dtype, data) = read_tag_data(r)?;
     bytes_to_f64(&data, dtype)
 }
 
 /// Convert raw bytes to f64 based on MAT type tag.
-fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
+fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, OisiError> {
     match dtype {
         MI_DOUBLE => {
             let n = data.len() / 8;
@@ -604,7 +604,7 @@ fn bytes_to_f64(data: &[u8], dtype: u32) -> Result<Vec<f64>, AnalysisError> {
 // Cell → ComplexMaps conversion
 // ---------------------------------------------------------------------------
 
-fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>, AnalysisError> {
+fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>, OisiError> {
     let mut result = Vec::with_capacity(cells.len());
     for (i, cell) in cells.into_iter().enumerate() {
         match cell {
@@ -660,13 +660,13 @@ fn cells_to_complex_matrices(cells: Vec<MatrixData>) -> Result<Vec<MatComplex2D>
 // Low-level helpers
 // ---------------------------------------------------------------------------
 
-fn read_n_bytes<R: Read>(r: &mut R, n: usize) -> Result<Vec<u8>, AnalysisError> {
+fn read_n_bytes<R: Read>(r: &mut R, n: usize) -> Result<Vec<u8>, OisiError> {
     let mut buf = vec![0u8; n];
     r.read_exact(&mut buf)?;
     Ok(buf)
 }
 
-fn skip_padded<R: Read + Seek>(r: &mut R, size: u32) -> Result<(), AnalysisError> {
+fn skip_padded<R: Read + Seek>(r: &mut R, size: u32) -> Result<(), OisiError> {
     let padded = pad8(size as usize) as i64;
     r.seek(SeekFrom::Current(padded))?;
     Ok(())
@@ -677,11 +677,11 @@ fn pad8(n: usize) -> usize {
     (n + 7) & !7
 }
 
-fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, AnalysisError> {
+fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, OisiError> {
     let mut decoder = ZlibDecoder::new(data);
     let mut out = Vec::new();
     decoder.read_to_end(&mut out).map_err(|e| {
-        AnalysisError::Io(io::Error::new(
+        OisiError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("zlib decompression failed: {e}"),
         ))
@@ -689,8 +689,8 @@ fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, AnalysisError> {
     Ok(out)
 }
 
-fn mat_err(msg: &str) -> AnalysisError {
-    AnalysisError::InvalidPackage(format!("MAT v5: {msg}"))
+fn mat_err(msg: &str) -> OisiError {
+    OisiError::InvalidPackage(format!("MAT v5: {msg}"))
 }
 
 // ---------------------------------------------------------------------------

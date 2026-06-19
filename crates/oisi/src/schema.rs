@@ -3,7 +3,7 @@
 //! Every group, dataset, and attribute an `.oisi` file may contain is declared
 //! ONCE here, as Rust data ([`SCHEMA`]). From this one declaration:
 //!
-//! * the writers in [`crate::io`] and `openisi::export` reference the entity
+//! * the writers (`oisi::io` and the Tauri `export`) reference the entity
 //!   names via [`name`] consts (no stringly-typed HDF5 keys that can drift);
 //! * `docs/oisi.schema.json` is **generated** by [`to_json_schema`] (a golden
 //!   test asserts the committed doc equals the generated one — the doc can no

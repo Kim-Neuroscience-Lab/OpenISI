@@ -11,4 +11,13 @@
 //! params, the incremental cache) lives in `isi-analysis`, which composes this
 //! crate's primitives.
 
+pub mod error;
+mod import;
+pub mod io;
+pub mod mat5;
 pub mod schema;
+pub mod types;
+
+pub use error::OisiError;
+pub use import::import_snlc_directory;
+pub use types::*;

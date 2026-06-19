@@ -10,7 +10,9 @@ pub mod bridge;
 pub mod compute;
 mod incremental;
 pub mod io;
-pub mod mat5;
+/// The `.oisi` foreign-format MAT v5 importer now lives in the dedicated `oisi`
+/// crate; re-exported so existing `isi_analysis::mat5::*` paths keep resolving.
+pub use oisi::mat5;
 pub mod math;
 pub mod methods;
 pub mod migrate;
@@ -27,7 +29,7 @@ pub mod segmentation;
 #[cfg(test)]
 mod test_support;
 
-use ndarray::{Array2, Array3};
+use ndarray::Array2;
 pub use num_complex::Complex64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,44 +41,22 @@ pub fn complex_from_polar(r: f64, theta: f64) -> Complex64 {
 }
 
 pub use io::{FileCapabilities, MapMeta};
-pub use params::{AcquisitionProperties, AnalysisParams, ProvenanceLevel};
+pub use params::AnalysisParams;
+// The format-layer boundary types are owned by the light `oisi` crate (no
+// Burn/compute dep); re-exported at this crate root so every `crate::X` and
+// `isi_analysis::X` path keeps resolving.
+pub use oisi::{
+    AcquisitionIdentity, AcquisitionProperties, ComplexMaps, ProvenanceLevel, RawAcquisition,
+};
+// The format-layer error type, re-exported so consumers that compose the
+// `oisi::io` primitives directly (e.g. the Tauri capture-write path) can name
+// it without a separate `oisi` dependency. `AnalysisError: From<OisiError>`
+// lifts it variant-for-variant (preserving the IPC wire codes).
+pub use oisi::OisiError;
 
 // =============================================================================
 // Core data types
 // =============================================================================
-
-/// Four complex maps — one per stimulus direction.
-/// Universal input to retinotopy computation regardless of data source.
-#[derive(Clone)]
-pub struct ComplexMaps {
-    pub azi_fwd: Array2<Complex64>,
-    pub azi_rev: Array2<Complex64>,
-    pub alt_fwd: Array2<Complex64>,
-    pub alt_rev: Array2<Complex64>,
-}
-
-/// Raw acquisition data loaded from an `.oisi` file — the input to pipeline
-/// stage 0 (ΔF/F baseline → per-cycle DFT → complex maps + reliability + SNR).
-///
-/// This is the host-side hand-off that keeps the pipeline HDF5-free: the I/O
-/// boundary (`io::read_raw_acquisition`) reads these arrays from the file, and
-/// the pipeline's `Baseline`/`Projection` stages borrow them — never touching
-/// HDF5 themselves. The
-/// `frames` array is large (the full camera movie); it is moved/borrowed, never
-/// cloned.
-pub struct RawAcquisition {
-    /// All camera frames `[T, H, W]` (raw u16 counts).
-    pub frames: Array3<u16>,
-    /// Per-frame camera timestamps (seconds), length `T`.
-    pub cam_ts_sec: Vec<f64>,
-    /// Per-sweep stimulus onset times (seconds), from `/acquisition/schedule`.
-    pub sweep_start_sec: Vec<f64>,
-    /// Per-sweep stimulus offset times (seconds).
-    pub sweep_end_sec: Vec<f64>,
-    /// Per-sweep direction labels (the `sweep_sequence` SSoT) — the ground
-    /// truth for grouping cycles by direction.
-    pub sweep_sequence: Vec<String>,
-}
 
 /// Retinotopy maps — computed from combined complex maps.
 ///
@@ -531,7 +511,7 @@ pub fn analyze(
         if let Some(tree) = params_tree {
             io::write_analysis_params_attr(tmp, tree)?;
         }
-        Ok(())
+        Ok::<(), AnalysisError>(())
     })?;
     tracing::debug!(
         write_results_ms = t_wr.elapsed().as_secs_f64() * 1e3,
@@ -646,6 +626,23 @@ impl From<hdf5::Error> for AnalysisError {
         Self::Hdf5 {
             context: String::new(),
             source,
+        }
+    }
+}
+
+/// Lift a format-layer [`oisi::OisiError`] into an `AnalysisError`, variant for
+/// variant. The four `OisiError` variants map onto their `AnalysisError`
+/// counterparts (which carry the stable IPC wire codes `E_IO` / `E_HDF5` /
+/// `E_INVALID_PACKAGE` / `E_MISSING_DATA`), so any `isi-analysis` function that
+/// `?`-propagates an `oisi::io` call surfaces the same error code it did before
+/// the format layer was split out.
+impl From<oisi::OisiError> for AnalysisError {
+    fn from(e: oisi::OisiError) -> Self {
+        match e {
+            oisi::OisiError::Io(source) => Self::Io(source),
+            oisi::OisiError::Hdf5 { context, source } => Self::Hdf5 { context, source },
+            oisi::OisiError::InvalidPackage(msg) => Self::InvalidPackage(msg),
+            oisi::OisiError::MissingData(msg) => Self::MissingData(msg),
         }
     }
 }

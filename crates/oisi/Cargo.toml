@@ -10,4 +10,12 @@ description = "The .oisi recording file format — schema, HDF5 I/O, and import 
 # the rest of the workspace so the hdf5-sys build unifies (static + zlib).
 hdf5 = { package = "hdf5-metno", version = "0.12" }
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.11", features = ["static", "zlib"] }
+ndarray = { version = "0.17", features = ["approx", "rayon"] }
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+# MAT v5 (.mat) import path uses zlib inflate for miCOMPRESSED elements.
+flate2 = "1"
+# Structured logging for the import path (anatomical found / imported / skipped).
+tracing = "0.1"

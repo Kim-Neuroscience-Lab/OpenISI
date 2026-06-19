@@ -3445,7 +3445,6 @@ dependencies = [
  "burn-dispatch",
  "burn-ndarray",
  "burn-tensor",
- "flate2",
  "hdf5-metno",
  "hdf5-metno-sys",
  "ndarray",
@@ -3453,6 +3452,7 @@ dependencies = [
  "noisy_float",
  "num-complex",
  "num-traits",
+ "oisi",
  "openisi-params",
  "parking_lot",
  "petgraph",
@@ -4485,6 +4485,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "oisi"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "hdf5-metno",
+ "hdf5-metno-sys",
+ "ndarray",
+ "num-complex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
