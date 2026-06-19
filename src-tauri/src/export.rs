@@ -457,6 +457,22 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
         }
     }
 
+    // ── Write sync provenance (P0: best-available cascade, honest at every rung) ──
+    // The current cascade reality: no TTL DAQ, no photodiode, so each signal lands on
+    // its software/commanded rung — recorded honestly so a consumer never guesses.
+    let sync_grp = acq_group
+        .create_group(name::SYNC)
+        .map_err(|e| hdf5_err("Failed to create sync group", e))?;
+    isi_analysis::io::write_str_attr(&sync_grp, name::CAMERA_TIMING_SOURCE, "camera_qpc")?;
+    isi_analysis::io::write_str_attr(&sync_grp, name::STIMULUS_TIMING_SOURCE, "gpu_vsync")?;
+    isi_analysis::io::write_str_attr(&sync_grp, name::LIGHT_TIMING_SOURCE, "commanded")?;
+    isi_analysis::io::write_u32_attr(&sync_grp, name::TTL_PRESENT, 0)?;
+    isi_analysis::io::write_u32_attr(&sync_grp, name::PHOTODIODE_PRESENT, 0)?;
+    // Total uncertainty budget: the timing characterization's onset uncertainty when
+    // available, else NaN = "unknown" (P0: never claim precision we don't have).
+    let timing_uncertainty_sec = timing.map(|tc| tc.onset_uncertainty_sec).unwrap_or(f64::NAN);
+    isi_analysis::io::write_f64_attr(&sync_grp, name::TIMING_UNCERTAINTY_SEC, timing_uncertainty_sec)?;
+
     // ── Write camera data ────────────────────────────────────────
     let camera_group = acq_group
         .create_group(name::CAMERA)
@@ -521,6 +537,7 @@ pub fn write_oisi(path: &Path, bundle: OisiBundle) -> AppResult<String> {
     // here too.
     drop(camera_group);
     drop(sync_group);
+    drop(sync_grp);
     drop(stim_group);
     drop(acq_group);
     file.flush()
@@ -1203,7 +1220,9 @@ mod tests {
         // can omit them), which means `contract_violations` does NOT require them.
         // A real CAPTURE must still write them — assert that here so the guarantee
         // keeps its teeth despite the relaxed schema presence.
-        for grp in ["acquisition/stimulus", "acquisition/clock_sync", "acquisition/quality"] {
+        for grp in
+            ["acquisition/stimulus", "acquisition/clock_sync", "acquisition/quality", "acquisition/sync"]
+        {
             assert!(
                 file.group(grp).is_ok(),
                 "the capture writer must write /{grp} (capture-time telemetry)"

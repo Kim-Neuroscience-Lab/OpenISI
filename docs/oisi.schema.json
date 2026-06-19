@@ -194,6 +194,36 @@
           "doc": "Per-frame stimulus state arrays.",
           "present_when": "capture-time stimulus presentation"
         },
+        "/acquisition/sync": {
+          "attributes": {
+            "camera_timing_source": {
+              "doc": "Cascade rung the camera timing landed on: photodiode | ttl | gpu_vsync | camera_qpc | commanded | unknown.",
+              "dtype": "VarLenUnicode"
+            },
+            "light_timing_source": {
+              "doc": "Cascade rung the light-source timing landed on; same enum.",
+              "dtype": "VarLenUnicode"
+            },
+            "photodiode_present": {
+              "doc": "1 iff a photodiode measured emitted-light onset.",
+              "dtype": "u32 (0/1)"
+            },
+            "stimulus_timing_source": {
+              "doc": "Cascade rung the stimulus (monitor) timing landed on; same enum.",
+              "dtype": "VarLenUnicode"
+            },
+            "timing_uncertainty_sec": {
+              "doc": "Total timing uncertainty budget (s) for this run's best-available sources.",
+              "dtype": "f64"
+            },
+            "ttl_present": {
+              "doc": "1 iff a TTL DAQ provided hardware-edge timing.",
+              "dtype": "u32 (0/1)"
+            }
+          },
+          "doc": "Best-available timing-source provenance + uncertainty (P0).",
+          "present_when": "capture-time acquisition"
+        },
         "/acquisition/timing": {
           "attributes": {
             "beat_period_sec": {

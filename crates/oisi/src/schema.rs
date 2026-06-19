@@ -121,6 +121,7 @@ pub mod name {
     pub const CLOCK_SYNC: &str = "clock_sync";
     pub const TIMING: &str = "timing";
     pub const QUALITY: &str = "quality";
+    pub const SYNC: &str = "sync";
 
     // /acquisition/camera.
     pub const FRAMES: &str = "frames";
@@ -150,6 +151,16 @@ pub mod name {
     pub const START_OFFSET_US: &str = "start_offset_us";
     pub const END_OFFSET_US: &str = "end_offset_us";
     pub const DRIFT_US: &str = "drift_us";
+
+    // /acquisition/sync — the machine-readable form of P0 (best-available cascade,
+    // honest at every rung). Per-signal source ∈ {photodiode | ttl | gpu_vsync |
+    // camera_qpc | commanded | unknown}; presence flags; total uncertainty budget.
+    pub const CAMERA_TIMING_SOURCE: &str = "camera_timing_source";
+    pub const STIMULUS_TIMING_SOURCE: &str = "stimulus_timing_source";
+    pub const LIGHT_TIMING_SOURCE: &str = "light_timing_source";
+    pub const TTL_PRESENT: &str = "ttl_present";
+    pub const PHOTODIODE_PRESENT: &str = "photodiode_present";
+    pub const TIMING_UNCERTAINTY_SEC: &str = "timing_uncertainty_sec";
 
     // /acquisition/timing.
     pub const F_CAM_HZ: &str = "f_cam_hz";
@@ -360,6 +371,24 @@ const ACQUISITION_SUBGROUPS: &[Group] = &[
             Attr { name: n::DISPLAY_SCANOUT, dtype: "VarLenUnicode", presence: Always, doc: "\"physical\" | \"remote_virtual\" — paired with stimulus_timing_validatable." },
         ],
         datasets: QUALITY_DATASETS, subgroups: &[],
+    },
+    Group {
+        // The machine-readable form of P0 (best-available cascade, honest at every
+        // rung; docs/TIMING_SYNC_DESIGN.md §4, §6.A). Per-signal timing source +
+        // hardware-presence flags + total uncertainty budget, so a consumer never
+        // guesses how a run was timed. Capture-time (the cascade is resolved at
+        // capture); a stimulus-agnostic raw writer does not produce it.
+        path: "/acquisition/sync", presence: When("capture-time acquisition"),
+        doc: "Best-available timing-source provenance + uncertainty (P0).", dynamic_attrs: None,
+        attrs: &[
+            Attr { name: n::CAMERA_TIMING_SOURCE, dtype: "VarLenUnicode", presence: Always, doc: "Cascade rung the camera timing landed on: photodiode | ttl | gpu_vsync | camera_qpc | commanded | unknown." },
+            Attr { name: n::STIMULUS_TIMING_SOURCE, dtype: "VarLenUnicode", presence: Always, doc: "Cascade rung the stimulus (monitor) timing landed on; same enum." },
+            Attr { name: n::LIGHT_TIMING_SOURCE, dtype: "VarLenUnicode", presence: Always, doc: "Cascade rung the light-source timing landed on; same enum." },
+            Attr { name: n::TTL_PRESENT, dtype: "u32 (0/1)", presence: Always, doc: "1 iff a TTL DAQ provided hardware-edge timing." },
+            Attr { name: n::PHOTODIODE_PRESENT, dtype: "u32 (0/1)", presence: Always, doc: "1 iff a photodiode measured emitted-light onset." },
+            Attr { name: n::TIMING_UNCERTAINTY_SEC, dtype: "f64", presence: Always, doc: "Total timing uncertainty budget (s) for this run's best-available sources." },
+        ],
+        datasets: &[], subgroups: &[],
     },
 ];
 
