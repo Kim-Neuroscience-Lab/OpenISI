@@ -1381,81 +1381,14 @@ mod allen {
             assert_eq!(total, 0, "local_min_markers diverges from genuine NAT localMin");
         }
 
-        /// `merge_two` vs verbatim Allen `mergePatches`
-        /// (`RetinotopicMapping.py` L435-447), `border_width=2`. `flag=1` →
-        /// `Some(spc)`; `flag=0` → `None` (Allen raises "too far apart").
-        /// Fixtures from `gen_merge_two_golden.py` (32×32). Predicted-match.
-        #[test]
-        fn merge_two_matches_allen_mergepatches() {
-            const N: usize = 32;
-            fn check(name: &str, a_b: &[u8], b_b: &[u8], out_b: &[u8], flag_b: &[u8]) -> usize {
-                let a = Array2::from_shape_fn((N, N), |(r, c)| a_b[r * N + c] != 0);
-                let b = Array2::from_shape_fn((N, N), |(r, c)| b_b[r * N + c] != 0);
-                let mergeable = flag_b[0] != 0;
-                let got = merge_two(&a, &b, 2);
-                let mut d = 0usize;
-                match (got, mergeable) {
-                    (Some(m), true) => {
-                        for r in 0..N {
-                            for c in 0..N {
-                                if (m[[r, c]] as u8) != out_b[r * N + c] {
-                                    d += 1;
-                                }
-                            }
-                        }
-                    }
-                    (None, false) => {}
-                    (Some(_), false) => d = 1,
-                    (None, true) => d = 1,
-                }
-                eprintln!("  merge_two {name:13} mergeable={mergeable} diff={d}");
-                d
-            }
-            let mut total = 0;
-            for name in [
-                "touch_border",
-                "gap_eq_bw",
-                "gap_too_far",
-                "diag_only",
-                "thin_bridge",
-            ] {
-                // include_bytes! needs literal paths; match on name.
-                let (a, b, o, f): (&[u8], &[u8], &[u8], &[u8]) = match name {
-                    "touch_border" => (
-                        include_bytes!("../../tests/golden/fixtures/mt_touch_border_a.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_touch_border_b.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_touch_border_out.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_touch_border_flag.bin"),
-                    ),
-                    "gap_eq_bw" => (
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_eq_bw_a.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_eq_bw_b.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_eq_bw_out.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_eq_bw_flag.bin"),
-                    ),
-                    "gap_too_far" => (
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_too_far_a.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_too_far_b.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_too_far_out.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_gap_too_far_flag.bin"),
-                    ),
-                    "diag_only" => (
-                        include_bytes!("../../tests/golden/fixtures/mt_diag_only_a.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_diag_only_b.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_diag_only_out.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_diag_only_flag.bin"),
-                    ),
-                    _ => (
-                        include_bytes!("../../tests/golden/fixtures/mt_thin_bridge_a.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_thin_bridge_b.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_thin_bridge_out.bin"),
-                        include_bytes!("../../tests/golden/fixtures/mt_thin_bridge_flag.bin"),
-                    ),
-                };
-                total += check(name, a, b, o, f);
-            }
-            assert_eq!(total, 0, "merge_two diverges from Allen mergePatches");
-        }
+        // (Cutover, objective 1) The frozen `merge_two_matches_allen_mergepatches`
+        // golden + its mt_*.bin fixtures + gen_merge_two_golden.py (which imported
+        // the `_allen_oracle` SHIM) were DELETED: the live
+        // `merge_two_matches_genuine_nat_live` below was enriched to cover the same
+        // cases (edge-touch, 1px gap, gap==borderWidth boundary, diagonal-only
+        // corner, too-far→raise) against genuine NAT `mergePatches` in the
+        // shim-free uv env — verifying both the mergeable decision and the merged
+        // map.
 
         /// **Live genuine-oracle version**: our `merge_two` vs the GENUINE
         /// NeuroAnalysisTools `mergePatches` (which RAISES when the two patches
@@ -1475,8 +1408,15 @@ mod allen {
                 }
                 a
             };
+            // Covers the cases the retired frozen golden held: edge-touch (merge),
+            // a 1px gap (closing bridges), a gap equal to the border width
+            // (boundary), diagonal-only corner contact (4-conn cross, not 8-conn),
+            // and too-far (genuine RAISES → our None).
             let cases = [
-                ("mergeable", sq(8, 16, 6, 12), sq(8, 16, 13, 19)), // 1px gap → closing(2) bridges
+                ("touch", sq(8, 16, 6, 12), sq(8, 16, 12, 18)),     // shared edge
+                ("gap1", sq(8, 16, 6, 12), sq(8, 16, 13, 19)),      // 1px gap → closing(2) bridges
+                ("gap_eq_bw", sq(8, 16, 6, 12), sq(8, 16, 14, 20)), // 2px gap == borderWidth
+                ("diag", sq(6, 10, 6, 10), sq(10, 14, 10, 14)),     // corner-only contact
                 ("far", sq(8, 16, 4, 9), sq(8, 16, 22, 27)),        // far → 2 CC → raises
             ];
             let mut diffs = Vec::new();
