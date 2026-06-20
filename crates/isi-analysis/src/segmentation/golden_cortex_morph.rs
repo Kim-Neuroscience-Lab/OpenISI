@@ -17,9 +17,6 @@
 mod tests {
     use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt, CortexSourceMethod};
     use crate::segmentation::connectivity::keep_largest_component;
-    use crate::segmentation::morphology::{
-        binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
-    };
     // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
     // which also used these in the default build, were retired in the cutover).
     // (label_4conn / binary_{opening,closing}_cross are imported locally inside
@@ -34,11 +31,6 @@ mod tests {
     use ndarray::Array2;
 
     const N: usize = 96;
-
-    fn load_mask(bytes: &[u8]) -> Array2<bool> {
-        assert_eq!(bytes.len(), N * N, "fixture size mismatch");
-        Array2::from_shape_fn((N, N), |(r, c)| bytes[r * N + c] != 0)
-    }
 
     /// `SnlcMagThreshold` (the `overlaymaps.m` response-magnitude ROI gate)
     /// matches the verbatim Octave lines: `mag = magf.^1.1; mag = mag − min; mag
@@ -59,44 +51,16 @@ mod tests {
         assert_eq!(d, 0, "mag-threshold ROI diverged from overlaymaps.m");
     }
 
-    /// **FROZEN library-primitive golden (objective-6 exception, honestly
-    /// labelled — NOT a live oracle).** Octave IPT is the oracle. Every op here is
-    /// ALSO validated LIVE each run, which catches any reference drift: the four
-    /// disk-strel ops by `cortex_morphology_matches_genuine_octave_live` (genuine
-    /// `imopen`/`imclose`/`imdilate`/`imfill`), and `keep_largest_component` by
-    /// `keep_largest_component_tiebreak_matches_snlc_argmax`. This frozen copy is
-    /// redundant default-suite coverage; it is retained (rather than deleted) only
-    /// because its `cortex_morph_*` fixtures have ambiguous generator ownership —
-    /// resolving that is a follow-up. It must not be read as the live oracle.
-    #[test]
-    fn cortex_morphology_matches_octave_strel_ops() {
-        let input = load_mask(include_bytes!("../../tests/golden/fixtures/cortex_morph_input.bin"));
-        let g_open: &[u8] = include_bytes!("../../tests/golden/fixtures/cortex_morph_open.bin");
-        let g_close: &[u8] = include_bytes!("../../tests/golden/fixtures/cortex_morph_close.bin");
-        let g_fill: &[u8] = include_bytes!("../../tests/golden/fixtures/cortex_morph_fill.bin");
-        let g_dilate: &[u8] = include_bytes!("../../tests/golden/fixtures/cortex_morph_dilate.bin");
-        let g_largest: &[u8] =
-            include_bytes!("../../tests/golden/fixtures/cortex_morph_largestcc.bin");
-
-        let cases: [(&str, Array2<bool>, &[u8]); 5] = [
-            ("imopen(disk2)", binary_opening_disk(&input, 2), g_open),
-            ("imclose(disk10)", binary_closing_disk(&input, 10), g_close),
-            ("imfill(holes)", binary_fill_holes(&input), g_fill),
-            ("imdilate(disk3)", binary_dilation_disk(&input, 3), g_dilate),
-            ("largest_cc(4conn)", keep_largest_component(&input), g_largest),
-        ];
-
-        let mut total = 0usize;
-        for (name, ours, golden) in &cases {
-            let d = count_differing(ours, golden);
-            eprintln!("  {name:20} differing px = {d}");
-            total += d;
-        }
-        assert_eq!(
-            total, 0,
-            "SNLC cortex morphology diverges from Octave strel ops (see per-op counts above)"
-        );
-    }
+    // (Cutover, objective 6) The frozen `cortex_morphology_matches_octave_strel_ops`
+    // golden + its six `cortex_morph_*.bin` fixtures + BOTH owning generators
+    // (gen_cortex_morph_golden.m, which wrote the input mask + five Octave op
+    // outputs, and the now-dead gen_patch_morph_golden.py, which read the mask and
+    // wrote unconsumed patch_morph_*.bin) were DELETED. Every op it checked is
+    // validated LIVE each run: the four disk-strel ops by
+    // `cortex_morphology_matches_genuine_octave_live` (genuine Octave
+    // imopen/imclose/imdilate/imfill — its scene now includes the top-border blob
+    // the frozen golden curated, so edge-padding coverage is preserved), and
+    // `keep_largest_component` by `keep_largest_component_tiebreak_matches_snlc_argmax`.
 
     /// **Live library-primitive oracle, Octave**: our disk-strel morphology
     /// (`binary_opening_disk`, `binary_closing_disk`, `binary_dilation_disk`,
@@ -138,6 +102,15 @@ mod tests {
                 f[[r, c]] = 1.0; // second blob
             }
         }
+        // Blob straddling the TOP border (row 0) — exercises edge padding for
+        // imopen/imclose/imdilate/imfill (the curated stress case the retired
+        // frozen `cortex_morphology_matches_octave_strel_ops` golden held; ported
+        // here so the live oracle covers it, no blind coverage loss).
+        for r in 0..6 {
+            for c in 6..18 {
+                f[[r, c]] = 1.0;
+            }
+        }
         let mask = f.mapv(|v| v != 0.0);
 
         let cases: [(&str, f64, Array2<bool>); 4] = [
@@ -174,7 +147,7 @@ mod tests {
     /// largest 4-CC) is OpenISI's composition — there is no single SNLC `.m`
     /// defining it (`getMouseAreasX.m` is the GUI pipeline). Each *primitive* in
     /// the sequence IS validated live (`cortex_morphology_matches_genuine_octave_live`
-    /// + `keep_largest_component_tiebreak_*`); this frozen golden pins only the
+    /// and `keep_largest_component_tiebreak_*`); this frozen golden pins only the
     /// orchestration order, against a one-off Octave run of the same sequence.
     /// End-to-end: the real `CortexSourceMethod::resolve` for `SnlcGarrett2014ImBound`
     /// on a |VFS| field. Input has a wide threshold margin so the std N-vs-(N−1)
@@ -264,10 +237,7 @@ mod tests {
     // its exclusive patchext_rawmap.bin fixture + gen_patch_extraction_golden.py were
     // DELETED. gen_patch_extraction was a TRANSCRIPTION (a scipy composition mimicking
     // `_getRawPatchMap`'s orchestration). The live `raw_patch_map_matches_genuine_nat_live`
-    // drives the GENUINE `RetinotopicMappingTrial._getRawPatchMap` live. (The shared
-    // cortex_morph_input.bin survives — it is owned/written by gen_patch_morph, a scipy
-    // library-primitive generator, and still consumed by the patch_morph + cortex_morph
-    // library-primitive goldens.)
+    // drives the GENUINE `RetinotopicMappingTrial._getRawPatchMap` live.
 
     /// **Live genuine-oracle, CLASS METHOD**: drives the real
     /// `RetinotopicMappingTrial._getRawPatchMap` (constructed in the bridge with

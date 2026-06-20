@@ -121,6 +121,8 @@ fn retired_transcription_generators_stay_deleted() {
         // now computed LIVE each run against the genuine reference):
         "gen_reflect_wrap_golden.py",   // -> separable_filter_matches_genuine_scipy_live
         "gen_fftgauss_golden.m",        // -> fft_gaussian_smooth_matches_genuine_octave_live
+        "gen_cortex_morph_golden.m",    // -> cortex_morphology_matches_genuine_octave_live (top-border scene ported)
+        "gen_patch_morph_golden.py",    // dead: read the mask, wrote unconsumed patch_morph_*.bin
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -146,15 +148,14 @@ fn retired_transcription_generators_stay_deleted() {
 ///   - `FormulaPin`: pins a PUBLISHED formula whose reference code is not runnable in the
 ///     locked env (py2-only, GUI-bundled, or non-separable) — an irreducible gap stated
 ///     at the source; never dressed as a live oracle.
+///
 /// The gate asserts the on-disk `gen_*` set EXACTLY matches this manifest, so a new
 /// generator can't slip in unclassified and a manifest entry can't go stale.
 #[test]
 fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
-        ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy; now mainly provides the shared cortex_morph_input mask (its open/close test retired → live)
         ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
-        ("gen_cortex_morph_golden.m", "LibraryPrimitive"),     // Octave IPT imopen/imclose/imfill/imdilate
         ("gen_cortex_full_golden.m", "LibraryPrimitive"),      // Octave-IPT sequence (OpenISI orchestration)
         ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
         ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
