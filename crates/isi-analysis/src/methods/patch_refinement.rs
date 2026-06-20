@@ -920,6 +920,9 @@ mod allen {
     #[cfg(test)]
     mod golden {
         use super::*;
+        // Used only by the `oracle_live`-gated live tests after the cutover retired
+        // their frozen counterparts (which used these in the default build).
+        #[cfg(feature = "oracle_live")]
         use agreement::{Eps, Tol};
         use crate::test_support::{load_f64, load_i32};
 
@@ -1175,45 +1178,57 @@ mod allen {
             assert!(diffs.is_empty(), "sigma_area diverges from genuine NAT getSigmaArea: {diffs:?}");
         }
 
-        /// `eccentricity_full_image` (great-circle formula + NaN propagation)
-        /// and `patch_visual_center` (the `!= 0`, per-coordinate centre) vs
-        /// verbatim Allen `eccentricityMap` + `getPixelVisualCenter`
-        /// (`RetinotopicMapping.py` L450/L2805). Stress: a patch pixel with
-        /// `alt==0` and one with `azi==0`, NaN background. Fixtures from
-        /// `gen_eccfull_golden.py` (`eccfull_center.bin` = `[altC, aziC]`).
+        // (Cutover, objective 1) The frozen `eccentricity_full_image_and_center_match_
+        // allen` golden + its eccfull_*.bin fixtures + gen_eccfull_golden.py (a
+        // transcription of eccentricityMap + getPixelVisualCenter) were DELETED: the
+        // live `eccentricity_full_image_and_center_match_genuine_nat_live` above drives
+        // the GENUINE Patch.getPixelVisualCenter + eccentricityMap live (incl. the
+        // alt==0 / azi==0 per-coordinate != 0 exclusion edge).
+
+        /// **Live genuine-oracle, CLASS METHOD**: our `patch_visual_center` vs the
+        /// GENUINE `Patch.getPixelVisualCenter` (per-coordinate `mean` over patch
+        /// pixels where `mask·map != 0`), and our `eccentricity_full_image` vs the
+        /// GENUINE `eccentricityMap` evaluated at that genuine centre. Stress: a
+        /// patch pixel with `alt==0` and one with `azi==0` (excluded from their
+        /// respective coordinate mean by the `!= 0` rule). Gated `oracle_live`.
+        #[cfg(feature = "oracle_live")]
         #[test]
-        fn eccentricity_full_image_and_center_match_allen() {
+        fn eccentricity_full_image_and_center_match_genuine_nat_live() {
+            use crate::test_support::oracle;
             const N: usize = 24;
-            let av = load_f64(include_bytes!("../../tests/golden/fixtures/eccfull_alt.bin"));
-            let zv = load_f64(include_bytes!("../../tests/golden/fixtures/eccfull_azi.bin"));
-            let ev = load_f64(include_bytes!("../../tests/golden/fixtures/eccfull_ecc.bin"));
-            let mask_b: &[u8] = include_bytes!("../../tests/golden/fixtures/eccfull_mask.bin");
-            let center_b: &[u8] = include_bytes!("../../tests/golden/fixtures/eccfull_center.bin");
+            let mask = Array2::from_shape_fn((N, N), |(r, c)| (6..16).contains(&r) && (8..18).contains(&c));
+            // Finite alt/azi degree ramps, with one patch pixel forced to alt==0
+            // and one to azi==0 (the != 0 exclusion edge).
+            let mut alt = Array2::from_shape_fn((N, N), |(r, _)| (r as f64 - 12.0) * 3.0 + 1.0);
+            let mut azi = Array2::from_shape_fn((N, N), |(_, c)| (c as f64 - 12.0) * 2.5 + 0.7);
+            alt[[8, 10]] = 0.0; // excluded from meanAlt
+            azi[[12, 14]] = 0.0; // excluded from meanAzi
+            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
 
-            let alt = Array2::from_shape_fn((N, N), |(r, c)| av[r * N + c]);
-            let azi = Array2::from_shape_fn((N, N), |(r, c)| zv[r * N + c]);
-            let mask = Array2::from_shape_fn((N, N), |(r, c)| mask_b[r * N + c] != 0);
-            let exp_alt_c = f64::from_le_bytes(center_b[0..8].try_into().unwrap());
-            let exp_azi_c = f64::from_le_bytes(center_b[8..16].try_into().unwrap());
-
-            // (b) centre — pure f64 vs Allen; observed ≈ 3e-15 → K=128, F64.
+            // Genuine centre.
+            let c = oracle::nat_raw("getPixelVisualCenter", &[mask_f, alt.clone(), azi.clone()], &[]).remove(0).f64();
+            let (g_alt_c, g_azi_c) = (c[[0, 0]], c[[0, 1]]);
             let (alt_c, azi_c) = patch_visual_center(&mask, &azi, &alt);
             Tol::abs(128, Eps::F64).assert(
-                "patch_visual_center vs Allen",
+                "patch_visual_center vs GENUINE getPixelVisualCenter (live)",
                 &[alt_c, azi_c],
-                &[exp_alt_c, exp_azi_c],
+                &[g_alt_c, g_azi_c],
             );
 
-            // (a) full-image great-circle formula + NaN propagation, at the
-            // oracle centre. Pure f64 vs Allen; observed ≈ 7e-15 → K=128, F64.
-            // The comparator's NaN-position match replaces the manual NaN branch.
-            // (Was a magic 1e-9 — ~6 orders too loose for an f64 match.)
-            let ecc = eccentricity_full_image(&azi, &alt, exp_alt_c, exp_azi_c);
+            // Genuine eccentricity at the genuine centre vs ours.
+            let genuine_ecc = oracle::nat(
+                "eccentricityMap",
+                &[alt.clone(), azi.clone()],
+                &[("altCenter", g_alt_c), ("aziCenter", g_azi_c)],
+            )
+            .remove(0);
+            let ours_ecc = eccentricity_full_image(&azi, &alt, g_alt_c, g_azi_c);
             Tol::abs(128, Eps::F64).assert(
-                "eccentricity_full_image vs Allen",
-                ecc.as_slice().expect("contiguous"),
-                &ev,
+                "eccentricity_full_image vs GENUINE eccentricityMap (live)",
+                ours_ecc.as_slice().expect("contiguous"),
+                genuine_ecc.as_slice().expect("contiguous"),
             );
+            eprintln!("eccfull + center vs GENUINE NAT (live): matched");
         }
 
         // (Cutover, objective 1) The frozen `local_min_matches_allen_localmin`

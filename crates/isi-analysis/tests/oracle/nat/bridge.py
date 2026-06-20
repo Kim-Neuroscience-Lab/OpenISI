@@ -150,6 +150,13 @@ def dispatch(fn, x, p):
         t.altPosMapf = x[0]
         t.aziPosMapf = x[1]
         return [np.asarray(t._getDeterminantMap())]
+    if fn == "getPixelVisualCenter":
+        # Patch.getPixelVisualCenter(altMap, aziMap) = (mean(altMap over patch
+        # pixels where mask*altMap != 0), mean(aziMap likewise)). x[0]=mask,
+        # x[1]=altMap, x[2]=aziMap. Returns [meanAlt, meanAzi].
+        patch = RM.Patch((x[0] != 0).astype(np.int8), 1)
+        mean_alt, mean_azi = patch.getPixelVisualCenter(x[1], x[2])
+        return [np.array([[float(mean_alt), float(mean_azi)]], dtype=np.float64)]
     if fn == "getSigmaArea":
         # Patch.getSigmaArea(detMap) = sum(self.array * detMap). sign is irrelevant.
         patch = RM.Patch(x[0], 1)
