@@ -959,55 +959,11 @@ mod allen {
             assert_eq!(diff, 0, "watershed_from_markers diverges from skimage");
         }
 
-        /// `split_patch_from_ecc` (the `split2` composition) vs a verbatim
-        /// transcription of Allen `Patch.split2` (the `sm.watershed` branch,
-        /// `RetinotopicMapping.py` L2853-2909) run on scipy + skimage. A
-        /// plateau eccentricity field with two wells forces the split; we
-        /// compare the patch COUNT and the order-free UNION of output masks.
-        /// Fixtures from `gen_splitpatch_golden.py` (N=48, cut_step=1,
-        /// border_width=2).
-        #[test]
-        fn split2_matches_allen_watershed_branch() {
-            const N: usize = 48;
-            let mask_b: &[u8] = include_bytes!("../../tests/golden/fixtures/splitpatch_mask.bin");
-            let ecc_v = load_f64(include_bytes!("../../tests/golden/fixtures/splitpatch_ecc.bin"));
-            let n_exp =
-                load_i32(include_bytes!("../../tests/golden/fixtures/splitpatch_nlabels.bin"))[0];
-            let union_b: &[u8] =
-                include_bytes!("../../tests/golden/fixtures/splitpatch_union.bin");
-
-            let mask = Array2::from_shape_fn((N, N), |(r, c)| mask_b[r * N + c] != 0);
-            let ecc = Array2::from_shape_fn((N, N), |(r, c)| ecc_v[r * N + c]);
-            let patch = Patch { mask, sign: 1 };
-
-            let out = split_patch_from_ecc(&patch, &ecc, 1.0, 2);
-
-            // Order-free union of the returned patch masks.
-            let mut union = Array2::<bool>::from_elem((N, N), false);
-            for p in &out {
-                for r in 0..N {
-                    for c in 0..N {
-                        if p.mask[[r, c]] {
-                            union[[r, c]] = true;
-                        }
-                    }
-                }
-            }
-            let mut udiff = 0usize;
-            for r in 0..N {
-                for c in 0..N {
-                    if (union[[r, c]] as u8) != union_b[r * N + c] {
-                        udiff += 1;
-                    }
-                }
-            }
-            eprintln!(
-                "split2 vs Allen: n_patches = {} (expected {n_exp}), union diff = {udiff}",
-                out.len()
-            );
-            assert_eq!(out.len() as i32, n_exp, "split2 patch count diverges from Allen");
-            assert_eq!(udiff, 0, "split2 union mask diverges from Allen");
-        }
+        // (Cutover, objective 1) The frozen `split2_matches_allen_watershed_branch`
+        // golden + its splitpatch_*.bin fixtures + gen_splitpatch_golden.py (a scipy/
+        // skimage TRANSCRIPTION of Patch.split2's watershed branch) were DELETED: the
+        // live `split2_matches_genuine_nat_live` below drives the GENUINE Patch.split2
+        // (the same two-well plateau split; patch count + order-free union) live.
 
         /// **Live genuine-oracle, CLASS METHOD**: our `split_patch_from_ecc` vs the
         /// GENUINE `Patch.split2` (the watershed branch), constructed and driven in
