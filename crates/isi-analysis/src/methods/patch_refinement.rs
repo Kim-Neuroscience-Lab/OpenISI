@@ -3179,29 +3179,6 @@ mod garrett {
             eprintln!("interp2_spline vs GENUINE Octave (live): matched");
         }
 
-        /// `smooth_patches_x` vs the real SNLC `smoothPatchesX` (calls
-        /// fspecial/filter2/roifilt2 under Octave). f64 Gaussian conv; the
-        /// per-patch σ=area/2000 gives near-identity blurs (tiny truncated
-        /// kernels). Fixtures from `gen_smoothpatches_golden.m`.
-        #[test]
-        fn smooth_patches_x_matches_snlc() {
-            let mapv = load_f64(include_bytes!("../../tests/golden/fixtures/smpatch_map.bin"));
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/smpatch_im.bin");
-            let outv = load_f64(include_bytes!("../../tests/golden/fixtures/smpatch_out.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/smpatch_meta.bin"));
-            let (h, w) = (meta[0] as usize, meta[1] as usize);
-            let map = Array2::from_shape_fn((h, w), |(r, c)| mapv[r * w + c]);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-
-            let out = smooth_patches_x(&map, &im);
-            // f64 conv vs Octave filter2; background stays exactly 45, patches are
-            // near-identity blurs → observed max_rel ≈ 2.5·ε_f64 → K=8.
-            Tol::rel(8, Eps::F64, 8).assert(
-                "smooth_patches_x vs SNLC",
-                out.as_slice().expect("contiguous"),
-                &outv,
-            );
-        }
 
         /// `imimposemin` vs the real Octave `imimposemin` (morphological
         /// reconstruction). The imposed minima are `-Inf` (non-finite positions
@@ -3273,53 +3250,16 @@ mod garrett {
             assert_eq!(diff, 0, "newpatches diverges from SNLC");
         }
 
-        /// `split_patches_x` vs the real SNLC `splitPatchesX` end-to-end (drives
-        /// every sub-op). Clean retinotopy → the three passes run but keep the
-        /// decisions clear of their thresholds, so the result (open→erode of the
-        /// input) is bit-exact. Fixtures from `gen_splitpatchesx_golden.m`.
-        #[test]
-        fn split_patches_x_matches_snlc() {
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/spx_im.bin");
-            let hor = load_f64(include_bytes!("../../tests/golden/fixtures/spx_hor.bin"));
-            let vert = load_f64(include_bytes!("../../tests/golden/fixtures/spx_vert.bin"));
-            let rad = load_f64(include_bytes!("../../tests/golden/fixtures/spx_rad.bin"));
-            let out_b: &[u8] = include_bytes!("../../tests/golden/fixtures/spx_out.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/spx_meta.bin"));
-            let (h, w, pixpermm) = (meta[0] as usize, meta[1] as usize, meta[2]);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-            let kmap_hor = Array2::from_shape_fn((h, w), |(r, c)| hor[r * w + c]);
-            let kmap_vert = Array2::from_shape_fn((h, w), |(r, c)| vert[r * w + c]);
-            let kmap_rad = Array2::from_shape_fn((h, w), |(r, c)| rad[r * w + c]);
 
-            let out = split_patches_x(&im, &kmap_hor, &kmap_vert, &kmap_rad, pixpermm);
-            let diff = count_differing(&out, out_b);
-            let (_, n) = label_4conn(&out);
-            eprintln!("splitpatchesx: out_diff={diff}, patches={n}");
-            assert_eq!(diff, 0, "splitPatchesX output diverges from SNLC");
-        }
-
-        /// `fuse_patches_x` vs the real SNLC `fusePatchesX` end-to-end. Two
-        /// adjacent same-sign patches with disjoint visual coverage ARE fused
-        /// into one — exercising the touch/overlap decision and the fuse
-        /// mutation. Bit-exact. Fixtures from `gen_fusepatchesx_golden.m`.
-        #[test]
-        fn fuse_patches_x_matches_snlc() {
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/fpx_im.bin");
-            let hor = load_f64(include_bytes!("../../tests/golden/fixtures/fpx_hor.bin"));
-            let vert = load_f64(include_bytes!("../../tests/golden/fixtures/fpx_vert.bin"));
-            let out_b: &[u8] = include_bytes!("../../tests/golden/fixtures/fpx_out.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/fpx_meta.bin"));
-            let (h, w, pixpermm) = (meta[0] as usize, meta[1] as usize, meta[2]);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-            let kmap_hor = Array2::from_shape_fn((h, w), |(r, c)| hor[r * w + c]);
-            let kmap_vert = Array2::from_shape_fn((h, w), |(r, c)| vert[r * w + c]);
-
-            let out = fuse_patches_x(&im, &kmap_hor, &kmap_vert, pixpermm);
-            let diff = count_differing(&out, out_b);
-            let (_, n) = label_4conn(&out);
-            eprintln!("fusepatchesx: out_diff={diff}, patches={n}");
-            assert_eq!(diff, 0, "fusePatchesX output diverges from SNLC");
-        }
+        // (Cutover, objective 1+3) smooth_patches_x / split_patches_x /
+        // fuse_patches_x frozen goldens DELETED: their smpatch_/spx_/fpx_
+        // fixtures were generated by the genuine smoothPatchesX/splitPatchesX/
+        // fusePatchesX .m run against a roifilt2 SHIM (Octave lacks roifilt2) —
+        // shim-contaminated, not clean genuine-reference values. Octave can't run
+        // them shim-free and we will not author a roifilt2 (forbidden circularity),
+        // so rather than keep a falsely-'validated' golden they are removed; the
+        // constituent primitives (watershed/bwdist/imimposemin/interp2/morphology)
+        // are validated live. See oracle/README irreducible-gaps.
     }
 }
 

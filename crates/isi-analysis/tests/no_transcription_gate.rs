@@ -52,6 +52,29 @@ fn allen_oracle_shim_is_gone() {
     }
 }
 
+/// No generator may use a `roifilt2` shim (objective 3 — no shims). Octave's
+/// `image` package lacks `roifilt2`; the only honest options are to run the
+/// reference shim-free (impossible for these) or drop the golden — never to
+/// author a `roifilt2` stand-in, which would put self-written logic in the oracle
+/// path. The three shim-contaminated SNLC composite goldens were removed; this
+/// keeps any from returning.
+#[test]
+fn no_generator_uses_a_roifilt2_shim() {
+    let dir = golden_dir();
+    for entry in std::fs::read_dir(&dir).expect("read golden dir") {
+        let path = entry.expect("dir entry").path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        if name.starts_with("gen_") && (name.ends_with(".py") || name.ends_with(".m")) {
+            let src = std::fs::read_to_string(&path).expect("read generator");
+            assert!(
+                !src.to_lowercase().contains("roifilt2"),
+                "{name} references roifilt2 — a forbidden shim (Octave lacks it); \
+                 run shim-free or drop the golden, never author a stand-in"
+            );
+        }
+    }
+}
+
 /// Transcription generators retired during the genuine-oracle cutover — each
 /// re-implemented a RUNNABLE reference (Allen/SNLC) and has been superseded by a
 /// live test driving the genuine reference. They must stay deleted: their return
@@ -83,6 +106,11 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_merge_two_golden.py",
         "gen_patchsign_majority_golden.py", // inlined majority-sign transcription
         "gen_patchsign_golden.m",       // dead Octave generator (no consumer)
+        // roifilt2-SHIM-contaminated genuine-run goldens (Octave lacks roifilt2;
+        // their fixtures were generated through a self-authored shim → objective 3):
+        "gen_smoothpatches_golden.m",
+        "gen_splitpatchesx_golden.m",
+        "gen_fusepatchesx_golden.m",
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
