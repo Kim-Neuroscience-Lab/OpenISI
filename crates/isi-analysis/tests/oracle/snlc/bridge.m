@@ -69,6 +69,14 @@ switch req.fn
     % is Octave's own imimposemin; our imimposemin mirrors it.
     R = imimposemin(x{1}, logical(x{2}));
     outs = {double(R)};
+  case 'imopen_disk'     % raw Octave IPT: imopen(mask, strel('disk',R,0))
+    outs = {double(imopen(logical(x{1}), strel('disk', p.radius, 0)))};
+  case 'imclose_disk'    % raw Octave IPT: imclose(mask, strel('disk',R,0))
+    outs = {double(imclose(logical(x{1}), strel('disk', p.radius, 0)))};
+  case 'imdilate_disk'   % raw Octave IPT: imdilate(mask, strel('disk',R,0))
+    outs = {double(imdilate(logical(x{1}), strel('disk', p.radius, 0)))};
+  case 'imfill_holes'    % raw Octave IPT: imfill(mask, 'holes')
+    outs = {double(imfill(logical(x{1}), 'holes'))};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end

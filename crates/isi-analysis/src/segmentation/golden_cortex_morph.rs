@@ -83,6 +83,76 @@ mod tests {
         );
     }
 
+    /// **Live library-primitive oracle, Octave**: our disk-strel morphology
+    /// (`binary_opening_disk`, `binary_closing_disk`, `binary_dilation_disk`,
+    /// `binary_fill_holes`) vs the GENUINE Octave IPT `imopen`/`imclose`/
+    /// `imdilate`(`strel('disk',R,0)`)/`imfill('holes')`, executed live. Octave's
+    /// IPT is the oracle; the bridge only calls it. (`keep_largest_component`'s
+    /// `max`-first-index tie-break is a language guarantee, not a code oracle — it
+    /// stays a regression-lock, excluded here.) `strel('disk',R,0)` is the exact
+    /// Euclidean disk (N=0, no approximation). Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn cortex_morphology_matches_genuine_octave_live() {
+        use crate::segmentation::morphology::{
+            binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
+        };
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const N: usize = 64;
+        // A blob with a thin spur (opening trims), a notch + interior hole
+        // (closing/fill act), near another blob (dilation bridges).
+        let mut f = Array2::<f64>::zeros((N, N));
+        for r in 14..44 {
+            for c in 14..40 {
+                f[[r, c]] = 1.0;
+            }
+        }
+        for r in 26..30 {
+            for c in 40..52 {
+                f[[r, c]] = 1.0; // spur
+            }
+        }
+        for r in 22..32 {
+            for c in 22..26 {
+                f[[r, c]] = 0.0; // interior hole
+            }
+        }
+        for r in 48..58 {
+            for c in 46..58 {
+                f[[r, c]] = 1.0; // second blob
+            }
+        }
+        let mask = f.mapv(|v| v != 0.0);
+
+        let cases: [(&str, f64, Array2<bool>); 4] = [
+            ("imopen_disk", 2.0, binary_opening_disk(&mask, 2)),
+            ("imclose_disk", 10.0, binary_closing_disk(&mask, 10)),
+            ("imdilate_disk", 3.0, binary_dilation_disk(&mask, 3)),
+            ("imfill_holes", 0.0, binary_fill_holes(&mask)),
+        ];
+        let mut total = 0usize;
+        for (fname, radius, ours) in &cases {
+            let params: Vec<(&str, f64)> = if *fname == "imfill_holes" {
+                vec![]
+            } else {
+                vec![("radius", *radius)]
+            };
+            let genuine = oracle::snlc(fname, &[f.clone()], &params).remove(0);
+            let mut d = 0usize;
+            for r in 0..N {
+                for c in 0..N {
+                    if (ours[[r, c]] as i32) != genuine[[r, c]].round() as i32 {
+                        d += 1;
+                    }
+                }
+            }
+            eprintln!("  {fname:14} vs GENUINE Octave (live): differing px = {d}");
+            total += d;
+        }
+        assert_eq!(total, 0, "cortex disk-strel morphology diverges from genuine Octave IPT");
+    }
+
     /// End-to-end: the real `CortexSourceMethod::resolve` for `SnlcGarrett2014ImBound`
     /// (threshold `1.5·std(VFS)·0.5` → imopen2 → imclose10 → fill → imdilate3 →
     /// fill → largest 4-CC) on a |VFS| field, against the same sequence in

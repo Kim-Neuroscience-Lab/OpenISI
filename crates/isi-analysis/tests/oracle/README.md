@@ -80,6 +80,7 @@ skipped cases.
 | `watershed_octave{4,8}` | Octave IPT `watershed(A,conn)` | bit-identical i32 labels | Library-primitive — Octave's own watershed; our wrapper mirrors it. |
 | `bwdist` | Octave IPT `bwdist` | identical to f32 (Octave returns single) | Library-primitive Euclidean DT. |
 | `imimposemin` | Octave IPT `imimposemin` | agree to f64 (64·ε_f64) | Library-primitive morphological reconstruction. |
+| `binary_{opening,closing,dilation}_disk`, `binary_fill_holes` | Octave IPT `imopen`/`imclose`/`imdilate`(`strel('disk',R,0)`)/`imfill('holes')` | bit-identical | Library-primitive cortex morphology; `strel('disk',R,0)` = exact Euclidean disk. |
 | `getPatchSign` (signs) | **SNLC** `getPatchSign` (Octave) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
 
 *(Updated as each method migrates.)*
