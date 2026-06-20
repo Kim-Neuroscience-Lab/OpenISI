@@ -123,6 +123,7 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_fftgauss_golden.m",        // -> fft_gaussian_smooth_matches_genuine_octave_live
         "gen_cortex_morph_golden.m",    // -> cortex_morphology_matches_genuine_octave_live (top-border scene ported)
         "gen_patch_morph_golden.py",    // dead: read the mask, wrote unconsumed patch_morph_*.bin
+        "gen_watershed_markers_golden.py", // wrong-era ws_out.bin (matched ours, NOT locked skimage 0.18.3); -> watershed_from_markers_stress_matches_genuine_skimage_live
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -155,7 +156,6 @@ fn retired_transcription_generators_stay_deleted() {
 fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
-        ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
         ("gen_cortex_full_golden.m", "LibraryPrimitive"),      // Octave-IPT sequence (OpenISI orchestration)
         ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
         ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
