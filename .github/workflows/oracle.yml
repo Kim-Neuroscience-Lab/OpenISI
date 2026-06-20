@@ -14,13 +14,17 @@ on:
   push:
     paths:
       - "crates/isi-analysis/tests/oracle/**"
-      - "crates/isi-analysis/src/test_support.rs"
+      # The `oracle_live`-gated live tests live in the crate's lib source (spread
+      # across methods/, segmentation/, compute/), not just test_support.rs — so a
+      # change to ANY of them must fire this job, else objective 7's "reproduces
+      # off-machine" guarantee is hollow for that test.
+      - "crates/isi-analysis/src/**"
       - "reference/**"
       - ".github/workflows/oracle.yml"
   pull_request:
     paths:
       - "crates/isi-analysis/tests/oracle/**"
-      - "crates/isi-analysis/src/test_support.rs"
+      - "crates/isi-analysis/src/**"
       - "reference/**"
       - ".github/workflows/oracle.yml"
   workflow_dispatch:
