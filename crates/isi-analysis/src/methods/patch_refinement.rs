@@ -1387,6 +1387,45 @@ mod allen {
             assert!(diffs.is_empty(), "merge_two diverges from genuine NAT mergePatches: {diffs:?}");
         }
 
+        /// **Live genuine-oracle, CLASS METHOD**: our `patch_visual_space` vs the
+        /// GENUINE `Patch.getVisualSpace`, on a patch + alt/azi maps built in Rust.
+        /// We construct the `VisualGrid` to NAT's hardcoded ranges (alt [-40,60),
+        /// azi [-20,120)) since our `derive_visual_grid` is an OpenISI choice, not
+        /// the oracle; `closeIter=0` (no closing). Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn patch_visual_space_matches_genuine_nat_live() {
+            use crate::test_support::oracle;
+            const MH: usize = 40;
+            const MW: usize = 40;
+            // A patch + smooth alt/azi degree maps placing its pixels inside the
+            // hardcoded ranges.
+            let lin = |i: usize, n: usize, lo: f64, hi: f64| lo + (hi - lo) * i as f64 / (n - 1) as f64;
+            let mask = Array2::from_shape_fn((MH, MW), |(r, c)| (8..28).contains(&r) && (6..30).contains(&c));
+            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            let alt = Array2::from_shape_fn((MH, MW), |(r, _)| lin(r, MH, -30.0, 50.0));
+            let azi = Array2::from_shape_fn((MH, MW), |(_, c)| lin(c, MW, -10.0, 110.0));
+
+            // genuine getVisualSpace(altMap, aziMap, pixelSize, closeIter)
+            let genuine = oracle::nat_raw(
+                "getVisualSpace",
+                &[mask_f, alt.clone(), azi.clone()],
+                &[("pixelSize", 1.0), ("closeIter", 0.0)],
+            )
+            .remove(0)
+            .bool();
+
+            let grid = VisualGrid { alt_min: -40.0, azi_min: -20.0, pixel_size: 1.0, h: 100, w: 140 };
+            let (ours, _area) = patch_visual_space(&mask, &azi, &alt, &grid, 0);
+
+            assert_eq!(ours.dim(), genuine.dim(), "visual-space grid shape mismatch");
+            let d = ndarray::Zip::from(&ours)
+                .and(&genuine)
+                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+            eprintln!("getVisualSpace vs GENUINE NAT (live): differing px = {d}");
+            assert_eq!(d, 0, "patch_visual_space diverges from genuine NAT getVisualSpace");
+        }
+
         /// `patch_visual_space` vs verbatim Allen `Patch.getVisualSpace`
         /// (`RetinotopicMapping.py` L2745-2797): the scatter-into-grid (floor
         /// division), `binary_closing` (cross SE, border 0), and `uniqueArea =

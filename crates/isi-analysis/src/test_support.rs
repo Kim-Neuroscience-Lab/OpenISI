@@ -109,20 +109,35 @@ pub(crate) mod oracle {
         }
 
         /// Decode as a boolean mask (any nonzero element → true). Accepts the
-        /// reference's integer/bool dtypes for binary maps (`<i4`/`<i8`/`|u1`/`|b1`).
+        /// reference's integer/bool/float dtypes for binary maps (a reference that
+        /// builds a 0/1 map in a float array — e.g. `getVisualSpace` — is common).
         pub(crate) fn bool(&self) -> Array2<bool> {
-            let elem = match self.dtype.as_str() {
-                "|b1" | "|u1" | "|i1" => 1,
-                "<i2" | "<u2" => 2,
-                "<i4" | "<u4" => 4,
-                "<i8" | "<u8" => 8,
-                other => panic!("bool() unsupported dtype {other}"),
+            let data: Vec<bool> = match self.dtype.as_str() {
+                // Float 0/1 maps: nonzero (and non-NaN) → true.
+                "<f8" => self
+                    .bytes
+                    .chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()) != 0.0)
+                    .collect(),
+                "<f4" => self
+                    .bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()) != 0.0)
+                    .collect(),
+                _ => {
+                    let elem = match self.dtype.as_str() {
+                        "|b1" | "|u1" | "|i1" => 1,
+                        "<i2" | "<u2" => 2,
+                        "<i4" | "<u4" => 4,
+                        "<i8" | "<u8" => 8,
+                        other => panic!("bool() unsupported dtype {other}"),
+                    };
+                    self.bytes
+                        .chunks_exact(elem)
+                        .map(|c| c.iter().any(|&b| b != 0))
+                        .collect()
+                }
             };
-            let data: Vec<bool> = self
-                .bytes
-                .chunks_exact(elem)
-                .map(|c| c.iter().any(|&b| b != 0))
-                .collect();
             Array2::from_shape_vec(self.shape, data).expect("shape bool output")
         }
     }
