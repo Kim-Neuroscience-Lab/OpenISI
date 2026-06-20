@@ -59,6 +59,15 @@ mod tests {
         assert_eq!(d, 0, "mag-threshold ROI diverged from overlaymaps.m");
     }
 
+    /// **FROZEN library-primitive golden (objective-6 exception, honestly
+    /// labelled — NOT a live oracle).** Octave IPT is the oracle. Every op here is
+    /// ALSO validated LIVE each run, which catches any reference drift: the four
+    /// disk-strel ops by `cortex_morphology_matches_genuine_octave_live` (genuine
+    /// `imopen`/`imclose`/`imdilate`/`imfill`), and `keep_largest_component` by
+    /// `keep_largest_component_tiebreak_matches_snlc_argmax`. This frozen copy is
+    /// redundant default-suite coverage; it is retained (rather than deleted) only
+    /// because its `cortex_morph_*` fixtures have ambiguous generator ownership —
+    /// resolving that is a follow-up. It must not be read as the live oracle.
     #[test]
     fn cortex_morphology_matches_octave_strel_ops() {
         let input = load_mask(include_bytes!("../../tests/golden/fixtures/cortex_morph_input.bin"));
@@ -159,11 +168,17 @@ mod tests {
         assert_eq!(total, 0, "cortex disk-strel morphology diverges from genuine Octave IPT");
     }
 
+    /// **FROZEN orchestration regression-lock (objective-6 exception, honestly
+    /// labelled — NOT a live oracle).** The end-to-end `SnlcGarrett2014ImBound`
+    /// SEQUENCE (threshold → imopen2 → imclose10 → fill → imdilate3 → fill →
+    /// largest 4-CC) is OpenISI's composition — there is no single SNLC `.m`
+    /// defining it (`getMouseAreasX.m` is the GUI pipeline). Each *primitive* in
+    /// the sequence IS validated live (`cortex_morphology_matches_genuine_octave_live`
+    /// + `keep_largest_component_tiebreak_*`); this frozen golden pins only the
+    /// orchestration order, against a one-off Octave run of the same sequence.
     /// End-to-end: the real `CortexSourceMethod::resolve` for `SnlcGarrett2014ImBound`
-    /// (threshold `1.5·std(VFS)·0.5` → imopen2 → imclose10 → fill → imdilate3 →
-    /// fill → largest 4-CC) on a |VFS| field, against the same sequence in
-    /// Octave. Input has a wide threshold margin so the std N-vs-(N−1)
-    /// convention cannot flip a pixel — this validates the orchestration.
+    /// on a |VFS| field. Input has a wide threshold margin so the std N-vs-(N−1)
+    /// convention cannot flip a pixel — this pins the orchestration.
     #[test]
     fn snlc_cortex_endtoend_matches_octave() {
         let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/cortex_full_vfs.bin"));

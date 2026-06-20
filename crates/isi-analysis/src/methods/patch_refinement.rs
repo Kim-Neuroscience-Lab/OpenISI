@@ -3032,10 +3032,15 @@ mod garrett {
         }
 
 
-        /// `fft_gaussian_smooth` vs the Octave fft-based circular Gaussian blur.
-        /// Cross-library FFT roundoff (FFTW vs rustfft) precludes bit-equality;
-        /// a relative f64 bound a few ε_f64 wide is the right grounding.
-        /// Fixtures from `gen_fftgauss_golden.m`.
+        /// **FROZEN library-primitive golden (objective-6 exception, honestly
+        /// labelled — NOT a live oracle).** Octave's fft-based circular Gaussian
+        /// blur is the oracle. `fft_gaussian_smooth` has **no live counterpart yet**
+        /// (unlike `gaussian_smooth`, which is live via scipy) — making it live is a
+        /// follow-up; until then this frozen fixture could drift and must not be read
+        /// as a live oracle. `fft_gaussian_smooth` vs the Octave fft-based circular
+        /// Gaussian blur. Cross-library FFT roundoff (FFTW vs rustfft) precludes
+        /// bit-equality; a relative f64 bound a few ε_f64 wide is the right
+        /// grounding. Fixtures from `gen_fftgauss_golden.m`.
         #[test]
         fn fft_gaussian_smooth_matches_octave() {
             let inp = load_f64(include_bytes!("../../tests/golden/fixtures/fftgauss_in.bin"));
