@@ -75,6 +75,25 @@ def dispatch(fn, x, p):
     if fn == "skimage_skeletonize":
         import skimage.morphology as _sm
         return [_sm.skeletonize(x[0] != 0).astype(np.int8)]
+    if fn == "numpy_fft_bin":
+        # Genuine oracle = numpy's FFT. x[0] is a 3-D movie [n,H,W]; return the
+        # real and imaginary parts of a single temporal bin (our single-frequency
+        # DFT kernel exp(-2pi i freq dt t) at freq*dt = 1/n equals bin 1).
+        k = int(p["bin"])
+        fk = np.fft.fft(x[0], axis=0)[k]
+        return [np.ascontiguousarray(fk.real), np.ascontiguousarray(fk.imag)]
+    if fn == "scipy_uniform_filter":
+        import scipy.ndimage as _sni
+        return [_sni.uniform_filter(x[0], size=int(p["size"]), mode="reflect")]
+    if fn == "skimage_watershed":
+        # The exact call Allen Patch.split2 makes: connectivity=ones((3,3)),
+        # watershed_line=False. Inputs arrive as f64; markers/mask are recast.
+        import skimage.segmentation as _ss
+        markers = x[1].astype(np.int32)
+        mask = x[2] != 0
+        out = _ss.watershed(x[0], markers, mask=mask,
+                            connectivity=np.ones((3, 3)), watershed_line=False)
+        return [out.astype(np.int32)]
     # --- class methods: construct the genuine object, set the inputs the method
     # reads, call the REAL method. The method body is 100% the reference's; only
     # the input-wiring is ours (as in any unit test of a method). ---

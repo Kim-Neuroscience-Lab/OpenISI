@@ -473,6 +473,64 @@ mod tests {
         Tol::abs(128, Eps::F32).assert("F1 DFT im vs numpy", im.as_slice().expect("contiguous"), &f1_im);
     }
 
+    /// **Live library-primitive oracle**: stage-0 single-bin F1 DFT
+    /// (`dft_projection_at_freq`) vs the GENUINE `numpy.fft.fft(...)[1]`, executed
+    /// live in the uv-locked env. numpy's FFT *is* the oracle (the bridge only
+    /// calls it). The movie is built fresh in Rust as f32 and the SAME f32 values
+    /// (widened to f64) are handed to numpy, so the only difference is the
+    /// length-24 reduction arithmetic — not an f32-vs-f64 input gap. A constant DC
+    /// offset confirms bin-1 rejects DC. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn dft_projection_matches_genuine_numpy_fft_live() {
+        use crate::test_support::oracle;
+        const NF: usize = 24;
+        const HW: usize = 16;
+        // Per-pixel sinusoid DC + A·cos(2π t/n + φ); A varies along x, φ over the
+        // full circle along y (covers amplitude + phase), DC tests bin-1 rejection.
+        let mut movie_f32 = vec![0.0f32; NF * HW * HW];
+        for t in 0..NF {
+            for r in 0..HW {
+                for c in 0..HW {
+                    let a = 1.0 + 0.5 * (c as f64 / HW as f64);
+                    let phi = 2.0 * std::f64::consts::PI * (r as f64 / HW as f64) - std::f64::consts::PI;
+                    let v = 5.0 + a * (2.0 * std::f64::consts::PI * t as f64 / NF as f64 + phi).cos();
+                    movie_f32[t * HW * HW + r * HW + c] = v as f32;
+                }
+            }
+        }
+        // numpy gets the exact f32 values widened to f64 (isolate the reduction).
+        let movie_f64: Vec<f64> = movie_f32.iter().map(|&v| v as f64).collect();
+        let genuine = oracle::nat_raw_nd(
+            "numpy_fft_bin",
+            &[(movie_f64.as_slice(), &[NF, HW, HW])],
+            &[("bin", 1.0)],
+        );
+        let g_re = genuine[0].f64();
+        let g_im = genuine[1].f64();
+
+        let movie =
+            Tensor::<Backend, 3>::from_data(TensorData::new(movie_f32, [NF, HW, HW]), &device());
+        let f1 = crate::compute::dft_projection_at_freq(movie, 1.0, 1.0 / NF as f64);
+        let re = tensor_to_array2_f64(f1.real()).unwrap();
+        let im = tensor_to_array2_f64(f1.imag()).unwrap();
+
+        let mut maxd = 0.0f64;
+        for r in 0..HW {
+            for c in 0..HW {
+                maxd = maxd.max((re[[r, c]] - g_re[[r, c]]).abs());
+                maxd = maxd.max((im[[r, c]] - g_im[[r, c]]).abs());
+            }
+        }
+        eprintln!("F1 DFT vs GENUINE numpy.fft (live): max diff = {maxd:.3e}");
+        // f32 length-24 reduction vs numpy f64; same K=128·ε_f32 budget as the
+        // frozen-fixture test above (observed ≈ 8e-6).
+        assert!(
+            maxd < 128.0 * f32::EPSILON as f64,
+            "dft_projection diverges from genuine numpy.fft: {maxd:.3e}"
+        );
+    }
+
     /// `responsiveness::reliability` (cross-cycle coherence `|ΣZ_k|/Σ|Z_k|`, the
     /// metric the reliability signal-quality criterion thresholds) vs a
     /// verbatim numpy transcription of the Engel/Zhuang coherence formula.

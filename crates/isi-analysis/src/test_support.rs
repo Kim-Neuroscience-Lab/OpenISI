@@ -144,10 +144,33 @@ pub(crate) mod oracle {
 
     /// Call a genuine function in the **NeuroAnalysisTools** oracle env returning
     /// typed outputs (any dtype the reference produces). The f64 convenience
-    /// wrapper [`nat`] is built on this.
+    /// wrapper [`nat`] is built on this. Inputs are 2-D f64 arrays; for higher-rank
+    /// inputs (e.g. a 3-D movie) use [`nat_raw_nd`].
     pub(crate) fn nat_raw(
         func: &str,
         inputs: &[Array2<f64>],
+        params: &[(&str, f64)],
+    ) -> Vec<OracleOut> {
+        // Each 2-D input → flat row-major f64 + its [h, w] shape.
+        let nd: Vec<(Vec<f64>, Vec<usize>)> = inputs
+            .iter()
+            .map(|a| {
+                let (h, w) = a.dim();
+                (a.iter().copied().collect(), vec![h, w])
+            })
+            .collect();
+        let nd_ref: Vec<(&[f64], &[usize])> =
+            nd.iter().map(|(d, s)| (d.as_slice(), s.as_slice())).collect();
+        nat_raw_nd(func, &nd_ref, params)
+    }
+
+    /// Like [`nat_raw`] but accepts inputs of arbitrary rank as `(flat row-major
+    /// f64, shape)` pairs — for genuine functions that take an N-D array (e.g. a
+    /// 3-D movie for the DFT). Outputs are still decoded as 2-D `OracleOut`
+    /// (the reference primitives we call return 2-D maps).
+    pub(crate) fn nat_raw_nd(
+        func: &str,
+        inputs: &[(&[f64], &[usize])],
         params: &[(&str, f64)],
     ) -> Vec<OracleOut> {
         let nat_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/oracle/nat");
@@ -163,14 +186,20 @@ pub(crate) mod oracle {
         let input_specs: Vec<serde_json::Value> = inputs
             .iter()
             .enumerate()
-            .map(|(i, a)| {
-                let (h, w) = a.dim();
+            .map(|(i, (data, shape))| {
+                assert_eq!(
+                    data.len(),
+                    shape.iter().product::<usize>(),
+                    "input {i} data length does not match shape"
+                );
                 let p = work.join(format!("in{i}.bin"));
                 let mut f = std::fs::File::create(&p).expect("write input");
-                for &v in a.iter() {
+                for &v in data.iter() {
                     f.write_all(&v.to_le_bytes()).expect("write input bytes");
                 }
-                serde_json::json!({ "path": p.to_string_lossy(), "dtype": "<f8", "shape": [h, w] })
+                serde_json::json!({
+                    "path": p.to_string_lossy(), "dtype": "<f8", "shape": shape
+                })
             })
             .collect();
         let params_obj: serde_json::Map<String, serde_json::Value> = params

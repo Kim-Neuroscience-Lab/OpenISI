@@ -107,11 +107,17 @@ library, which they should compute *live* (condition 6), not the named reference
     `gaussian_smooth_f64` vs `scipy.ndimage.gaussian_filter` (max diff 1.1e-15),
     `label_4conn` vs `scipy.ndimage.label` (partition-identical, 4-conn cross),
     `binary_skeletonize_skimage` vs `skimage.morphology.skeletonize` (bit-identical,
-    skimage 0.19.3 — the version `dilationPatches2` calls). `label` is compared
+    skimage 0.19.3 — the version `dilationPatches2` calls),
+    `dft_projection_at_freq` vs `numpy.fft.fft(...)[1]` (single-bin, ≈8e-6 ≈ the
+    f32 length-24 reduction vs numpy f64; same f32 values handed to numpy so only
+    the reduction differs), `uniform_filter_finite` vs
+    `scipy.ndimage.uniform_filter(mode='reflect')` (≈3e-15), `watershed_from_markers`
+    vs `skimage.segmentation.watershed(connectivity=ones((3,3)), watershed_line=
+    False)` (bit-identical — the call `Patch.split2` makes). `label` is compared
     label-invariantly (a CC labeling is defined only up to relabeling); the others
     bit-/precision-identical.
-  - **Still frozen-fixture, pending live cutover:** `dft` (np.fft), `watershed`,
-    `uniform_filter`, `reflect_wrap`, `patch_morph`, `largestcc`, `patch_threshold`.
+  - **Still frozen-fixture, pending live cutover:** `reflect_wrap`, `patch_morph`,
+    `largestcc`, `patch_threshold`.
 
 ## Reproducibility (condition 7)
 

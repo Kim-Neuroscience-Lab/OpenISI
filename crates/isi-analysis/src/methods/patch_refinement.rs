@@ -1058,6 +1058,85 @@ mod allen {
             );
         }
 
+        /// **Live library-primitive oracle**: our `uniform_filter_finite` vs the
+        /// GENUINE `scipy.ndimage.uniform_filter(mode='reflect')`, executed live in
+        /// the uv-locked env. scipy is the oracle; the bridge only calls it. Odd
+        /// (15) and even (10) window sizes — even is the asymmetric-window stress.
+        /// Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn uniform_filter_matches_genuine_scipy_live() {
+            use crate::test_support::oracle;
+            const N: usize = 48;
+            // A smooth field + a ramp so the window average is non-trivial everywhere.
+            let a = Array2::from_shape_fn((N, N), |(r, c)| {
+                (r as f64 * 0.3).sin() + (c as f64 * 0.2).cos() + 0.05 * (r + c) as f64
+            });
+            let mut maxd = 0.0f64;
+            for size in [15usize, 10] {
+                let genuine = oracle::nat("scipy_uniform_filter", &[a.clone()], &[("size", size as f64)])
+                    .remove(0);
+                let ours = uniform_filter_finite(&a, size as i32);
+                let mut d = 0.0f64;
+                for r in 0..N {
+                    for c in 0..N {
+                        d = d.max((ours[[r, c]] - genuine[[r, c]]).abs());
+                    }
+                }
+                eprintln!("  uniform_filter size={size} vs GENUINE scipy (live): max diff = {d:.2e}");
+                maxd = maxd.max(d);
+            }
+            assert!(maxd < 1e-9, "uniform_filter_finite diverges from genuine scipy uniform_filter");
+        }
+
+        /// **Live library-primitive oracle**: our `watershed_from_markers` vs the
+        /// GENUINE `skimage.segmentation.watershed` (`connectivity=ones((3,3))`,
+        /// `watershed_line=False`) — the exact call Allen `Patch.split2` makes —
+        /// executed live in the uv-locked env. The explicit marker labels carry
+        /// through both implementations, so the labelings are directly comparable.
+        /// Colliding basins on a flat plateau force the watershed line. Gated
+        /// behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn watershed_from_markers_matches_genuine_skimage_live() {
+            use crate::test_support::oracle;
+            const N: usize = 24;
+            // Two wells on a flat-ish plateau; markers seed each well; mask = the
+            // whole interior with a couple of holes.
+            let elevation = Array2::from_shape_fn((N, N), |(r, c)| {
+                let d1 = (((r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2)) as f64).sqrt();
+                let d2 = (((r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2)) as f64).sqrt();
+                d1.min(d2) // ridge midway between the two basins
+            });
+            let mut markers = Array2::<i32>::zeros((N, N));
+            markers[[6, 6]] = 1;
+            markers[[17, 17]] = 2;
+            let mask = Array2::from_shape_fn((N, N), |(r, c)| {
+                let edge = r == 0 || c == 0 || r == N - 1 || c == N - 1;
+                let hole = (r, c) == (3, 20) || (r, c) == (20, 3);
+                !edge && !hole
+            });
+
+            let elev_f = elevation.clone();
+            let mark_f = markers.mapv(|v| v as f64);
+            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            let genuine = oracle::nat_raw("skimage_watershed", &[elev_f, mark_f, mask_f], &[])
+                .remove(0)
+                .i32();
+            let ours = watershed_from_markers(&elevation, &markers, &mask);
+
+            let mut diff = 0usize;
+            for r in 0..N {
+                for c in 0..N {
+                    if ours[[r, c]] != genuine[[r, c]] {
+                        diff += 1;
+                    }
+                }
+            }
+            eprintln!("watershed vs GENUINE skimage (live): differing px = {diff}");
+            assert_eq!(diff, 0, "watershed_from_markers diverges from genuine skimage watershed");
+        }
+
         /// `sigma_area` vs Allen `getSigmaArea` = `np.sum(int_mask · detMap)`.
         /// Five cases incl. NaN inside / outside the patch (where `0·NaN=NaN`
         /// must propagate) and a negative determinant. Fixtures from
