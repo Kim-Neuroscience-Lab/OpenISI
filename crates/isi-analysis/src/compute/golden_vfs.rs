@@ -324,26 +324,13 @@ mod tests {
             .assert("maganiso axis", axis.as_slice().expect("contiguous"), &axis_gold);
     }
 
-    /// `math::eccentricity_pixel_deg` (the core of
-    /// `EccentricityMethod::OpenIsiWholeCortexV1`) vs Allen
-    /// `eccentricityMap` (RetinotopicMapping.py:729-760). Pure f64 on both
-    /// sides → machine-precision match. Fixtures from `gen_ecc_golden.py`.
-    #[test]
-    fn garrett_eccentricity_matches_allen_eccentricitymap() {
-        let alt = load_f64(include_bytes!("../../tests/golden/fixtures/ecc_alt.bin"));
-        let azi = load_f64(include_bytes!("../../tests/golden/fixtures/ecc_azi.bin"));
-        let golden = load_f64(include_bytes!("../../tests/golden/fixtures/ecc_golden.bin"));
-        const ALT_C: f64 = 5.0;
-        const AZI_C: f64 = 10.0;
-
-        // Pure f64 on both sides (our formula == Allen's) → machine precision;
-        // observed ≈ 2.1e-14 ≈ 96·ε_f64 → K=128, F64 base. (Was a magic 1e-9 —
-        // ~5 orders too loose to catch a real f64 regression.)
-        let ours: Vec<f64> = (0..N * N)
-            .map(|i| crate::math::eccentricity_pixel_deg(alt[i], azi[i], ALT_C, AZI_C))
-            .collect();
-        Tol::abs(128, Eps::F64).assert("garrett eccentricity vs Allen", &ours, &golden);
-    }
+    // (Cutover, objective 1) The frozen `garrett_eccentricity_matches_allen_
+    // eccentricitymap` golden + its ecc_*.bin fixtures + gen_ecc_golden.py (which
+    // imported the `_allen_oracle` SHIM) were DELETED: the live
+    // `eccentricity_matches_genuine_nat_eccentricitymap_live` below exercises the
+    // same per-pixel great-circle formula across representative degree ramps
+    // against genuine NAT `eccentricityMap` in the shim-free uv env (the NaN /
+    // alt==0 / azi==0 edge cases are covered separately by the eccfull golden).
 
     /// **Live genuine-oracle version**: builds altitude/azimuth degree maps in
     /// Rust and compares our `eccentricity_pixel_deg` against the GENUINE
