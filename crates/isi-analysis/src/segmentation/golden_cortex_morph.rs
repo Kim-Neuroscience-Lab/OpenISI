@@ -257,19 +257,14 @@ mod tests {
         assert_eq!(total, 0, "cross morphology diverges from genuine scipy binary_opening/closing");
     }
 
-    /// Allen `_getRawPatchMap` orchestration (open → label → per-patch close →
-    /// recombine) via the extracted production helper `raw_patch_map_allen`,
-    /// vs the same composition in scipy. Fixture from
-    /// `gen_patch_extraction_golden.py`.
-    #[test]
-    fn allen_raw_patch_map_matches_scipy() {
-        let imseg = load_mask(include_bytes!("../../tests/golden/fixtures/cortex_morph_input.bin"));
-        let golden: &[u8] = include_bytes!("../../tests/golden/fixtures/patchext_rawmap.bin");
-        let ours = raw_patch_map_allen(&imseg, 3, 3);
-        let d = count_differing(&ours, golden);
-        eprintln!("Allen _getRawPatchMap vs scipy: differing px = {d}");
-        assert_eq!(d, 0, "raw_patch_map_allen diverges from scipy _getRawPatchMap");
-    }
+    // (Cutover, objective 1) The frozen `allen_raw_patch_map_matches_scipy` golden +
+    // its exclusive patchext_rawmap.bin fixture + gen_patch_extraction_golden.py were
+    // DELETED. gen_patch_extraction was a TRANSCRIPTION (a scipy composition mimicking
+    // `_getRawPatchMap`'s orchestration). The live `raw_patch_map_matches_genuine_nat_live`
+    // drives the GENUINE `RetinotopicMappingTrial._getRawPatchMap` live. (The shared
+    // cortex_morph_input.bin survives — it is owned/written by gen_patch_morph, a scipy
+    // library-primitive generator, and still consumed by the patch_morph + cortex_morph
+    // library-primitive goldens.)
 
     /// **Live genuine-oracle, CLASS METHOD**: drives the real
     /// `RetinotopicMappingTrial._getRawPatchMap` (constructed in the bridge with
