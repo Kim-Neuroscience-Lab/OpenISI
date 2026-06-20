@@ -91,6 +91,19 @@ The cross-cycle `reliability` coherence is the Engel 1994 / Zhuang 2017 **publis
 formula** computed via numpy primitives (`sum`/`abs`) — a formula pin, labelled as
 such (it has no canonical reference *code* to execute), not claimed as a code oracle.
 
+**Library-primitive checks (numpy/scipy/skimage IS the oracle), not genuine-NAT
+methods.** Some goldens were labelled as Allen/SNLC method oracles but are really a
+single library primitive + a standard formula — the independent oracle is the
+library, which they should compute *live* (condition 6), not the named reference:
+- `dff` (ΔF/F): `F0 = np.mean(movie, axis=0)` + `(F−F0)/F0`. **`normalizeMovie` does
+  NOT exist in NeuroAnalysisTools 3.1.0** (nor corticalmapping/retinotopic_mapping)
+  — the old docstring's "Allen normalizeMovie" reference is absent; this is `np.mean`
+  (numpy oracle) + the standard ΔF/F formula. Re-classified accordingly.
+- The pure single-op goldens (`dft` vs `np.fft`, `gaussian`/`label`/`skeletonize`/
+  `watershed`/`uniform_filter` vs scipy/skimage) are library-primitive by
+  construction — the library is the genuine oracle; the remaining work for them is
+  making them *live* (condition 6), not a reference migration.
+
 ## Reproducibility (condition 7)
 
 The harness is reproducible **by construction**: the genuine env is materialised
