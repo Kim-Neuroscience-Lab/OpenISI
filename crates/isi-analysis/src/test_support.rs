@@ -211,4 +211,85 @@ pub(crate) mod oracle {
     pub(crate) fn nat(func: &str, inputs: &[Array2<f64>], params: &[(&str, f64)]) -> Vec<Array2<f64>> {
         nat_raw(func, inputs, params).iter().map(OracleOut::f64).collect()
     }
+
+    fn octave() -> String {
+        std::env::var("OPENISI_OCTAVE").unwrap_or_else(|_| "octave-cli".to_string())
+    }
+
+    /// Call a genuine function in the **SNLC / Garrett** oracle env (`tests/oracle/
+    /// snlc/`), executed via Octave against the real `reference/ISI/*.m`. Returns
+    /// the reference's f64 outputs. (Octave≈MATLAB is the flagged irreducible gap.)
+    pub(crate) fn snlc(func: &str, inputs: &[Array2<f64>], params: &[(&str, f64)]) -> Vec<Array2<f64>> {
+        let snlc_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/oracle/snlc");
+        let bridge = snlc_dir.join("bridge.m");
+        let work = std::env::temp_dir().join(format!(
+            "openisi_oracle_snlc_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&work).expect("oracle workdir");
+
+        let input_specs: Vec<serde_json::Value> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let (h, w) = a.dim();
+                let p = work.join(format!("in{i}.bin"));
+                let mut f = std::fs::File::create(&p).expect("write input");
+                for &v in a.iter() {
+                    f.write_all(&v.to_le_bytes()).expect("write input bytes");
+                }
+                serde_json::json!({ "path": p.to_string_lossy(), "dtype": "<f8", "shape": [h, w] })
+            })
+            .collect();
+        let params_obj: serde_json::Map<String, serde_json::Value> = params
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
+            .collect();
+        let req = serde_json::json!({
+            "fn": func,
+            "inputs": input_specs,
+            "params": serde_json::Value::Object(params_obj),
+            "out_dir": work.to_string_lossy(),
+        });
+        let req_path = work.join("req.json");
+        std::fs::write(&req_path, serde_json::to_vec(&req).unwrap()).expect("write request");
+
+        let out = Command::new(octave())
+            .args(["--norc", "-q"])
+            .arg(&bridge)
+            .arg(&req_path)
+            .output()
+            .expect("spawn octave-cli — put it on PATH or set OPENISI_OCTAVE");
+        assert!(
+            out.status.success(),
+            "SNLC oracle bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+
+        let resp: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("parse bridge stdout JSON");
+        // Octave's jsonencode emits a single struct as an object, an array of structs
+        // as an array — normalise to a slice.
+        let outs_val = &resp["outputs"];
+        let outs: Vec<&serde_json::Value> = match outs_val {
+            serde_json::Value::Array(a) => a.iter().collect(),
+            obj => vec![obj],
+        };
+        outs.iter()
+            .map(|o| {
+                let file = o["file"].as_str().expect("output file");
+                let shape = o["shape"].as_array().expect("output shape");
+                let h = shape[0].as_u64().unwrap() as usize;
+                let w = shape[1].as_u64().unwrap() as usize;
+                let bytes = std::fs::read(file).expect("read output");
+                let data: Vec<f64> = bytes
+                    .chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                Array2::from_shape_vec((h, w), data).expect("shape output")
+            })
+            .collect()
+    }
 }
