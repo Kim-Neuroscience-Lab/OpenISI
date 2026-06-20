@@ -16,13 +16,14 @@
 #[cfg(test)]
 mod tests {
     use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt, CortexSourceMethod};
-    use crate::segmentation::connectivity::{keep_largest_component, label_4conn};
+    use crate::segmentation::connectivity::keep_largest_component;
     use crate::segmentation::morphology::{
-        binary_closing_cross, binary_closing_disk, binary_dilation_disk, binary_fill_holes,
-        binary_opening_cross, binary_opening_disk,
+        binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
     };
     // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
     // which also used these in the default build, were retired in the cutover).
+    // (label_4conn / binary_{opening,closing}_cross are imported locally inside
+    // their live tests, so no module-level gated import is needed for them.)
     #[cfg(feature = "oracle_live")]
     use crate::methods::patch_extraction::raw_patch_map_allen;
     #[cfg(feature = "oracle_live")]
@@ -188,27 +189,13 @@ mod tests {
         assert_eq!(d, 0, "SNLC cortex orchestration diverges from Octave");
     }
 
-    /// Allen patch-extraction morphology primitives vs scipy.ndimage (the
-    /// library `RetinotopicMapping.py` uses): `binary_opening_cross` /
-    /// `binary_closing_cross` (iterations=3, 4-conn cross, scipy
-    /// `border_value=0` so the edge erodes) and `label_4conn` (scipy default
-    /// `ni.label` structure). Fixtures from `gen_patch_morph_golden.py`.
-    #[test]
-    fn allen_cross_morphology_matches_scipy() {
-        let input = load_mask(include_bytes!("../../tests/golden/fixtures/cortex_morph_input.bin"));
-        let g_open: &[u8] = include_bytes!("../../tests/golden/fixtures/patch_morph_open.bin");
-        let g_close: &[u8] = include_bytes!("../../tests/golden/fixtures/patch_morph_close.bin");
-
-        let open = binary_opening_cross(&input, 3);
-        let close = binary_closing_cross(&input, 3);
-        let d_open = count_differing(&open, g_open);
-        let d_close = count_differing(&close, g_close);
-        let (_, n) = label_4conn(&input);
-        eprintln!("  cross open diff={d_open}  close diff={d_close}  label_4conn n={n}");
-        assert_eq!(d_open, 0, "binary_opening_cross diverges from scipy");
-        assert_eq!(d_close, 0, "binary_closing_cross diverges from scipy");
-        assert_eq!(n, 7, "label_4conn count diverges from scipy ni.label");
-    }
+    // (Cutover, objective 6) The frozen `allen_cross_morphology_matches_scipy`
+    // golden + its patch_morph_open/close.bin fixtures were DELETED: the live
+    // `cross_morphology_matches_genuine_scipy_live` recomputes the genuine scipy
+    // binary_opening/closing (4-conn cross) each run, and `label_4conn` is
+    // validated live by `label4conn_matches_genuine_scipy_live`. (gen_patch_morph
+    // is retained: it still writes the SHARED cortex_morph_input.bin input mask
+    // that the cortex_morph + cortex_full goldens read.)
 
     /// **Live library-primitive oracle**: our `binary_opening_cross` /
     /// `binary_closing_cross` (4-conn cross, `border_value=0`) vs the GENUINE

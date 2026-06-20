@@ -151,7 +151,7 @@ fn retired_transcription_generators_stay_deleted() {
 fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
-        ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy.ndimage binary_opening/closing
+        ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy; now mainly provides the shared cortex_morph_input mask (its open/close test retired → live)
         ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
         ("gen_cortex_morph_golden.m", "LibraryPrimitive"),     // Octave IPT imopen/imclose/imfill/imdilate
         ("gen_fftgauss_golden.m", "LibraryPrimitive"),         // Octave fft-based gaussian blur
