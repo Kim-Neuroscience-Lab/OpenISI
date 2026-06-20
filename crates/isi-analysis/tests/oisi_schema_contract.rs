@@ -45,6 +45,17 @@ fn committed_schema_doc_matches_generated() {
 #[test]
 fn analyzed_oisi_conforms_to_schema() {
     let oisi = manifest_dir().join("tests/fixtures/baseline/R43_smoke.baseline.oisi");
+    // Dev-time validation against a real analyzed `.oisi` (gitignored real data,
+    // never published). Absent on a clean checkout / general CI → SKIP loudly,
+    // don't panic. The schema⇄docs golden check above runs everywhere; this
+    // real-file conformance check runs where the data lives.
+    if !oisi.exists() {
+        eprintln!(
+            "SKIP analyzed_oisi_conforms_to_schema: baseline absent (gitignored real data): {}",
+            oisi.display()
+        );
+        return;
+    }
     let file = hdf5::File::open(&oisi).unwrap_or_else(|e| panic!("open {}: {e}", oisi.display()));
     let violations = oisi_schema::contract_violations(&file);
     assert!(

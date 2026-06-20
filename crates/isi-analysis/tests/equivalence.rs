@@ -370,12 +370,21 @@ fn equivalence_r43_smoke() {
     let fixture = manifest.join("tests/fixtures/oisi/R43_smoke.oisi");
     let baseline = manifest.join("tests/fixtures/baseline/R43_smoke.baseline.oisi");
 
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-    assert!(
-        baseline.exists(),
-        "baseline missing: {}",
-        baseline.display()
-    );
+    // This is a DEV-TIME method-validation gate (bit-identical pipeline output vs a
+    // real R43 baseline), not a program-correctness test. The R43 fixtures are real
+    // SNLC-derived data, intentionally gitignored (`*.oisi`) and never published —
+    // so on a clean checkout (general CI) they are absent. Run the gate wherever the
+    // data lives; when absent, SKIP loudly rather than hard-fail (matches
+    // `regression_oisi.rs`). No `#[ignore]`: it still runs by default where present.
+    if !fixture.exists() || !baseline.exists() {
+        eprintln!(
+            "SKIP equivalence_r43_smoke: R43 fixture/baseline absent (gitignored real data — \
+             a dev-time validation, not run on general CI).\n  fixture:  {}\n  baseline: {}",
+            fixture.display(),
+            baseline.display()
+        );
+        return;
+    }
 
     // Run analyze on a fresh copy of the fixture under target/.
     let candidate = manifest
