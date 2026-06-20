@@ -135,6 +135,16 @@ def dispatch(fn, x, p):
                     "openIter": int(p["openIter"]),
                     "closeIter": int(p["closeIter"])}
         return [np.asarray(t._getRawPatchMap())]
+    if fn == "split2":
+        # Drive the genuine Patch.split2 (watershed branch): construct the real
+        # Patch, call the real method, return each resulting patch mask (variable
+        # count). The method body is 100% the reference's.
+        patch = RM.Patch((x[0] != 0).astype(np.int8), int(p["sign"]))
+        d = patch.split2(x[1], cutStep=int(p["cutStep"]), borderWidth=int(p["borderWidth"]))
+        masks = [np.asarray(v.array, dtype=np.int8) for v in d.values()]
+        if not masks:
+            return [np.zeros_like(x[0], dtype=np.int8)]
+        return masks
     if fn == "getDeterminantMap":
         t = RM.RetinotopicMappingTrial.__new__(RM.RetinotopicMappingTrial)
         t.altPosMapf = x[0]

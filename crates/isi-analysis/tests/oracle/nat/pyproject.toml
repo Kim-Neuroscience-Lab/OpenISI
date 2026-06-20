@@ -6,11 +6,23 @@
 # host machine happens to have. The reference is run AS-IS, byte-pristine; nothing
 # here modifies it.
 #
-# Era pin rationale: NAT 3.1.0's live code uses `np.int` (removed in numpy 1.24),
-# so it requires numpy < 1.24, which in turn requires Python <= 3.11. Its 4
-# `xrange` uses are commented-out dead code. In this env it therefore runs
-# NATIVELY — no shim. (NAT's own requirements.txt is unversioned, so these pins are
-# a locked period-correct reconstruction, not the authors' exact machine.)
+# Era pin rationale: NAT 3.1.0's live code pins the env from two hard code
+# constraints, reconstructed because NAT's own requirements.txt is unversioned:
+#   - `np.int` (removed in numpy 1.24)              ⇒ numpy < 1.24
+#   - `Patch.split2` calls `skimage.morphology.watershed` (`sm.watershed`), which
+#     was DEPRECATED in skimage 0.16 and REMOVED from `morphology` in 0.19      ⇒
+#     scikit-image < 0.19. 0.18.3 (the last 0.18) keeps `morphology.watershed`
+#     (so the reference runs natively) AND already exposes
+#     `segmentation.watershed` (so the bridge's own watershed arm works).
+# scikit-image 0.18 has no cp310 wheels, and numpy<1.24 + skimage 0.18.3 +
+# scipy 1.9.3 co-resolve on Python 3.9 — so the era-correct interpreter is 3.9.
+# Its 4 `xrange` uses are commented-out dead code. In this env the vendored
+# reference therefore runs NATIVELY — no shim. (A locked period-correct
+# reconstruction, not the authors' exact machine.)
+#
+# skeletonize is bit-identical between 0.18.3 and 0.19.3 (verified: same medial
+# axis), and scipy/numpy are unchanged, so re-pinning 0.19.3→0.18.3 leaves every
+# existing oracle result identical while making split2 run natively.
 #
 # uv.lock (committed) makes this reproducible on any machine / CI.
 # Run the genuine oracle:  uv run --project <this dir> python bridge.py <req.json>
@@ -19,16 +31,16 @@
 name = "openisi-oracle-nat"
 version = "0.0.0"
 description = "Locked period-correct env for the genuine NeuroAnalysisTools 3.1.0 oracle."
-requires-python = "==3.10.*"
+requires-python = "==3.9.*"
 # The full set the genuine NAT import chain pulls in (RetinotopicMapping +
 # core.ImageAnalysis/FileTools/PlottingTools): numpy, scipy, scikit-image,
 # matplotlib, opencv (cv2), h5py, scikit-learn. All pinned period-correct (NAT
-# 3.1.0 era, ~2022, numpy<1.24). Only numpy/scipy/scikit-image affect the oracle
-# numbers; the rest are import-chain requirements pinned for reproducibility.
+# 3.1.0 era, numpy<1.24, skimage<0.19). Only numpy/scipy/scikit-image affect the
+# oracle numbers; the rest are import-chain requirements pinned for reproducibility.
 dependencies = [
     "numpy==1.23.5",
     "scipy==1.9.3",
-    "scikit-image==0.19.3",
+    "scikit-image==0.18.3",
     "matplotlib==3.6.2",
     "opencv-python==4.6.0.66",
     "h5py==3.7.0",

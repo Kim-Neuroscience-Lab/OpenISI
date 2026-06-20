@@ -1009,6 +1009,62 @@ mod allen {
             assert_eq!(udiff, 0, "split2 union mask diverges from Allen");
         }
 
+        /// **Live genuine-oracle, CLASS METHOD**: our `split_patch_from_ecc` vs the
+        /// GENUINE `Patch.split2` (the watershed branch), constructed and driven in
+        /// the bridge as the real method, executed live in the uv-locked env. A
+        /// single wide patch over an eccentricity field with two wells forces a
+        /// two-way split. The method returns a variable-count patch dict, so we
+        /// compare patch COUNT and the order-free UNION of masks. This validates the
+        /// orchestration against Allen's actual `split2`, not a transcription of it.
+        /// Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn split2_matches_genuine_nat_live() {
+            use crate::test_support::oracle;
+            const N: usize = 48;
+            let mask = Array2::from_shape_fn((N, N), |(r, c)| {
+                (12..36).contains(&r) && (6..42).contains(&c)
+            });
+            // Two wells (minima) separated by a central ridge at col 24.
+            let ecc = Array2::from_shape_fn((N, N), |(r, c)| {
+                let d1 = ((r as f64 - 24.0).powi(2) + (c as f64 - 14.0).powi(2)).sqrt();
+                let d2 = ((r as f64 - 24.0).powi(2) + (c as f64 - 34.0).powi(2)).sqrt();
+                d1.min(d2)
+            });
+            let patch = Patch { mask: mask.clone(), sign: 1 };
+            let ours = split_patch_from_ecc(&patch, &ecc, 1.0, 2);
+
+            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            let genuine = oracle::nat_raw(
+                "split2",
+                &[mask_f, ecc.clone()],
+                &[("sign", 1.0), ("cutStep", 1.0), ("borderWidth", 2.0)],
+            );
+            let genuine_masks: Vec<_> = genuine.iter().map(|o| o.bool()).collect();
+
+            let union = |masks: &dyn Fn(usize, usize, usize) -> bool, n: usize| {
+                Array2::from_shape_fn((N, N), |(r, c)| (0..n).any(|k| masks(k, r, c)))
+            };
+            let our_union = union(&|k, r, c| ours[k].mask[[r, c]], ours.len());
+            let gen_union = union(&|k, r, c| genuine_masks[k][[r, c]], genuine_masks.len());
+
+            let mut udiff = 0usize;
+            for r in 0..N {
+                for c in 0..N {
+                    if our_union[[r, c]] != gen_union[[r, c]] {
+                        udiff += 1;
+                    }
+                }
+            }
+            eprintln!(
+                "split2 vs GENUINE NAT method (live): ours={} patches, genuine={} patches, union diff={udiff}",
+                ours.len(),
+                genuine_masks.len()
+            );
+            assert_eq!(ours.len(), genuine_masks.len(), "split2 patch count diverges from genuine NAT");
+            assert_eq!(udiff, 0, "split2 union diverges from genuine NAT split2");
+        }
+
         /// `uniform_filter_finite` vs `scipy.ndimage.uniform_filter`
         /// (`mode='reflect'`): odd size 15 and even size 10 on a 48×48 field,
         /// size 5 on 11×11. Even sizes are the asymmetric-window stress.

@@ -15,9 +15,11 @@ foundation*.
   never the machine's ambient toolchain.
   - `nat/` — **NeuroAnalysisTools 3.1.0** (Allen/Zhuang retinotopy), Python, via
     [`uv`](https://docs.astral.sh/uv/): `pyproject.toml` + committed `uv.lock`
-    pin Python 3.10 + a period-correct stack (numpy 1.23.5, scipy 1.9.3,
-    scikit-image 0.19.3, …). In that era `np.int` exists, so the vendored
-    reference runs **natively — no shim**.
+    pin Python 3.9 + a period-correct stack (numpy 1.23.5, scipy 1.9.3,
+    scikit-image 0.18.3, …). In that era `np.int` exists **and**
+    `skimage.morphology.watershed` still exists (the reference's `Patch.split2`
+    calls it; it was removed in skimage 0.19), so the vendored reference runs
+    **natively — no shim**. See `nat/pyproject.toml` for the full pin derivation.
   - `snlc/` *(pending)* — SNLC/Garrett MATLAB, via a pinned Octave.
 - **The reference code is byte-pristine.** Nothing here modifies
   `reference/…`; the env is shaped to fit the reference, not the reverse.
@@ -70,6 +72,7 @@ skipped cases.
 | `localMin` | NAT `RM.localMin` | bit-identical (integer marker maps) | — |
 | `getSigmaArea` | NAT `Patch.getSigmaArea` | bit-identical incl. NaN cases | The audit *suspected* a NaN-handling divergence; the live oracle **disproved** it — ours propagates `0·NaN = NaN` (NaN outside the mask) exactly like genuine numpy. No divergence. |
 | `getVisualSpace` | NAT `Patch.getVisualSpace` | bit-identical (0 px) | Driven as the genuine class method; `VisualGrid` built to NAT's hardcoded ranges (alt [-40,60), azi [-20,120)) since our `derive_visual_grid` is a regression-lock OpenISI choice, not the oracle. |
+| `split_patch_from_ecc` | NAT `Patch.split2` (watershed branch) | patch count + order-free union identical | Driven as the genuine class method (variable-count patch dict). **Forced the env re-pin** that surfaced the skimage-0.19.3 anachronism (`sm.watershed` removed in 0.19) → re-pinned to skimage 0.18.3 / Python 3.9, skeletonize verified bit-identical so no existing result moved. |
 | `getPatchSign` (signs) | **SNLC** `getPatchSign` (Octave) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
 
 *(Updated as each method migrates.)*
@@ -107,7 +110,7 @@ library, which they should compute *live* (condition 6), not the named reference
     `gaussian_smooth_f64` vs `scipy.ndimage.gaussian_filter` (max diff 1.1e-15),
     `label_4conn` vs `scipy.ndimage.label` (partition-identical, 4-conn cross),
     `binary_skeletonize_skimage` vs `skimage.morphology.skeletonize` (bit-identical,
-    skimage 0.19.3 — the version `dilationPatches2` calls),
+    skimage 0.18.3 — bit-identical to 0.19.3 for the medial axis),
     `dft_projection_at_freq` vs `numpy.fft.fft(...)[1]` (single-bin, ≈8e-6 ≈ the
     f32 length-24 reduction vs numpy f64; same f32 values handed to numpy so only
     the reduction differs), `uniform_filter_finite` vs
