@@ -3338,34 +3338,11 @@ mod garrett {
             );
         }
 
-        /// `interp2_spline` vs Octave `interp2(...,'spline')` (not-a-knot,
-        /// tensor product). Pure f64; tiny tensor-order/reduction roundoff.
-        /// Fixtures from `gen_interp2spline_golden.m`.
-        #[test]
-        fn interp2_spline_matches_octave() {
-            let zv = load_f64(include_bytes!("../../tests/golden/fixtures/i2s_z.bin"));
-            let ziv = load_f64(include_bytes!("../../tests/golden/fixtures/i2s_zi.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/i2s_meta.bin"));
-            let (h, w, u) = (meta[0] as usize, meta[1] as usize, meta[2] as usize);
-            let z = Array2::from_shape_fn((h, w), |(r, c)| zv[r * w + c]);
-            let x: Vec<f64> = (1..=w).map(|v| v as f64).collect();
-            let y: Vec<f64> = (1..=h).map(|v| v as f64).collect();
-            let xi: Vec<f64> = (0..u * w)
-                .map(|k| 1.0 + (w as f64 - 1.0) * k as f64 / (u * w - 1) as f64)
-                .collect();
-            let yi: Vec<f64> = (0..u * h)
-                .map(|k| 1.0 + (h as f64 - 1.0) * k as f64 / (u * h - 1) as f64)
-                .collect();
-
-            let zi = interp2_spline(&x, &y, &z, &xi, &yi);
-            // Pure f64 not-a-knot spline; observed max_abs ≈ 32·ε_f64 (the larger
-            // max_rel is at near-zero values, carried by the atol floor) → K=64.
-            Tol::rel(64, Eps::F64, 64).assert(
-                "interp2_spline vs Octave",
-                zi.as_slice().expect("contiguous"),
-                &ziv,
-            );
-        }
+        // (Cutover, objective 1) The frozen `interp2_spline_matches_octave` golden
+        // + its i2s_*.bin fixtures + gen_interp2spline_golden.m were DELETED: the
+        // live `interp2_spline_matches_genuine_octave_live` below builds the
+        // identical scene (same smooth non-separable Z, U=3 upsample) and computes
+        // the genuine Octave `interp2(...,'spline')` live.
 
         /// **Live library-primitive oracle, Octave**: our `interp2_spline`
         /// (ported not-a-knot tensor-product cubic spline) vs the GENUINE Octave
