@@ -158,56 +158,14 @@ mod tests {
         );
     }
 
-    /// `position_phasor_delay_subtracted` vs SNLC `Gprocesskret.m` (88-99): the
-    /// Kalatsky-Stryker delay-subtracted combine. Compared as phasors
-    /// (cos/sin of the reference kmap) so ±2π wrap boundaries can't create
-    /// false diffs. Fixtures from `gen_combine_golden.m`.
-    #[test]
-    fn kalatsky_combine_matches_snlc_gprocesskret() {
-        let a0 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang0.bin"));
-        let a2 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang2.bin"));
-        let kmap = load_f64(include_bytes!("../../tests/golden/fixtures/combine_kmap.bin"));
-
-        let fwd = Complex2::from_phase(phase_tensor(&a0));
-        let rev = Complex2::from_phase(phase_tensor(&a2));
-        let result = position_phasor_delay_subtracted(&fwd, &rev);
-        let re = tensor_to_array2_f64(result.real()).unwrap();
-        let im = tensor_to_array2_f64(result.imag()).unwrap();
-
-        // Compare the phasor (re, im) against cos/sin of the oracle kmap — the
-        // phasor form sidesteps ±2π wrap false-diffs. f32 backend, observed
-        // ≈ 2.1·ε_f32 → K=4.
-        let cos_ref: Vec<f64> = kmap.iter().map(|k| k.cos()).collect();
-        let sin_ref: Vec<f64> = kmap.iter().map(|k| k.sin()).collect();
-        Tol::abs(4, Eps::F32).assert("kalatsky combine re", re.as_slice().expect("contiguous"), &cos_ref);
-        Tol::abs(4, Eps::F32).assert("kalatsky combine im", im.as_slice().expect("contiguous"), &sin_ref);
-    }
-
-    /// `delay_map` vs SNLC `Gprocesskret.m:88-96` `delay_hor`/`delay_vert`: the
-    /// hemodynamic delay (the symmetric fwd+rev component), forced into (0, π].
-    /// Compared directly in radians — delay is single-valued in (0, π], so no
-    /// wrap ambiguity. Fixture `combine_delay.bin` from `gen_combine_golden.m`
-    /// (same ang0/ang2 inputs as the kmap golden, so the two are consistent).
-    #[test]
-    fn delay_map_matches_snlc_gprocesskret() {
-        let a0 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang0.bin"));
-        let a2 = load_f64(include_bytes!("../../tests/golden/fixtures/combine_ang2.bin"));
-        let delay = load_f64(include_bytes!("../../tests/golden/fixtures/combine_delay.bin"));
-
-        let fwd = Complex2::from_phase(phase_tensor(&a0));
-        let rev = Complex2::from_phase(phase_tensor(&a2));
-        let ours = tensor_to_array2_f64(delay_map(&fwd, &rev)).unwrap();
-
-        // Delay is an absolute angular magnitude in (0, π] (no wrap). f32 atan2 +
-        // the (0,π] sign correction drift most near the flip region (here ~half
-        // the product grid crosses it); observed ≈ 4.79e-5 ≈ 402·ε_f32 → K=512
-        // (the phase-map class in tolerances.toml).
-        Tol::abs(512, Eps::F32).assert(
-            "delay_map vs SNLC Gprocesskret",
-            ours.as_slice().expect("contiguous"),
-            &delay,
-        );
-    }
+    // (Cutover, objective 1) The frozen `kalatsky_combine_matches_snlc_gprocesskret`
+    // + `delay_map_matches_snlc_gprocesskret` goldens + their combine_*.bin fixtures
+    // + gen_combine_golden.m were DELETED. gen_combine_golden.m was a TRANSCRIPTION
+    // (it re-implemented Gprocesskret's lines 88-99 inline — the very self-authored-
+    // oracle objective 1 forbids, and the one that hid the post-negation artifact).
+    // The live `combine_and_delay_match_genuine_snlc_gprocesskret_live` below drives
+    // the GENUINE Gprocesskret.m via Octave over the full phase circle (incl the
+    // delay-flip region), covering both the combine phasor and the (0,π] delay.
 
     /// **Live genuine-oracle, SNLC/Octave**: our `position_phasor_delay_subtracted`
     /// (Kalatsky combine) and `delay_map` vs the GENUINE `Gprocesskret.m`
