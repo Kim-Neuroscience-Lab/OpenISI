@@ -129,3 +129,62 @@ fn retired_transcription_generators_stay_deleted() {
         "retired transcription generators have reappeared: {still_present:?}"
     );
 }
+
+/// The ALLOW side: every surviving generator is hand-classified (source-verified)
+/// into a NON-transcription category. There is no `Transcription` category — so by
+/// construction the suite contains zero generators that re-implement a *runnable*
+/// reference (objective 1). The categories:
+///   - `LibraryPrimitive`: the expected value IS the output of a stdlib/IPT primitive
+///     (scipy/skimage/numpy/Octave-IPT) called directly; the library is the oracle.
+///   - `GenuineRun`: calls the genuine vendored `.m` (addpath) and uses its output.
+///   - `RegressionLock`: pins OpenISI's OWN behaviour (no external reference exists for
+///     the specific rule); honestly labelled as such at the source.
+///   - `FormulaPin`: pins a PUBLISHED formula whose reference code is not runnable in the
+///     locked env (py2-only, GUI-bundled, or non-separable) — an irreducible gap stated
+///     at the source; never dressed as a live oracle.
+/// The gate asserts the on-disk `gen_*` set EXACTLY matches this manifest, so a new
+/// generator can't slip in unclassified and a manifest entry can't go stale.
+#[test]
+fn every_surviving_generator_is_classified_non_transcription() {
+    // (filename, category) — source-verified by reading each generator's oracle source.
+    const MANIFEST: &[(&str, &str)] = &[
+        ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy.ndimage binary_opening/closing
+        ("gen_reflect_wrap_golden.py", "LibraryPrimitive"),    // scipy.ndimage correlate1d
+        ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
+        ("gen_cortex_morph_golden.m", "LibraryPrimitive"),     // Octave IPT imopen/imclose/imfill/imdilate
+        ("gen_fftgauss_golden.m", "LibraryPrimitive"),         // Octave fft-based gaussian blur
+        ("gen_cortex_full_golden.m", "LibraryPrimitive"),      // Octave-IPT sequence (OpenISI orchestration)
+        ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
+        ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
+        ("gen_cortexrel_golden.py", "RegressionLock"),         // OpenISI cortex-from-reliability mask, no ref
+        ("gen_patch_threshold_golden.py", "RegressionLock"),   // |signMapf|>=thr / k*std rule
+        ("gen_largestcc_tie_golden.py", "RegressionLock"),     // largest-CC tie = max first-index (lang guarantee)
+        ("gen_v1ecc_golden.py", "RegressionLock"),             // OpenISI V1-center pin + the non-separable SNLC formula-pin
+        ("gen_reliability_golden.py", "FormulaPin"),           // Engel 1994 / Zhuang 2017 published coherence
+        ("gen_dff_golden.py", "FormulaPin"),                   // np.mean (live) + dF/F; normalizeMovie py2-absent
+        ("gen_power_snr_golden.py", "FormulaPin"),             // generatePhaseMap power branch py2-only
+        ("gen_maganiso_golden.py", "FormulaPin"),              // Garrett getMagFactors anisotropy (no separable ref)
+        ("gen_spherical_marshel_golden.py", "FormulaPin"),     // Marshel 2012 arctan; MonitorSetup.remap py2-only
+        ("gen_magroi_golden.m", "FormulaPin"),                 // overlaymaps.m ROI block is commented-out dead code
+    ];
+    let manifest_files: std::collections::BTreeSet<&str> = MANIFEST.iter().map(|&(f, _)| f).collect();
+    assert_eq!(manifest_files.len(), MANIFEST.len(), "duplicate filename in MANIFEST");
+
+    let on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(golden_dir())
+        .expect("read golden dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("gen_") && (n.ends_with(".py") || n.ends_with(".m")))
+        .collect();
+
+    let unclassified: Vec<&String> = on_disk.iter().filter(|n| !manifest_files.contains(n.as_str())).collect();
+    let stale: Vec<&str> = manifest_files.iter().copied().filter(|n| !on_disk.contains(*n)).collect();
+    assert!(
+        unclassified.is_empty(),
+        "generator(s) on disk not in the MANIFEST (classify them, source-verified): {unclassified:?}"
+    );
+    assert!(
+        stale.is_empty(),
+        "MANIFEST entries with no generator on disk (stale): {stale:?}"
+    );
+}
