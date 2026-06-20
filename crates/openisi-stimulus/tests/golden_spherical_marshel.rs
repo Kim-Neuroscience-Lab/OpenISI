@@ -1,6 +1,13 @@
-//! Golden cross-validation of the spherical (Marshel et al. 2012) display
-//! correction against a verbatim transcription of Allen/Zhuang
-//! `MonitorSetup.Monitor.remap()` (`reference/.../MonitorSetup.py` L177-206).
+//! **FORMULA-PIN** (honest label, NOT a live code oracle) of the spherical
+//! (Marshel et al. 2012) display correction. The reference is
+//! `MonitorSetup.Monitor.remap()` — `deg = (180/π)·atan(coord/dis)` — which exists
+//! ONLY in the deprecated **py2** `retinotopic_mapping` copy (NeuroAnalysisTools
+//! 3.1.0 has no `MonitorSetup`). **Irreducible gap:** that py2 module cannot be
+//! imported/executed in the locked py3 oracle env without a 2to3 shim, and shims
+//! are forbidden — so there is no runnable reference to call. This therefore pins
+//! the *published Marshel-2012 arctan formula* (algebraically identical to our
+//! `uv_to_angle`), labelled as a formula-pin with the gap stated, NOT dressed as a
+//! live oracle. Backed by `gen_spherical_marshel_golden.py` (a formula generator).
 //!
 //! Our `DisplayGeometry::uv_to_angle` (Spherical) computes
 //!   `az = atan(y_cm / xo)`, `el = asin(z_cm / sqrt(xo² + y_cm² + z_cm²))`,

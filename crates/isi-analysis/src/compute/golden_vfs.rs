@@ -220,12 +220,17 @@ mod tests {
         eprintln!("combine + delay vs GENUINE SNLC Gprocesskret (live): matched");
     }
 
-    /// `magnification_anisotropy` vs SNLC `getMagFactors.m` (`prefAxisMF` +
-    /// `Distrtion`): the doubled-angle anisotropy of the visual-field Jacobian.
-    /// The axis is compared **circularly** (period 180°) so a pixel near the
-    /// 0/180 wrap can't create a false diff; distortion is a bounded `[0,1]`
-    /// magnitude → absolute diff. Fixtures from `gen_maganiso_golden.py` (the
-    /// same four gradients the op consumes).
+    /// **FORMULA-PIN** (honest label, NOT a live code oracle). The doubled-angle
+    /// anisotropy `Res = |∇H|·exp(i(∠∇H+π/2)·2) + |∇V|·exp(i(∠∇V+π/2)·2)` →
+    /// `axis = ∠Res/2`, `distortion = |Res|` is the Garrett-2014 `getMagFactors.m`
+    /// formula — but `getMagFactors` BUNDLES an fft-gaussian smooth + `gradient`
+    /// before it and takes *maps*, so there is **no separable runnable reference**
+    /// for "anisotropy from given gradients" (this op's contract). So this pins the
+    /// published formula on fixed gradients, labelled as a formula-pin (axis
+    /// compared circularly, period 180°; distortion absolute). The genuine
+    /// `getMagFactors` end-to-end (maps→prefAxisMF) is a *different* op (full
+    /// smooth+grad+anisotropy) and a candidate future live test. Fixtures from
+    /// `gen_maganiso_golden.py`.
     #[test]
     fn magnification_anisotropy_matches_snlc_getmagfactors() {
         const M: usize = 48;
