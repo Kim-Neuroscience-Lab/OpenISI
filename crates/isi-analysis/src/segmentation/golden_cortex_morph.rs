@@ -334,6 +334,125 @@ mod tests {
         );
     }
 
+    /// **Live library-primitive oracle**: our `label_4conn` vs the GENUINE
+    /// `scipy.ndimage.label` (4-conn cross structure), executed live in the
+    /// uv-locked env. The library *is* the oracle here (no authored logic in the
+    /// bridge). Compared label-invariantly: a connected-component labeling is
+    /// only defined up to a relabeling, so we assert the two induce the SAME
+    /// partition (same background, and a consistent bijection ours↔genuine over
+    /// foreground), not bit-identical label integers. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn label4conn_matches_genuine_scipy_live() {
+        use crate::segmentation::connectivity::label_4conn;
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        use std::collections::HashMap;
+        const M: usize = 48;
+        // Several disjoint blobs + a diagonal-only contact (must NOT merge under
+        // 4-connectivity) to exercise the structure choice.
+        let mut f = Array2::<f64>::zeros((M, M));
+        let mut paint = |r0: usize, r1: usize, c0: usize, c1: usize| {
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    f[[r, c]] = 1.0;
+                }
+            }
+        };
+        paint(3, 9, 3, 9); // blob A
+        paint(3, 9, 20, 27); // blob B
+        paint(20, 30, 5, 16); // blob C
+        // D and E touch only diagonally at (33,33)/(34,34): stay separate (4-conn).
+        paint(30, 34, 30, 34);
+        paint(34, 38, 34, 38);
+        let mask = f.mapv(|v| v != 0.0);
+
+        let genuine = oracle::nat_raw("scipy_label", &[f.clone()], &[]).remove(0).i32();
+        let (ours, _n) = label_4conn(&mask);
+
+        // Partition equivalence: background agrees pixel-wise, and the foreground
+        // label correspondence is a consistent bijection in both directions.
+        let mut o2g: HashMap<i32, i32> = HashMap::new();
+        let mut g2o: HashMap<i32, i32> = HashMap::new();
+        let mut mismatches = 0usize;
+        for ((r, c), &ol) in ours.indexed_iter() {
+            let gl = genuine[[r, c]];
+            if (ol == 0) != (gl == 0) {
+                mismatches += 1;
+                continue;
+            }
+            if ol == 0 {
+                continue;
+            }
+            if *o2g.entry(ol).or_insert(gl) != gl || *g2o.entry(gl).or_insert(ol) != ol {
+                mismatches += 1;
+            }
+        }
+        eprintln!(
+            "label_4conn vs GENUINE scipy.ndimage.label (live): partition mismatches = {mismatches}"
+        );
+        assert_eq!(mismatches, 0, "label_4conn diverges from genuine scipy.ndimage.label");
+    }
+
+    /// **Live library-primitive oracle**: our `binary_skeletonize_skimage` vs the
+    /// GENUINE `skimage.morphology.skeletonize`, executed live in the uv-locked
+    /// env (skimage 0.19.3 — the version `dilationPatches2` depends on). The
+    /// library is the oracle; the bridge only calls it. Gated behind
+    /// `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn skeletonize_matches_genuine_skimage_live() {
+        use crate::segmentation::morphology::binary_skeletonize_skimage;
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 64;
+        // A solid block, a thick ring (halo), and a barbell — the shapes whose
+        // medial axis exercises the LUT's thinning corners.
+        let mut block = Array2::<f64>::zeros((M, M));
+        for r in 18..46 {
+            for c in 18..46 {
+                block[[r, c]] = 1.0;
+            }
+        }
+        let mut halo = Array2::<f64>::zeros((M, M));
+        for r in 10..54 {
+            for c in 10..54 {
+                let on_border = r < 18 || r >= 46 || c < 18 || c >= 46;
+                if on_border {
+                    halo[[r, c]] = 1.0;
+                }
+            }
+        }
+        let mut barbell = Array2::<f64>::zeros((M, M));
+        for r in 24..40 {
+            for c in 8..22 {
+                barbell[[r, c]] = 1.0; // left bell
+            }
+            for c in 42..56 {
+                barbell[[r, c]] = 1.0; // right bell
+            }
+            for c in 22..42 {
+                if (30..34).contains(&r) {
+                    barbell[[r, c]] = 1.0; // connecting bar
+                }
+            }
+        }
+        let cases = [("block", block), ("halo", halo), ("barbell", barbell)];
+        let mut total = 0usize;
+        for (name, f) in &cases {
+            let genuine = oracle::nat_raw("skimage_skeletonize", &[f.clone()], &[])
+                .remove(0)
+                .bool();
+            let ours = binary_skeletonize_skimage(&f.mapv(|v| v != 0.0));
+            let d = ndarray::Zip::from(&ours)
+                .and(&genuine)
+                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+            eprintln!("  skeletonize {name:8} vs GENUINE skimage (live): differing px = {d}");
+            total += d;
+        }
+        assert_eq!(total, 0, "binary_skeletonize_skimage diverges from genuine skimage skeletonize");
+    }
+
     /// `dilation_patches2_allen` vs a VERBATIM transcription of Allen
     /// `dilationPatches2` (`RetinotopicMapping.py` L190-225) run on scipy +
     /// skimage. Two seed patches placed to collide under dilation, forcing the

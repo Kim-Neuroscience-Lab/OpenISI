@@ -68,6 +68,13 @@ def dispatch(fn, x, p):
     if fn == "scipy_gaussian_filter":
         import scipy.ndimage as _sni
         return [_sni.gaussian_filter(x[0], p["sigma"], mode="reflect", truncate=4.0)]
+    if fn == "scipy_label":
+        import scipy.ndimage as _sni
+        labels, _n = _sni.label(x[0] != 0)  # default structure = 4-conn cross
+        return [labels.astype(np.int32)]
+    if fn == "skimage_skeletonize":
+        import skimage.morphology as _sm
+        return [_sm.skeletonize(x[0] != 0).astype(np.int8)]
     # --- class methods: construct the genuine object, set the inputs the method
     # reads, call the REAL method. The method body is 100% the reference's; only
     # the input-wiring is ours (as in any unit test of a method). ---

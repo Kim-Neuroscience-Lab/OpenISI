@@ -103,6 +103,15 @@ library, which they should compute *live* (condition 6), not the named reference
   `watershed`/`uniform_filter` vs scipy/skimage) are library-primitive by
   construction — the library is the genuine oracle; the remaining work for them is
   making them *live* (condition 6), not a reference migration.
+  - **Now live** (computed every run in the locked env, no frozen fixture):
+    `gaussian_smooth_f64` vs `scipy.ndimage.gaussian_filter` (max diff 1.1e-15),
+    `label_4conn` vs `scipy.ndimage.label` (partition-identical, 4-conn cross),
+    `binary_skeletonize_skimage` vs `skimage.morphology.skeletonize` (bit-identical,
+    skimage 0.19.3 — the version `dilationPatches2` calls). `label` is compared
+    label-invariantly (a CC labeling is defined only up to relabeling); the others
+    bit-/precision-identical.
+  - **Still frozen-fixture, pending live cutover:** `dft` (np.fft), `watershed`,
+    `uniform_filter`, `reflect_wrap`, `patch_morph`, `largestcc`, `patch_threshold`.
 
 ## Reproducibility (condition 7)
 
