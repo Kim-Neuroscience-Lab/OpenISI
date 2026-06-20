@@ -69,6 +69,7 @@ skipped cases.
 | `_getDeterminantMap` | NAT `RetinotopicMappingTrial._getDeterminantMap` | agree to f32 precision (`\|det J\|`) | Driven as the genuine class method. f32 gradient + det-cancellation vs genuine f64. |
 | `localMin` | NAT `RM.localMin` | bit-identical (integer marker maps) | — |
 | `getSigmaArea` | NAT `Patch.getSigmaArea` | bit-identical incl. NaN cases | The audit *suspected* a NaN-handling divergence; the live oracle **disproved** it — ours propagates `0·NaN = NaN` (NaN outside the mask) exactly like genuine numpy. No divergence. |
+| `getPatchSign` (signs) | **SNLC** `getPatchSign` (Octave) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
 
 *(Updated as each method migrates.)*
 

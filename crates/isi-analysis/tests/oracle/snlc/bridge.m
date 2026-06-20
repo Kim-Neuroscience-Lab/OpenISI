@@ -48,6 +48,12 @@ switch req.fn
   case 'getPatchCoM'     % genuine SNLC getPatchCoM(imseg) -> [CoMxy, Axisxy]
     [CoMxy, Axisxy] = getPatchCoM(x{1});
     outs = {CoMxy, Axisxy};
+  case 'getPatchSign'    % genuine SNLC getPatchSign(im, imsign) -> [patchSign, _]
+    % patchSign is a per-pixel map: each patch's pixels = sign(mean)+1.1 (so
+    % -1->0.1, 0->1.1, +1->2.1), background 0. Label-INVARIANT (no bwlabel-order
+    % dependency), which is what we compare against.
+    [patchSign, ~] = getPatchSign(x{1}, x{2});
+    outs = {patchSign};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end

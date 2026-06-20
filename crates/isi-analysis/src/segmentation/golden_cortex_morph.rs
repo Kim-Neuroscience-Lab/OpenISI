@@ -187,6 +187,58 @@ mod tests {
         assert_eq!(d, 0, "raw_patch_map_allen diverges from genuine NAT _getRawPatchMap");
     }
 
+    /// **Live genuine-oracle, SNLC/Octave**: our per-patch sign assignment vs the
+    /// GENUINE SNLC `getPatchSign` (`sign(mean(imsign over patch))`), executed live
+    /// via Octave. Tested on non-zero-mean patches (where they agree). The
+    /// zero-mean case is a documented deviation — MATLAB `sign(0)=0` (undefined
+    /// patch sign) vs our deterministic `+1` tie-break — recorded in the ledger,
+    /// not silently reconciled. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn patch_sign_matches_genuine_snlc_getpatchsign_live() {
+        use crate::segmentation::connectivity::{label_4conn, patches_from_labels_majority_sign};
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 32;
+        let mut im = Array2::<f64>::zeros((M, M));
+        let mut sgn = Array2::<f64>::zeros((M, M));
+        let mut paint = |r0: usize, r1: usize, c0: usize, c1: usize, s: f64, im: &mut Array2<f64>, sgn: &mut Array2<f64>| {
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    im[[r, c]] = 1.0;
+                    sgn[[r, c]] = s;
+                }
+            }
+        };
+        // 3 patches, clearly non-zero mean → unambiguous signs (+1, -1, +1).
+        paint(3, 9, 3, 9, 0.7, &mut im, &mut sgn);
+        paint(12, 18, 14, 20, -0.5, &mut im, &mut sgn);
+        paint(22, 28, 5, 12, 0.3, &mut im, &mut sgn);
+
+        // Genuine getPatchSign returns a per-pixel map: patch pixels = sign+1.1
+        // (label-INVARIANT — sidesteps our row-major vs MATLAB column-major
+        // bwlabel ordering, which is not a divergence).
+        let patch_sign_map = oracle::snlc("getPatchSign", &[im.clone(), sgn.clone()], &[]).remove(0);
+        let (labels, n) = label_4conn(&im.mapv(|v| v != 0.0));
+        let patches = patches_from_labels_majority_sign(&labels, n, &sgn);
+
+        let mut mismatch = 0usize;
+        for p in &patches {
+            for r in 0..M {
+                for c in 0..M {
+                    if p.mask[[r, c]] {
+                        let genuine_sign = (patch_sign_map[[r, c]] - 1.1).round() as i8;
+                        if genuine_sign != p.sign {
+                            mismatch += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("getPatchSign (live, region-wise): mismatching px = {mismatch}");
+        assert_eq!(mismatch, 0, "patch signs diverge from genuine SNLC getPatchSign (non-zero-mean)");
+    }
+
     /// `gaussian_smooth_f64` vs scipy `ni.gaussian_filter` (what Allen's
     /// `_getSignMap` / `phaseFilter` call): scipy defaults `truncate=4.0`,
     /// `mode='reflect'`. Fixture from `gen_gaussian_golden.py`.
