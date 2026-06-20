@@ -2888,46 +2888,8 @@ mod garrett {
     mod golden {
         use super::*;
         use agreement::{Eps, Tol};
-        use crate::test_support::{count_differing, load_f64};
+        use crate::test_support::load_f64;
 
-        /// `over_rep` vs SNLC `overRep` (`splitPatchesX.m:188-215`). Projection +
-        /// fill/close is integer/topological, so the coverage mask must match
-        /// bit-for-bit; `JacCoverage` is an f64 area-sum (same class as
-        /// `sigma_area` → `Tol::rel(64, Eps::F64)`). Fixtures from
-        /// `gen_overrep_golden.m`.
-        #[test]
-        fn over_rep_matches_snlc() {
-            let kh = load_f64(include_bytes!("../../tests/golden/fixtures/overrep_kmaph.bin"));
-            let kv = load_f64(include_bytes!("../../tests/golden/fixtures/overrep_kmapv.bin"));
-            let pt = load_f64(include_bytes!("../../tests/golden/fixtures/overrep_patch.bin"));
-            let jc = load_f64(include_bytes!("../../tests/golden/fixtures/overrep_jac.bin"));
-            let cover: &[u8] = include_bytes!("../../tests/golden/fixtures/overrep_spcov.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/overrep_meta.bin"));
-            // [H, W, Nsph, sphmin, pixpermm, U, JacCoverage, ActualCoverage, MagFac]
-            let (mh, mw) = (meta[0] as usize, meta[1] as usize);
-            let nsph = meta[2] as usize;
-            let sph_min = meta[3];
-            let (pixpermm, u) = (meta[4], meta[5]);
-            let (jac_exp, act_exp) = (meta[6], meta[7]);
-
-            let kmap_hor = Array2::from_shape_fn((mh, mw), |(r, c)| kh[r * mw + c]);
-            let kmap_vert = Array2::from_shape_fn((mh, mw), |(r, c)| kv[r * mw + c]);
-            let patch = Array2::from_shape_fn((mh, mw), |(r, c)| pt[r * mw + c] != 0.0);
-            let jac = Array2::from_shape_fn((mh, mw), |(r, c)| jc[r * mw + c]);
-
-            let cov = over_rep(&kmap_hor, &kmap_vert, u, &jac, &patch, sph_min, nsph, pixpermm);
-
-            // Mask: bit-for-bit via the shared comparator (no hand-rolled loop).
-            let diff = count_differing(&cov.sp_cov, cover);
-            eprintln!(
-                "overrep: spcov_diff={diff}  JacCov got={:.4} exp={jac_exp:.4}  ActualCov got={} exp={act_exp}",
-                cov.jac_coverage, cov.actual_coverage
-            );
-            assert_eq!(diff, 0, "overRep coverage mask diverges from SNLC");
-            assert_eq!(cov.actual_coverage as usize, act_exp as usize, "ActualCoverage (count)");
-            // Area-sum, f64 — same class as sigma_area; ε_f64-grounded, no magic.
-            Tol::rel(64, Eps::F64, 64).assert("overRep JacCoverage", &[cov.jac_coverage], &[jac_exp]);
-        }
 
         // (Cutover, objective 1) The frozen `patch_com_matches_snlc_get_patch_com`
         // golden + its patchcom_*.bin fixtures + gen_patchcom_golden.m were DELETED:
@@ -2990,25 +2952,6 @@ mod garrett {
             Tol::abs(128, Eps::F64).assert("getPatchCoM CoMxy vs genuine SNLC", &g, &e);
         }
 
-        /// `get_center_patch` vs SNLC `getCenterPatch` (`splitPatchesX.m`
-        /// subfunction): the eccentricity threshold + disk-2 opening + 3×3
-        /// median, validated as a unit. Bit-for-bit mask. Fixtures from
-        /// `gen_centerpatch_golden.m`.
-        #[test]
-        fn get_center_patch_matches_snlc() {
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/centerpatch_im.bin");
-            let ecc = load_f64(include_bytes!("../../tests/golden/fixtures/centerpatch_ecc.bin"));
-            let out_b: &[u8] = include_bytes!("../../tests/golden/fixtures/centerpatch_out.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/centerpatch_meta.bin"));
-            let (h, w, r_lim) = (meta[0] as usize, meta[1] as usize, meta[2]);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-            let kmap_rad = Array2::from_shape_fn((h, w), |(r, c)| ecc[r * w + c]);
-
-            let out = get_center_patch(&kmap_rad, &im, r_lim);
-            let diff = count_differing(&out, out_b);
-            eprintln!("centerpatch: diff={diff}");
-            assert_eq!(diff, 0, "getCenterPatch diverges from SNLC");
-        }
 
         // (Cutover, objective 1) The frozen `watershed_octave_matches_octave`
         // golden + its ws4_*/ws8_*.bin fixtures + gen_watershed4_golden.m were
@@ -3088,32 +3031,6 @@ mod garrett {
             eprintln!("bwdist vs GENUINE Octave (live): matched to f32");
         }
 
-        /// `reset_patch` vs the real SNLC `resetPatch` (transcribed, calling real
-        /// `bwdist`/`watershed`/morphology). A dumbbell patch whose center region
-        /// opens into two blobs → split into two sub-patches. Because every
-        /// component (`bwdist`, `watershed_octave4`, the cross morphology) is
-        /// golden-exact, the split is bit-for-bit. Fixtures from
-        /// `gen_resetpatch_golden.m`.
-        #[test]
-        fn reset_patch_matches_snlc() {
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/resetpatch_im.bin");
-            let center_b: &[u8] = include_bytes!("../../tests/golden/fixtures/resetpatch_center.bin");
-            let out_b: &[u8] = include_bytes!("../../tests/golden/fixtures/resetpatch_out.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/resetpatch_meta.bin"));
-            let (h, w) = (meta[0] as usize, meta[1] as usize);
-            let q = meta[2] as i32;
-            let n_out_exp = meta[3] as usize;
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-            let center = Array2::from_shape_fn((h, w), |(r, c)| center_b[r * w + c] != 0);
-            let (imlab, _) = label_4conn(&im);
-
-            let out = reset_patch(&im, &imlab, &center, q);
-            let (_, n) = label_4conn(&out);
-            let diff = count_differing(&out, out_b);
-            eprintln!("resetpatch: count={n} (exp {n_out_exp}), union_diff={diff}");
-            assert_eq!(n, n_out_exp, "sub-patch count diverges from SNLC");
-            assert_eq!(diff, 0, "resetPatch output diverges from SNLC");
-        }
 
         /// `fft_gaussian_smooth` vs the Octave fft-based circular Gaussian blur.
         /// Cross-library FFT roundoff (FFTW vs rustfft) precludes bit-equality;
@@ -3180,27 +3097,6 @@ mod garrett {
         }
 
 
-        /// `imimposemin` vs the real Octave `imimposemin` (morphological
-        /// reconstruction). The imposed minima are `-Inf` (non-finite positions
-        /// must match); finite parts to f64. Fixtures from
-        /// `gen_getnlocalmin_golden.m`.
-        #[test]
-        fn imimposemin_matches_octave() {
-            let inb = load_f64(include_bytes!("../../tests/golden/fixtures/imimpose_in.bin"));
-            let bw_b: &[u8] = include_bytes!("../../tests/golden/fixtures/imimpose_bw.bin");
-            let outb = load_f64(include_bytes!("../../tests/golden/fixtures/imimpose_out.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/gnlm_meta.bin"));
-            let (h, w) = (meta[0] as usize, meta[1] as usize);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| inb[r * w + c]);
-            let bw = Array2::from_shape_fn((h, w), |(r, c)| bw_b[r * w + c] != 0);
-
-            let got = imimposemin(&im, &bw);
-            Tol::rel(64, Eps::F64, 64).assert(
-                "imimposemin vs Octave",
-                got.as_slice().expect("contiguous"),
-                &outb,
-            );
-        }
 
         /// **Live library-primitive oracle, Octave**: our `imimposemin` vs the
         /// GENUINE Octave IPT `imimposemin`, executed live. Octave's morphological
@@ -3227,28 +3123,14 @@ mod garrett {
             eprintln!("imimposemin vs GENUINE Octave (live): matched");
         }
 
-        /// `get_nlocalmin` vs the real SNLC `getNlocalmin` (transcribed; calls
-        /// real prctile/imopen/medfilt2/imregionalmin/imimposemin/watershed). A
-        /// two-well eccentricity field cuts the bar patch in two. Validates both
-        /// `Nmin` and the bit-exact `newpatches`. Fixtures from
-        /// `gen_getnlocalmin_golden.m`.
-        #[test]
-        fn get_nlocalmin_matches_snlc() {
-            let patch_b: &[u8] = include_bytes!("../../tests/golden/fixtures/gnlm_patch.bin");
-            let ecc = load_f64(include_bytes!("../../tests/golden/fixtures/gnlm_ecc.bin"));
-            let np_b: &[u8] = include_bytes!("../../tests/golden/fixtures/gnlm_newpatches.bin");
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/gnlm_meta.bin"));
-            let (h, w, rmax, nmin_exp) =
-                (meta[0] as usize, meta[1] as usize, meta[2], meta[3] as usize);
-            let patch = Array2::from_shape_fn((h, w), |(r, c)| patch_b[r * w + c] != 0);
-            let kmap_rad = Array2::from_shape_fn((h, w), |(r, c)| ecc[r * w + c]);
-
-            let (nmin, newpatches) = get_nlocalmin(&patch, rmax, &kmap_rad);
-            let diff = count_differing(&newpatches, np_b);
-            eprintln!("getnlocalmin: Nmin got={nmin} exp={nmin_exp}, newpatches_diff={diff}");
-            assert_eq!(nmin, nmin_exp, "Nmin diverges from SNLC");
-            assert_eq!(diff, 0, "newpatches diverges from SNLC");
-        }
+        // (Cutover, objective 1) over_rep / get_center_patch / reset_patch /
+        // get_nlocalmin frozen goldens DELETED: gen_{overrep,centerpatch,
+        // resetpatch,getnlocalmin} VERBATIM-transcribe splitPatchesX.m's
+        // FILE-LOCAL subfunctions (not separately callable; the parent
+        // splitPatchesX needs roifilt2 → can't run shim-free), so there is no
+        // genuine separable reference to call — they were self-authored oracles.
+        // The frozen imimposemin golden was also dropped (the live
+        // imimposemin_matches_genuine_octave_live supersedes it).
 
 
         // (Cutover, objective 1+3) smooth_patches_x / split_patches_x /

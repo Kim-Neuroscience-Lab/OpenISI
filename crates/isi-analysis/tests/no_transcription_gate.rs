@@ -111,6 +111,12 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_smoothpatches_golden.m",
         "gen_splitpatchesx_golden.m",
         "gen_fusepatchesx_golden.m",
+        // verbatim transcriptions of splitPatchesX.m's FILE-LOCAL subfunctions
+        // (not separately callable; parent needs roifilt2) → no separable reference:
+        "gen_overrep_golden.m",
+        "gen_centerpatch_golden.m",
+        "gen_resetpatch_golden.m",
+        "gen_getnlocalmin_golden.m",
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
