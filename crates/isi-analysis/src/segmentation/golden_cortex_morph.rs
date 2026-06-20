@@ -690,23 +690,11 @@ mod tests {
     // × border-width 1..=4, incl. the bw=1 converge-to-fill semantic) and computes
     // the genuine NAT `is_adjacent` live in the shim-free uv-locked env.
 
-    /// `segment_threshold_only`'s opening must be Allen's
-    /// `ni.binary_opening(iterations=3)` (4-conn cross diamond, border_value=0)
-    /// — NOT a Euclidean disk-3. Pins the post-threshold opening against the
-    /// scipy oracle. Fixtures from `gen_thronly_golden.py`.
-    #[test]
-    fn segment_threshold_only_opening_matches_allen() {
-        const M: usize = 64;
-        let thr = load_mask_n(
-            include_bytes!("../../tests/golden/fixtures/thronly_thr_mask.bin"),
-            M,
-        );
-        let g_allen: &[u8] = include_bytes!("../../tests/golden/fixtures/thronly_open_allen.bin");
-        let ours = binary_opening_cross(&thr, 3);
-        let d = count_differing(&ours, g_allen);
-        eprintln!("threshold-only opening (cross-3) vs Allen scipy: differing px = {d}");
-        assert_eq!(d, 0, "segment_threshold_only opening diverges from Allen");
-    }
+    // (Cutover, objective 1) The frozen `segment_threshold_only_opening_matches_allen`
+    // golden + its thronly_*.bin fixtures + gen_thronly_golden.py were DELETED: the
+    // post-threshold opening it pinned is `binary_opening_cross(·, 3)`, which the live
+    // `cross_morphology_matches_genuine_scipy_live` validates against the genuine
+    // `scipy.ndimage.binary_opening` (4-conn cross, iterations=3) live.
 
     // (Cutover, objective 1) The frozen `label_4conn_matches_scipy_ndimage_label`
     // golden + its label4conn_*.bin fixtures + gen_label4conn_golden.py were DELETED:
