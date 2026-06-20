@@ -156,7 +156,7 @@ fn retired_transcription_generators_stay_deleted() {
 fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
-        ("gen_cortex_full_golden.m", "LibraryPrimitive"),      // Octave-IPT sequence (OpenISI orchestration)
+        ("gen_cortex_full_golden.m", "RegressionLock"),        // pins OpenISI's SnlcGarrett2014ImBound orchestration ORDER (no single ref .m; each primitive is validated live separately) — legitimately frozen; writing the sequence into the bridge would be a transcription (obj-1 violation)
         ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
         ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
         ("gen_cortexrel_golden.py", "RegressionLock"),         // OpenISI cortex-from-reliability mask, no ref
