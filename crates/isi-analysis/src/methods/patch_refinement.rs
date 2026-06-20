@@ -1322,63 +1322,20 @@ mod allen {
             );
         }
 
-        /// `local_min_markers` vs verbatim Allen `localMin`
-        /// (`RetinotopicMapping.py` L382-414), `bin_size=0.5`. Pins the
-        /// progressive-threshold marker generation incl. label numbering, the
-        /// ≥2-CC stop, NaN handling, and the single-min exhaustion branch.
-        /// Fixtures from `gen_local_min_golden.py` (32×32). Predicted-match.
-        #[test]
-        fn local_min_matches_allen_localmin() {
-            const N: usize = 32;
-            fn check(name: &str, ecc_b: &[u8], mk_b: &[u8]) -> usize {
-                let ev = ecc_b
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                    .collect::<Vec<_>>();
-                let exp = mk_b
-                    .chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-                    .collect::<Vec<_>>();
-                let ecc = Array2::from_shape_fn((N, N), |(r, c)| ev[r * N + c]);
-                let m = local_min_markers(&ecc, 0.5);
-                let mut d = 0usize;
-                for r in 0..N {
-                    for c in 0..N {
-                        if m[[r, c]] != exp[r * N + c] {
-                            d += 1;
-                        }
-                    }
-                }
-                eprintln!("  local_min {name:11} differing = {d}");
-                d
-            }
-            let mut total = 0;
-            total += check(
-                "two_basins",
-                include_bytes!("../../tests/golden/fixtures/lmin_two_basins_ecc.bin"),
-                include_bytes!("../../tests/golden/fixtures/lmin_two_basins_marker.bin"),
-            );
-            total += check(
-                "border_min",
-                include_bytes!("../../tests/golden/fixtures/lmin_border_min_ecc.bin"),
-                include_bytes!("../../tests/golden/fixtures/lmin_border_min_marker.bin"),
-            );
-            total += check(
-                "tie_step",
-                include_bytes!("../../tests/golden/fixtures/lmin_tie_step_ecc.bin"),
-                include_bytes!("../../tests/golden/fixtures/lmin_tie_step_marker.bin"),
-            );
-            total += check(
-                "single_min",
-                include_bytes!("../../tests/golden/fixtures/lmin_single_min_ecc.bin"),
-                include_bytes!("../../tests/golden/fixtures/lmin_single_min_marker.bin"),
-            );
-            assert_eq!(total, 0, "local_min_markers diverges from Allen localMin");
-        }
+        // (Cutover, objective 1) The frozen `local_min_matches_allen_localmin`
+        // golden + its lmin_*.bin fixtures + gen_local_min_golden.py (which
+        // imported the `_allen_oracle` SHIM) were DELETED: the live
+        // `local_min_matches_genuine_nat_live` below was enriched to exercise the
+        // same branches (two-basin ≥2-CC stop + label numbering, single-min
+        // exhaustion, border minimum, NaN background) against the genuine NAT
+        // `localMin` in the shim-free uv env.
 
         /// **Live genuine-oracle version**: our `local_min_markers` vs the GENUINE
-        /// NeuroAnalysisTools `localMin`, on a two-basin ecc map built in Rust.
-        /// Integer marker maps compared exactly. Gated behind `oracle_live`.
+        /// NeuroAnalysisTools `localMin`, on several ecc maps built in Rust that
+        /// exercise every branch the retired frozen golden held: two basins (the
+        /// ≥2-CC stop + label numbering), a single basin (the exhaustion branch),
+        /// a border minimum, and a NaN background (NaN handling). Integer marker
+        /// maps compared exactly. Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn local_min_matches_genuine_nat_live() {
@@ -1388,18 +1345,40 @@ mod allen {
                 let (dr, dc) = (r as f64 - cr, c as f64 - cc);
                 (dr * dr + dc * dc).sqrt()
             };
-            let ecc = Array2::from_shape_fn((N, N), |(r, c)| {
-                0.1 * well(r, c, 8.0, 8.0).min(well(r, c, 24.0, 24.0))
+            let two_basins =
+                Array2::from_shape_fn((N, N), |(r, c)| 0.1 * well(r, c, 8.0, 8.0).min(well(r, c, 24.0, 24.0)));
+            let single_min = Array2::from_shape_fn((N, N), |(r, c)| 0.1 * well(r, c, 16.0, 16.0));
+            // A minimum hard against the top-left border.
+            let border_min =
+                Array2::from_shape_fn((N, N), |(r, c)| 0.1 * well(r, c, 0.0, 0.0).min(well(r, c, 24.0, 24.0)));
+            // NaN background outside a central disk (localMin must treat NaN as
+            // non-minimum) + two interior wells.
+            let nan_bg = Array2::from_shape_fn((N, N), |(r, c)| {
+                if well(r, c, 16.0, 16.0) > 13.0 {
+                    f64::NAN
+                } else {
+                    0.1 * well(r, c, 11.0, 11.0).min(well(r, c, 21.0, 21.0))
+                }
             });
-            let genuine = oracle::nat_raw("localMin", &[ecc.clone()], &[("binSize", 0.5)])
-                .remove(0)
-                .i32();
-            let ours = local_min_markers(&ecc, 0.5);
-            let d = ndarray::Zip::from(&ours)
-                .and(&genuine)
-                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
-            eprintln!("local_min vs GENUINE NAT (live): differing = {d}");
-            assert_eq!(d, 0, "local_min_markers diverges from genuine NAT localMin");
+            let scenes = [
+                ("two_basins", two_basins),
+                ("single_min", single_min),
+                ("border_min", border_min),
+                ("nan_bg", nan_bg),
+            ];
+            let mut total = 0usize;
+            for (name, ecc) in &scenes {
+                let genuine = oracle::nat_raw("localMin", &[ecc.clone()], &[("binSize", 0.5)])
+                    .remove(0)
+                    .i32();
+                let ours = local_min_markers(ecc, 0.5);
+                let d = ndarray::Zip::from(&ours)
+                    .and(&genuine)
+                    .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+                eprintln!("  local_min {name:11} vs GENUINE NAT (live): differing = {d}");
+                total += d;
+            }
+            assert_eq!(total, 0, "local_min_markers diverges from genuine NAT localMin");
         }
 
         /// `merge_two` vs verbatim Allen `mergePatches`
