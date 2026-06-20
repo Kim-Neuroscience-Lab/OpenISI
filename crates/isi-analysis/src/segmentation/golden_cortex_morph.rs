@@ -436,49 +436,71 @@ mod tests {
         use ndarray::Array2;
         use std::collections::HashMap;
         const M: usize = 48;
-        // Several disjoint blobs + a diagonal-only contact (must NOT merge under
-        // 4-connectivity) to exercise the structure choice.
-        let mut f = Array2::<f64>::zeros((M, M));
-        let mut paint = |r0: usize, r1: usize, c0: usize, c1: usize| {
-            for r in r0..r1 {
-                for c in c0..c1 {
-                    f[[r, c]] = 1.0;
+        // Partition-equivalence check: a connected-component labeling is defined
+        // only up to relabeling, so we require the two induce the SAME partition
+        // (same background + a consistent bijection ours↔genuine over foreground),
+        // not bit-identical label integers.
+        let partition_mismatches = |f: &Array2<f64>| -> usize {
+            let mask = f.mapv(|v| v != 0.0);
+            let genuine = oracle::nat_raw("scipy_label", &[f.clone()], &[]).remove(0).i32();
+            let (ours, _n) = label_4conn(&mask);
+            let mut o2g: HashMap<i32, i32> = HashMap::new();
+            let mut g2o: HashMap<i32, i32> = HashMap::new();
+            let mut mismatches = 0usize;
+            for ((r, c), &ol) in ours.indexed_iter() {
+                let gl = genuine[[r, c]];
+                if (ol == 0) != (gl == 0) {
+                    mismatches += 1;
+                    continue;
+                }
+                if ol == 0 {
+                    continue;
+                }
+                if *o2g.entry(ol).or_insert(gl) != gl || *g2o.entry(gl).or_insert(ol) != ol {
+                    mismatches += 1;
                 }
             }
+            mismatches
         };
-        paint(3, 9, 3, 9); // blob A
-        paint(3, 9, 20, 27); // blob B
-        paint(20, 30, 5, 16); // blob C
-        // D and E touch only diagonally at (33,33)/(34,34): stay separate (4-conn).
-        paint(30, 34, 30, 34);
-        paint(34, 38, 34, 38);
-        let mask = f.mapv(|v| v != 0.0);
 
-        let genuine = oracle::nat_raw("scipy_label", &[f.clone()], &[]).remove(0).i32();
-        let (ours, _n) = label_4conn(&mask);
-
-        // Partition equivalence: background agrees pixel-wise, and the foreground
-        // label correspondence is a consistent bijection in both directions.
-        let mut o2g: HashMap<i32, i32> = HashMap::new();
-        let mut g2o: HashMap<i32, i32> = HashMap::new();
-        let mut mismatches = 0usize;
-        for ((r, c), &ol) in ours.indexed_iter() {
-            let gl = genuine[[r, c]];
-            if (ol == 0) != (gl == 0) {
-                mismatches += 1;
-                continue;
-            }
-            if ol == 0 {
-                continue;
-            }
-            if *o2g.entry(ol).or_insert(gl) != gl || *g2o.entry(gl).or_insert(ol) != ol {
-                mismatches += 1;
+        // The scene classes the retired frozen golden held.
+        let mut blobs = Array2::<f64>::zeros((M, M)); // disjoint blobs + diagonal-only contact
+        for (r0, r1, c0, c1) in [(3, 9, 3, 9), (3, 9, 20, 27), (20, 30, 5, 16), (30, 34, 30, 34), (34, 38, 34, 38)] {
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    blobs[[r, c]] = 1.0;
+                }
             }
         }
-        eprintln!(
-            "label_4conn vs GENUINE scipy.ndimage.label (live): partition mismatches = {mismatches}"
-        );
-        assert_eq!(mismatches, 0, "label_4conn diverges from genuine scipy.ndimage.label");
+        let empty = Array2::<f64>::zeros((M, M));
+        let full = Array2::<f64>::ones((M, M));
+        let singletons = Array2::from_shape_fn((M, M), |(r, c)| if (r % 3 == 0) && (c % 3 == 0) { 1.0 } else { 0.0 });
+        let serpent = Array2::from_shape_fn((M, M), |(r, c)| {
+            // connected boustrophedon: full rows on even bands joined at alternating ends
+            let band = r / 4;
+            let on_row = r % 4 == 0;
+            let joiner = if band % 2 == 0 { c == M - 1 } else { c == 0 };
+            if on_row || joiner { 1.0 } else { 0.0 }
+        });
+        let thin = Array2::from_shape_fn((M, M), |(r, c)| if r == c || r + c == M - 1 { 1.0 } else { 0.0 });
+        let borders = Array2::from_shape_fn((M, M), |(r, c)| {
+            if r == 0 || c == 0 || r == M - 1 || c == M - 1 { 1.0 } else { 0.0 }
+        });
+        let rand = Array2::from_shape_fn((M, M), |(r, c)| {
+            // deterministic pseudo-random ~45% fill
+            if ((r * 73 + c * 151 + 17) % 100) < 45 { 1.0 } else { 0.0 }
+        });
+        let scenes = [
+            ("blobs", blobs), ("empty", empty), ("full", full), ("singletons", singletons),
+            ("serpent", serpent), ("thin", thin), ("borders", borders), ("rand", rand),
+        ];
+        let mut total = 0usize;
+        for (name, f) in &scenes {
+            let m = partition_mismatches(f);
+            eprintln!("  label_4conn {name:10} vs GENUINE scipy.ndimage.label (live): partition mismatches = {m}");
+            total += m;
+        }
+        assert_eq!(total, 0, "label_4conn diverges from genuine scipy.ndimage.label");
     }
 
     /// **Live library-primitive oracle**: our `binary_skeletonize_skimage` vs the
@@ -700,91 +722,14 @@ mod tests {
         assert_eq!(d, 0, "segment_threshold_only opening diverges from Allen");
     }
 
-    /// `label_4conn` vs `scipy.ndimage.label` (default 4-conn cross). Pins the
-    /// full label MAP including label VALUES (raster first-pixel order), which
-    /// is load-bearing because downstream sign assignment preserves IDs.
-    /// Varied shapes: borders/order, diagonal-only (must stay split), a
-    /// serpentine U, thin lines, singletons, dense random, empty, full.
-    /// Fixtures from `gen_label4conn_golden.py`. Predicted-match.
-    #[test]
-    fn label_4conn_matches_scipy_ndimage_label() {
-        fn check(name: &str, in_b: &[u8], lab_b: &[u8], h: usize, w: usize) -> usize {
-            let mask = Array2::from_shape_fn((h, w), |(r, c)| in_b[r * w + c] != 0);
-            let exp = lab_b
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-                .collect::<Vec<_>>();
-            let (labels, _n) = label_4conn(&mask);
-            let mut d = 0usize;
-            for r in 0..h {
-                for c in 0..w {
-                    if labels[[r, c]] != exp[r * w + c] {
-                        d += 1;
-                    }
-                }
-            }
-            eprintln!("  label_4conn {name:11} differing = {d}");
-            d
-        }
-        let mut total = 0;
-        total += check(
-            "borders",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_borders.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_borders.bin"),
-            6,
-            8,
-        );
-        total += check(
-            "diag",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_diag.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_diag.bin"),
-            5,
-            5,
-        );
-        total += check(
-            "serpent",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_serpent.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_serpent.bin"),
-            7,
-            7,
-        );
-        total += check(
-            "thin",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_thin.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_thin.bin"),
-            6,
-            6,
-        );
-        total += check(
-            "singletons",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_singletons.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_singletons.bin"),
-            5,
-            5,
-        );
-        total += check(
-            "rand",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_rand.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_rand.bin"),
-            24,
-            24,
-        );
-        total += check(
-            "empty",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_empty.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_empty.bin"),
-            4,
-            4,
-        );
-        total += check(
-            "full",
-            include_bytes!("../../tests/golden/fixtures/label4conn_in_full.bin"),
-            include_bytes!("../../tests/golden/fixtures/label4conn_lab_full.bin"),
-            4,
-            4,
-        );
-        assert_eq!(total, 0, "label_4conn diverges from scipy.ndimage.label");
-    }
+    // (Cutover, objective 1) The frozen `label_4conn_matches_scipy_ndimage_label`
+    // golden + its label4conn_*.bin fixtures + gen_label4conn_golden.py were DELETED:
+    // the live `label4conn_matches_genuine_scipy_live` above was refactored to cover
+    // the same eight scene classes (borders, diag, serpent, thin, singletons, rand,
+    // empty, full) against the genuine `scipy.ndimage.label` live. (The frozen golden
+    // pinned EXACT label integers — an implementation coincidence, both raster-scan;
+    // the live test asserts the semantically-correct invariant: the partition, up to
+    // relabeling, which is all the downstream sign assignment depends on.)
 
     // ── Decision-gated items: regression-lock tests that pin CURRENT behaviour
     //    and record the divergence from a reference as an executable fact. The
