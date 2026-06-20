@@ -1,0 +1,61 @@
+name: Genuine-oracle validation
+
+# Runs the genuine-oracle suite on a CLEAN runner: each oracle's locked, isolated
+# environment is materialised ONLY from its committed lockfile, and the field's
+# real reference code is executed live — no transcription, no frozen fixtures, no
+# shim. This is the "reproducible on a second machine from the committed lockfiles
+# alone" gate of the validation-foundation goal (condition 7): every green result
+# here is independent proof of faithfulness reproduced off the dev host.
+#
+# Kept separate from the hermetic `Test` workflow; only this job provisions the
+# oracle toolchains, and only when oracle / harness / reference files change.
+
+on:
+  push:
+    paths:
+      - "crates/isi-analysis/tests/oracle/**"
+      - "crates/isi-analysis/src/test_support.rs"
+      - "reference/**"
+      - ".github/workflows/oracle.yml"
+  pull_request:
+    paths:
+      - "crates/isi-analysis/tests/oracle/**"
+      - "crates/isi-analysis/src/test_support.rs"
+      - "reference/**"
+      - ".github/workflows/oracle.yml"
+  workflow_dispatch:
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # --- NAT oracle: Python, materialised from the committed uv.lock -----------
+      - name: Install uv (NAT oracle env manager)
+        uses: astral-sh/setup-uv@v5
+
+      - name: Materialise the NAT env from the committed lock (exact, --locked)
+        # --locked fails if uv.lock is stale: proves the env is reproduced from the
+        # committed lock alone, not from whatever happens to resolve today.
+        run: uv sync --project crates/isi-analysis/tests/oracle/nat --locked
+
+      # --- SNLC oracle: Octave + the image package -------------------------------
+      # Octave is a system package (not lockfile-pinnable like uv); the apt version
+      # may differ from the documented 11.2. The Octave≈MATLAB gap is already an
+      # ε-tolerated, flagged approximation (see tests/oracle/snlc/README.md), so
+      # minor Octave-version variance is within the stated bound, not assumed away.
+      - name: Install Octave + image package (SNLC oracle env)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y octave octave-image
+
+      # --- the genuine-oracle suite, live ----------------------------------------
+      - name: Genuine-oracle suite (live, against the real references)
+        env:
+          OPENISI_UV: uv
+          OPENISI_OCTAVE: octave-cli
+        run: cargo test -p isi-analysis --lib --features oracle_live

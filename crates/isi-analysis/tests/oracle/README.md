@@ -94,8 +94,12 @@ such (it has no canonical reference *code* to execute), not claimed as a code or
 
 The harness is reproducible **by construction**: the genuine env is materialised
 only from the committed `nat/uv.lock` (+ `pyproject.toml`), and `uv sync` rebuilds
-the identical environment on any machine. The remaining step — *executing* the suite
-on a genuinely second machine / CI runner — is a CI-config + run step, not a code
-gap; it cannot be performed from this single development host and is the one DoD
-condition that requires an external runner to close.
+the identical environment on any machine. The *execution* on a genuinely second
+machine is the CI workflow **`.github/workflows/oracle.yml`**, which on a clean
+GitHub runner installs `uv`, materialises the NAT env from the committed lock with
+`uv sync --locked` (fails if the lock is stale → proves "from the committed lock
+alone"), installs Octave + the image package, and runs the live suite
+(`cargo test --features oracle_live`). That workflow IS the second-machine
+reproducibility gate; it runs off the dev host on every change to the oracle/
+harness/reference files.
 
