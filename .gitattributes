@@ -1,0 +1,33 @@
+# Cross-platform line-ending policy.
+#
+# Without this, `core.autocrlf=true` on Windows checks out committed-LF text as
+# CRLF in the working tree. The byte-exact golden / `*_in_sync` tests (descriptor
+# goldens, error-codes JS, oisi.schema.json, …) compare against output the Rust
+# generators emit with LF, so a CRLF checkout makes them fail on Windows CI while
+# passing on Linux/macOS. Normalize ALL text to LF in the repo and the working
+# tree on every platform so byte-exact comparisons hold identically everywhere.
+* text=auto eol=lf
+
+# Binary assets / fixtures — never apply line-ending conversion (would corrupt them).
+*.oisi   binary
+*.bin    binary
+*.h5     binary
+*.hdf5   binary
+*.mat    binary
+*.npy    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.icns   binary
+*.pdf    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+
+# Windows-only scripts must stay CRLF to run natively under cmd/PowerShell.
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
