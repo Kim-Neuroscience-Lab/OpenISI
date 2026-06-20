@@ -85,6 +85,14 @@ switch req.fn
     % Octave's fspecial/fft are the oracle; the bridge only calls them.
     hh = fspecial('gaussian', size(x{1}), p.sigma);
     outs = {real(ifft2(fft2(x{1}) .* abs(fft2(hh))))};
+  case 'adaptive_smoother'  % genuine SNLC adaptiveSmoother.m (Wiener-type adaptive filter)
+    % x{1}=real, x{2}=imag of the complex F1 map. h = fspecial('gaussian',15,sigma)
+    % (SNLC L = fspecial('gaussian',15,LP), generatekret.m:75). Genuine .m is the
+    % oracle (addpath'd via genpath: reference/ISI/ISIAnGUI/F1). Returns re/im.
+    gcomp = x{1} + 1i * x{2};
+    h = fspecial('gaussian', 15, p.sigma);
+    f = adaptiveSmoother(gcomp, h);
+    outs = {real(f), imag(f)};
   case 'interp2_spline'  % raw Octave builtin: interp2(1:W,1:H,Z,XI,YI,'spline')
     % The genuine oracle is Octave's own not-a-knot tensor-product cubic spline.
     % x{1}=Z (HxW), x{2}=xi (1 x U*W), x{3}=yi (1 x U*H). Unit-spaced source grid

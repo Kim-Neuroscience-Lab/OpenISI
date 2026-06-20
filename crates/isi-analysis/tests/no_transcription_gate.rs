@@ -124,6 +124,7 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_cortex_morph_golden.m",    // -> cortex_morphology_matches_genuine_octave_live (top-border scene ported)
         "gen_patch_morph_golden.py",    // dead: read the mask, wrote unconsumed patch_morph_*.bin
         "gen_watershed_markers_golden.py", // wrong-era ws_out.bin (matched ours, NOT locked skimage 0.18.3); -> watershed_from_markers_stress_matches_genuine_skimage_live
+        "gen_adaptsmooth_golden.m",     // genuine-run -> adaptive_smoother_matches_genuine_snlc_octave_live (genuine adaptiveSmoother.m, computed each run)
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -157,7 +158,6 @@ fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
         ("gen_cortex_full_golden.m", "RegressionLock"),        // pins OpenISI's SnlcGarrett2014ImBound orchestration ORDER (no single ref .m; each primitive is validated live separately) — legitimately frozen; writing the sequence into the bridge would be a transcription (obj-1 violation)
-        ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
         ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
         ("gen_cortexrel_golden.py", "RegressionLock"),         // OpenISI cortex-from-reliability mask, no ref
         ("gen_patch_threshold_golden.py", "RegressionLock"),   // |signMapf|>=thr / k*std rule

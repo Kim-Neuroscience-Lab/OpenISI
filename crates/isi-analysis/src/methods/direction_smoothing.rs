@@ -99,7 +99,7 @@ fn adaptive_smoother_channel(g: &Array2<f64>, h: &Array2<f64>) -> Array2<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::load_f64;
+    #[cfg(feature = "oracle_live")]
     use agreement::{Eps, Tol};
 
     /// `None` is a pure pass-through (the bit-identical default).
@@ -110,27 +110,50 @@ mod tests {
         assert_eq!(out, m);
     }
 
-    /// `SnlcAdaptiveSmoother` matches the verbatim Octave `adaptiveSmoother.m`
-    /// (with `fspecial('gaussian', 15, sigma)`), on the complex map's real and
-    /// imaginary channels. Fixtures from `gen_adaptsmooth_golden.m` (40×48).
+    /// **Live genuine-oracle, SNLC**: our `SnlcAdaptiveSmoother` vs the GENUINE
+    /// Octave `adaptiveSmoother.m` (`h = fspecial('gaussian', 15, sigma)`),
+    /// executed live. The genuine `.m` is the oracle; the bridge only calls it
+    /// (no `roifilt2`, so it runs shim-free). A structured complex map with
+    /// high-frequency texture (the retired generator's exact scene) makes the
+    /// adaptive, local-variance-aware filter do visibly non-uniform work. f64
+    /// throughout; drift is the 225-tap filter2 sum order + the variance division
+    /// across runtimes (≈30·ε_f64 → K=64). Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
     #[test]
-    fn adaptive_smoother_matches_snlc_octave() {
-        let meta = load_f64(include_bytes!("../../tests/golden/fixtures/adaptsm_meta.bin"));
-        let (h, w, sigma) = (meta[0] as usize, meta[1] as usize, meta[2]);
-        let re_in = load_f64(include_bytes!("../../tests/golden/fixtures/adaptsm_re_in.bin"));
-        let im_in = load_f64(include_bytes!("../../tests/golden/fixtures/adaptsm_im_in.bin"));
-        let re_out = load_f64(include_bytes!("../../tests/golden/fixtures/adaptsm_re_out.bin"));
-        let im_out = load_f64(include_bytes!("../../tests/golden/fixtures/adaptsm_im_out.bin"));
+    fn adaptive_smoother_matches_genuine_snlc_octave_live() {
+        use crate::test_support::oracle;
+        const H: usize = 40;
+        const W: usize = 48;
+        let sigma = 2.0;
+        // meshgrid(1:W, 1:H): xx = col+1, yy = row+1 (the generator's scene).
+        let re = Array2::from_shape_fn((H, W), |(r, c)| {
+            let (x, y) = ((c + 1) as f64, (r + 1) as f64);
+            10.0 * (x / 6.0).sin() + 6.0 * (y / 5.0).cos() + 2.0 * (x / 2.0).sin() * (y / 2.0).cos()
+        });
+        let im = Array2::from_shape_fn((H, W), |(r, c)| {
+            let (x, y) = ((c + 1) as f64, (r + 1) as f64);
+            8.0 * (x / 7.0).cos() - 5.0 * (y / 4.0).sin() + 1.5 * ((x + y) / 2.0).cos()
+        });
+        let gcomp = Array2::from_shape_fn((H, W), |(r, c)| Complex64::new(re[[r, c]], im[[r, c]]));
 
-        let gcomp =
-            Array2::from_shape_fn((h, w), |(r, c)| Complex64::new(re_in[r * w + c], im_in[r * w + c]));
+        // Genuine adaptiveSmoother.m returns re, im (in that order).
+        let mut genuine = oracle::snlc("adaptive_smoother", &[re, im], &[("sigma", sigma)]);
+        let g_im = genuine.remove(1);
+        let g_re = genuine.remove(0);
+
         let out = DirectionSmoothingMethod::SnlcAdaptiveSmoother { sigma_px: sigma }.apply(&gcomp);
-
         let got_re: Vec<f64> = out.iter().map(|z| z.re).collect();
         let got_im: Vec<f64> = out.iter().map(|z| z.im).collect();
-        // f64 throughout; drift is the 225-tap filter2 sum order + the local-
-        // variance division across runtimes. Observed max rel ≈ 30·ε_f64 → K=64.
-        Tol::rel(64, Eps::F64, 64).assert("adaptiveSmoother real", &got_re, &re_out);
-        Tol::rel(64, Eps::F64, 64).assert("adaptiveSmoother imag", &got_im, &im_out);
+        Tol::rel(64, Eps::F64, 64).assert(
+            "adaptiveSmoother real vs GENUINE Octave (live)",
+            &got_re,
+            g_re.as_slice().expect("contiguous"),
+        );
+        Tol::rel(64, Eps::F64, 64).assert(
+            "adaptiveSmoother imag vs GENUINE Octave (live)",
+            &got_im,
+            g_im.as_slice().expect("contiguous"),
+        );
+        eprintln!("adaptiveSmoother vs GENUINE Octave (live): matched re+im");
     }
 }
