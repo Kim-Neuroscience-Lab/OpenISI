@@ -41,52 +41,14 @@ mod tests {
         Tensor::<Backend, 2>::from_data(TensorData::new(f32s, [N, N]), &device())
     }
 
-    #[test]
-    fn vfs_matches_allen_visual_sign_map_on_smooth_input() {
-        let phi1 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_smooth_phi1.bin"));
-        let phi2 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_smooth_phi2.bin"));
-        let allen = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_smooth_allen.bin"));
-        assert_eq!(phi1.len(), N * N);
-
-        // Allen `visualSignMap(phasemap1, phasemap2) = sin(θ₁ − θ₂)` with
-        // `θ = atan2(∂/∂col, ∂/∂row)`. Ours is `sin(θ_alt − θ_azi)` with
-        // `θ = atan2(∂/∂row, ∂/∂col)` (swapped args). Mapping azi←phasemap1,
-        // alt←phasemap2 makes the two coincide; the test reports both the
-        // same-sign and flipped-sign residual so the convention is verified,
-        // not assumed.
-        let z_azi = Complex2::from_phase(phase_tensor(&phi1));
-        let z_alt = Complex2::from_phase(phase_tensor(&phi2));
-        let (d_azi_dx, d_azi_dy) = phase_gradients(&z_azi);
-        let (d_alt_dx, d_alt_dy) = phase_gradients(&z_alt);
-        let vfs = compute_vfs(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy);
-        let ours = tensor_to_array2_f64(vfs).unwrap();
-
-        // Interior only: exclude the 1-px border, where one-sided edge
-        // differences (shared by both) plus the gradient-direction
-        // ill-conditioning at φ₂'s gradient zero-crossings are not the
-        // equivalence we're testing.
-        let mut max_same = 0.0f64;
-        let mut max_flip = 0.0f64;
-        for i in 1..N - 1 {
-            for j in 1..N - 1 {
-                let o = ours[[i, j]];
-                let a = allen[i * N + j];
-                max_same = max_same.max((o - a).abs());
-                max_flip = max_flip.max((o + a).abs());
-            }
-        }
-        eprintln!(
-            "VFS vs Allen (interior): max|ours-allen|={max_same:.3e}  max|ours+allen|={max_flip:.3e}"
-        );
-
-        // azi←p1/alt←p2 should be the *same-sign* match; assert it agrees to
-        // discretization order and is unambiguously not the flipped mapping.
-        assert!(
-            max_same < 5e-2,
-            "VFS deviates from Allen beyond discretization tolerance: {max_same:.3e} \
-             (flipped residual {max_flip:.3e})"
-        );
-    }
+    // (Cutover, objective 1) The frozen `vfs_matches_allen_visual_sign_map_on_
+    // smooth_input` golden + its vfs_smooth_*.bin fixtures + gen_vfs_golden.py
+    // (which imported the `_allen_oracle` SHIM — now also DELETED, as vfs was its
+    // last consumer) were retired: the live
+    // `vfs_matches_genuine_nat_visual_sign_map_live` below was enriched to carry
+    // the same flipped-residual convention check (azi←p1/alt←p2 same-sign) and
+    // compares ours against the genuine NAT `visualSignMap` on the same smooth
+    // input in the shim-free uv-locked env.
 
     /// **Live genuine-oracle version** of `vfs_matches_allen_visual_sign_map_on_smooth_input`:
     /// builds the same smooth phase maps in Rust and compares against the GENUINE
@@ -128,16 +90,26 @@ mod tests {
         let (d_alt_dx, d_alt_dy) = phase_gradients(&z_alt);
         let ours = tensor_to_array2_f64(compute_vfs(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy)).unwrap();
 
+        // Report both the same-sign and flipped-sign residual (azi←p1/alt←p2 must
+        // be the SAME-sign match): max_same proves agreement to discretization
+        // order; max_flip being large proves it is unambiguously NOT the flipped
+        // mapping — the convention check the retired frozen golden carried.
         let mut max_same = 0.0f64;
+        let mut max_flip = 0.0f64;
         for i in 1..N - 1 {
             for j in 1..N - 1 {
                 max_same = max_same.max((ours[[i, j]] - allen[[i, j]]).abs());
+                max_flip = max_flip.max((ours[[i, j]] + allen[[i, j]]).abs());
             }
         }
-        eprintln!("VFS vs GENUINE NAT (live, interior): max|ours-allen|={max_same:.3e}");
+        eprintln!("VFS vs GENUINE NAT (live, interior): max|ours-allen|={max_same:.3e} max|ours+allen|={max_flip:.3e}");
         assert!(
             max_same < 5e-2,
-            "VFS deviates from genuine NAT beyond discretization tolerance: {max_same:.3e}"
+            "VFS deviates from genuine NAT beyond discretization tolerance: {max_same:.3e} (flipped residual {max_flip:.3e})"
+        );
+        assert!(
+            max_flip > 0.3,
+            "VFS flipped-residual too small ({max_flip:.3e}) — convention (azi←p1/alt←p2 same-sign) not verified"
         );
     }
 
