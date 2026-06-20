@@ -336,6 +336,15 @@ mod tests {
         paint(3, 9, 3, 9, 0.7, &mut im, &mut sgn);
         paint(12, 18, 14, 20, -0.5, &mut im, &mut sgn);
         paint(22, 28, 5, 12, 0.3, &mut im, &mut sgn);
+        // A 4th patch with EXACTLY zero mean (half +0.5, half −0.5) — the documented
+        // deviation surface: genuine MATLAB `sign(0)=0` (undefined) vs our `+1`
+        // tie-break. Compared specially below (excluded from the agreement loop).
+        for r in 22..28 {
+            for c in 20..26 {
+                im[[r, c]] = 1.0;
+                sgn[[r, c]] = if c < 23 { 0.5 } else { -0.5 };
+            }
+        }
 
         // Genuine getPatchSign returns a per-pixel map: patch pixels = sign+1.1
         // (label-INVARIANT — sidesteps our row-major vs MATLAB column-major
@@ -345,20 +354,32 @@ mod tests {
         let patches = patches_from_labels_majority_sign(&labels, n, &sgn);
 
         let mut mismatch = 0usize;
+        let mut saw_zero_mean = false;
         for p in &patches {
+            // The genuine per-pixel sign for this patch (constant over its pixels).
+            let (pr, pc) = (0..M)
+                .flat_map(|r| (0..M).map(move |c| (r, c)))
+                .find(|&(r, c)| p.mask[[r, c]])
+                .unwrap();
+            let genuine_sign = (patch_sign_map[[pr, pc]] - 1.1).round() as i8;
+            if genuine_sign == 0 {
+                // Documented deviation (regression-lock): genuine MATLAB sign(0)=0;
+                // ours forces a deterministic +1 (a patch must get a sign).
+                saw_zero_mean = true;
+                assert_eq!(p.sign, 1, "zero-mean patch: ours must force +1 (genuine sign(0)=0)");
+                continue;
+            }
             for r in 0..M {
                 for c in 0..M {
-                    if p.mask[[r, c]] {
-                        let genuine_sign = (patch_sign_map[[r, c]] - 1.1).round() as i8;
-                        if genuine_sign != p.sign {
-                            mismatch += 1;
-                        }
+                    if p.mask[[r, c]] && (patch_sign_map[[r, c]] - 1.1).round() as i8 != p.sign {
+                        mismatch += 1;
                     }
                 }
             }
         }
-        eprintln!("getPatchSign (live, region-wise): mismatching px = {mismatch}");
+        eprintln!("getPatchSign (live, region-wise): mismatching px = {mismatch}, saw_zero_mean={saw_zero_mean}");
         assert_eq!(mismatch, 0, "patch signs diverge from genuine SNLC getPatchSign (non-zero-mean)");
+        assert!(saw_zero_mean, "the zero-mean deviation case did not materialize");
     }
 
     // (Cutover, objective 1) The frozen `gaussian_smooth_matches_scipy_gaussian_filter`
@@ -710,46 +731,13 @@ mod tests {
     //    canonical choice is a method decision deferred to review (see
     //    docs/VALIDATION_SCORECARD.md "Open items").
 
-    /// GATED (item 11) — `patches_from_labels_majority_sign` vs SNLC
-    /// `getPatchSign.m` (`sign(mean(VFS))`). Matches MATLAB on every non-zero-
-    /// mean component; at an EXACT-zero-mean component MATLAB `sign` gives 0
-    /// while our `i8` sign forces +1 (`sum >= 0`). This pins both: the ±1
-    /// agreement and the documented zero-mean divergence (measure-zero on real
-    /// smoothed VFS). Fixtures from `gen_patchsign_majority_golden.py`.
-    #[test]
-    fn patch_sign_majority_matches_snlc_except_zero_mean() {
-        use crate::segmentation::connectivity::patches_from_labels_majority_sign;
-        const M: usize = 32;
-        let lab_v = load_i32(include_bytes!("../../tests/golden/fixtures/psign_labels.bin"));
-        let sig_v = load_f64(include_bytes!("../../tests/golden/fixtures/psign_signal.bin"));
-        let n = load_i32(include_bytes!("../../tests/golden/fixtures/psign_n.bin"))[0] as usize;
-        let exp = load_i32(include_bytes!("../../tests/golden/fixtures/psign_expsign.bin"));
-
-        let labels = Array2::from_shape_fn((M, M), |(r, c)| lab_v[r * M + c]);
-        let signal = Array2::from_shape_fn((M, M), |(r, c)| sig_v[r * M + c]);
-        let patches = patches_from_labels_majority_sign(&labels, n, &signal);
-
-        for p in &patches {
-            // Recover this patch's label from its first set pixel (robust to order).
-            let mut lab = 0i32;
-            'find: for r in 0..M {
-                for c in 0..M {
-                    if p.mask[[r, c]] {
-                        lab = labels[[r, c]];
-                        break 'find;
-                    }
-                }
-            }
-            let ours = p.sign as i32;
-            let matlab = exp[(lab - 1) as usize];
-            if matlab == 0 {
-                // Documented divergence: MATLAB sign(0)=0; our i8 sign forces +1.
-                assert_eq!(ours, 1, "zero-mean label {lab}: ours should force +1");
-            } else {
-                assert_eq!(ours, matlab, "label {lab} sign vs SNLC getPatchSign");
-            }
-        }
-    }
+    // (Cutover, objective 1) The frozen `patch_sign_majority_matches_snlc_except_
+    // zero_mean` golden + its psign_*.bin fixtures + gen_patchsign_majority_golden.py
+    // (a transcription) were DELETED, along with the DEAD gen_patchsign_golden.m
+    // (its patchsign_*.bin outputs were read by no test). The live
+    // `patch_sign_matches_genuine_snlc_getpatchsign_live` above now carries BOTH the
+    // genuine ±1 agreement (region-wise vs Octave getPatchSign) AND the documented
+    // zero-mean tie-break deviation as a regression-lock (genuine sign(0)=0, ours +1).
 
     /// UNVALIDATED (regression-lock only). The cross-cycle reliability
     /// *coherence* `|Σ Z_k| / Σ|Z_k|` is Engel 1994 / Zhuang 2017, but the
