@@ -504,30 +504,12 @@ mod tests {
         );
     }
 
-    /// `position_amplitude` (`0.5·(|fwd|+|rev|)`, the F1 magnitude = SNLC
-    /// `Gprocesskret.m` `magS`, the metric the SnlcF1Amplitude mask thresholds)
-    /// vs verbatim numpy. f32 device path → tolerance. Fixtures from
-    /// `gen_amplitude_golden.py` (16×16).
-    #[test]
-    fn position_amplitude_matches_snlc_mags() {
-        const H: usize = 16;
-        const W: usize = 16;
-        let fr = load_f32(include_bytes!("../../tests/golden/fixtures/amp_fwd_re.bin"));
-        let fi = load_f32(include_bytes!("../../tests/golden/fixtures/amp_fwd_im.bin"));
-        let rr = load_f32(include_bytes!("../../tests/golden/fixtures/amp_rev_re.bin"));
-        let ri = load_f32(include_bytes!("../../tests/golden/fixtures/amp_rev_im.bin"));
-        let exp = load_f64(include_bytes!("../../tests/golden/fixtures/amp_expected.bin"));
-
-        let fwd = Complex2::new(tensor2(fr, H, W), tensor2(fi, H, W));
-        let rev = Complex2::new(tensor2(rr, H, W), tensor2(ri, H, W));
-        let amp = tensor_to_array2_f64(position_amplitude(&fwd, &rev)).expect("amplitude");
-        // f32 magnitude vs numpy f64; observed ≈ 1.2e-7 ≈ 1·ε_f32 → K=2.
-        Tol::abs(2, Eps::F32).assert(
-            "position_amplitude vs SNLC magS",
-            amp.as_slice().expect("contiguous"),
-            &exp,
-        );
-    }
+    // (Cutover, objective 1) The frozen `position_amplitude_matches_snlc_mags`
+    // golden + its amp_*.bin fixtures + gen_amplitude_golden.py were DELETED.
+    // gen_amplitude_golden.py was a TRANSCRIPTION (verbatim numpy magS formula).
+    // The live `position_amplitude_matches_genuine_snlc_gprocesskret_live` below
+    // drives the GENUINE Gprocesskret.m magS via Octave on fresh complex fwd/rev
+    // with varying magnitude + phase.
 
     /// **Live genuine-oracle, SNLC/Octave**: our `position_amplitude`
     /// (`0.5·(|fwd|+|rev|)`) vs the GENUINE `Gprocesskret.m` `magS.hor`
