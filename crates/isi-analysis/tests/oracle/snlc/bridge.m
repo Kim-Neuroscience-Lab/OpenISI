@@ -80,6 +80,15 @@ switch req.fn
     outs = {double(imdilate(logical(x{1}), strel('disk', p.radius, 0)))};
   case 'imfill_holes'    % raw Octave IPT: imfill(mask, 'holes')
     outs = {double(imfill(logical(x{1}), 'holes'))};
+  case 'interp2_spline'  % raw Octave builtin: interp2(1:W,1:H,Z,XI,YI,'spline')
+    % The genuine oracle is Octave's own not-a-knot tensor-product cubic spline.
+    % x{1}=Z (HxW), x{2}=xi (1 x U*W), x{3}=yi (1 x U*H). Unit-spaced source grid
+    % (the spline is affine-invariant in x/y, as splitPatchesX relies on).
+    Z = x{1};
+    [Hh, Ww] = size(Z);
+    xi = x{2}(:)'; yi = x{3}(:)';
+    [XI, YI] = meshgrid(xi, yi);
+    outs = {interp2(1:Ww, 1:Hh, Z, XI, YI, 'spline')};
   case 'gprocesskret_hor'  % genuine SNLC Gprocesskret.m (Kalatsky combine + delay)
     % Inputs are the fwd/rev PHASE maps (radians) AFTER Gprocesskret's internal
     % negation (i.e. what the Rust Complex2::from_phase consumes). Gprocesskret's

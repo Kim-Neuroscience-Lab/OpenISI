@@ -3478,6 +3478,42 @@ mod garrett {
             );
         }
 
+        /// **Live library-primitive oracle, Octave**: our `interp2_spline`
+        /// (ported not-a-knot tensor-product cubic spline) vs the GENUINE Octave
+        /// `interp2(...,'spline')`, executed live. Octave's spline is the oracle;
+        /// the bridge only calls it. A smooth non-separable Z, U=3 upsample (the
+        /// splitPatchesX case). Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn interp2_spline_matches_genuine_octave_live() {
+            use crate::test_support::oracle;
+            const H: usize = 12;
+            const W: usize = 15;
+            const U: usize = 3;
+            let z = Array2::from_shape_fn((H, W), |(r, c)| {
+                10.0 * (c as f64 / 3.0).sin() * (r as f64 / 4.0).cos() + 0.5 * c as f64 + 0.3 * r as f64
+            });
+            let x: Vec<f64> = (1..=W).map(|v| v as f64).collect();
+            let y: Vec<f64> = (1..=H).map(|v| v as f64).collect();
+            let xi: Vec<f64> = (0..U * W)
+                .map(|k| 1.0 + (W as f64 - 1.0) * k as f64 / (U * W - 1) as f64)
+                .collect();
+            let yi: Vec<f64> = (0..U * H)
+                .map(|k| 1.0 + (H as f64 - 1.0) * k as f64 / (U * H - 1) as f64)
+                .collect();
+            let xi_row = Array2::from_shape_fn((1, U * W), |(_, k)| xi[k]);
+            let yi_row = Array2::from_shape_fn((1, U * H), |(_, k)| yi[k]);
+
+            let genuine = oracle::snlc("interp2_spline", &[z.clone(), xi_row, yi_row], &[]).remove(0);
+            let ours = interp2_spline(&x, &y, &z, &xi, &yi);
+            Tol::rel(64, Eps::F64, 64).assert(
+                "interp2_spline vs GENUINE Octave (live)",
+                ours.as_slice().expect("contiguous"),
+                genuine.as_slice().expect("contiguous"),
+            );
+            eprintln!("interp2_spline vs GENUINE Octave (live): matched");
+        }
+
         /// `smooth_patches_x` vs the real SNLC `smoothPatchesX` (calls
         /// fspecial/filter2/roifilt2 under Octave). f64 Gaussian conv; the
         /// per-patch σ=area/2000 gives near-identity blurs (tiny truncated
