@@ -336,10 +336,16 @@ mod golden {
         );
     }
 
-    /// `allen_spectral_power_snr_mask` vs a verbatim transcription of
-    /// `corticalmapping/RetinotopicMapping.py::generatePhaseMap` (power branch),
-    /// run on `np.fft.fft`. Fixtures from `gen_power_snr_golden.py`
-    /// (n=24, cycles=4, sigma=1).
+    /// **FORMULA-PIN** (honest label, NOT a live code oracle). The Allen
+    /// power-responsiveness rule — `mask = |fft(movie)|@F1 ≥ mean+σ·std` (over all
+    /// freqs) — from `corticalmapping/RetinotopicMapping.py::generatePhaseMap`
+    /// (power branch). That `generatePhaseMap` exists **only in the deprecated py2
+    /// `corticalmapping`** (absent from NeuroAnalysisTools 3.1.0), so it cannot run
+    /// in the locked py3 env without a forbidden 2to3 shim — **irreducible gap.**
+    /// So this pins the published formula computed via numpy primitives (`np.fft`
+    /// is itself a live library oracle; the mean/σ threshold is Allen's rule),
+    /// labelled as a formula-pin, not dressed as a live reference oracle. Fixtures
+    /// from `gen_power_snr_golden.py` (n=24, cycles=4, sigma=1).
     #[test]
     fn allen_power_snr_mask_matches_corticalmapping() {
         const N: usize = 24;

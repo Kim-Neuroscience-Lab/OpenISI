@@ -806,13 +806,18 @@ mod tests {
         );
     }
 
-    /// FAITHFUL — `math::compute_eccentricity_snlc`
-    /// (`EccentricityMethod::SnlcGetAreaBordersV1Center`) vs the SNLC oracle
-    /// `getAreaBorders.m` + `getV1id.m` + `getPatchCoM.m`, transcribed verbatim
-    /// in `gen_v1ecc_golden.py`. This exercises the three traps the OpenISI
-    /// variant skips: `imopen(disk-10)` before component selection, the
-    /// single-pixel sample at the pixel-space centroid, and the cos-on-azimuth
-    /// formula. Pure f64 on both sides → machine-precision match expected.
+    /// **FORMULA-PIN / faithful-reproduction** (honest label, NOT a live code
+    /// oracle). `math::compute_eccentricity_snlc`
+    /// (`EccentricityMethod::SnlcGetAreaBordersV1Center`) reproduces SNLC's
+    /// V1-center selection (`imopen(disk-10)` → single-pixel pixel-space-centroid
+    /// sample → cos-on-azimuth) from `getAreaBorders.m` L211-224. **Irreducible
+    /// gap:** `getAreaBorders.m` is a 44-plot GUI pipeline taking animal-name
+    /// strings (loads data, plots) — it is **not headless-runnable and the
+    /// V1-selection block is not a separable function**, so there is no runnable
+    /// reference to call (`getV1id`/`getPatchCoM` are runnable, but they are only
+    /// intermediates of the non-separable selection). So this pins the transcribed
+    /// SNLC convention against our variant, labelled as a formula-pin with the gap
+    /// stated, not dressed as a live oracle. Pure f64 → machine-precision.
     #[test]
     fn compute_eccentricity_snlc_matches_get_area_borders() {
         const M: usize = 64;
