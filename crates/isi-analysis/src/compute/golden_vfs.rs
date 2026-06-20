@@ -634,6 +634,42 @@ mod tests {
         );
     }
 
+    /// **Live genuine-oracle, SNLC/Octave**: our `position_amplitude`
+    /// (`0.5·(|fwd|+|rev|)`) vs the GENUINE `Gprocesskret.m` `magS.hor`
+    /// (`(|ang0|+|ang2|)/2`), executed live via Octave. magS is taken from the
+    /// input magnitudes *before* Gprocesskret's phase negation, so the full
+    /// complex fwd/rev are fed directly (no transform). Gated `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn position_amplitude_matches_genuine_snlc_gprocesskret_live() {
+        use crate::test_support::oracle;
+        // Fresh fwd/rev complex with per-pixel varying magnitude AND phase.
+        let fwd_re = Array2::from_shape_fn((N, N), |(r, c)| (1.0 + 0.1 * r as f64) * (c as f64 * 0.2).cos());
+        let fwd_im = Array2::from_shape_fn((N, N), |(r, c)| (1.0 + 0.1 * r as f64) * (c as f64 * 0.2).sin());
+        let rev_re = Array2::from_shape_fn((N, N), |(r, c)| (0.7 + 0.05 * c as f64) * (r as f64 * 0.3).cos());
+        let rev_im = Array2::from_shape_fn((N, N), |(r, c)| (0.7 + 0.05 * c as f64) * (r as f64 * 0.3).sin());
+        let f32a = |a: &Array2<f64>| tensor2(a.iter().map(|&v| v as f32).collect(), N, N);
+
+        let fwd = Complex2::new(f32a(&fwd_re), f32a(&fwd_im));
+        let rev = Complex2::new(f32a(&rev_re), f32a(&rev_im));
+        let amp = tensor_to_array2_f64(position_amplitude(&fwd, &rev)).expect("amplitude");
+
+        let genuine = oracle::snlc(
+            "gprocesskret_mags",
+            &[fwd_re, fwd_im, rev_re, rev_im],
+            &[],
+        )
+        .remove(0);
+        // Amplitude is a magnitude → relative grounding (abs would scale with the
+        // pixel magnitude). Observed max_rel ≈ 1.1·ε_f32 → K=4.
+        Tol::rel(4, Eps::F32, 4).assert(
+            "position_amplitude vs GENUINE Gprocesskret magS",
+            amp.as_slice().expect("contiguous"),
+            genuine.as_slice().expect("contiguous"),
+        );
+        eprintln!("position_amplitude vs GENUINE SNLC Gprocesskret magS (live): matched");
+    }
+
     /// ΔF/F (`temporal_mean_baseline` + the dF/F formula) vs a verbatim
     /// transcription of Allen `ImageAnalysis.normalizeMovie` (`baselineType=
     /// 'mean'`): `F0 = mean(movie, axis=0)`, `dFoverF = (F − F0)/F0`. The dF/F

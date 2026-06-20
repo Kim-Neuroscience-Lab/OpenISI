@@ -55,8 +55,23 @@ so a clean machine / CI reproduces the same result.
   unknowable). Pins live in `nat/pyproject.toml` / `nat/uv.lock`.
 - **Octave ≈ MATLAB, not identical.** The SNLC reference is MATLAB; we execute it
   via Octave (the only open, scriptable runtime). Octave's IPT functions match
-  MATLAB's to high precision but are not bit-identical. This will be flagged
-  per-method when `snlc/` lands.
+  MATLAB's to high precision but are not bit-identical — flagged per-method in the
+  ledger (e.g. `bwdist` returns single → f32 comparison).
+- **Octave's `image` package lacks `roifilt2`** (`exist('roifilt2')==0` in 11.2.0).
+  The reference functions that call it — `smoothPatchesX.m`, and `Gprocesskret.m`'s
+  *smoothing* branches (`hl`/`hh` non-empty) — therefore **cannot be executed
+  natively** in the Octave env. We do **not** author a `roifilt2` replacement: that
+  would be self-written logic inside the oracle path (precisely the circularity the
+  goal forbids). So these stay frozen-fixture regression-locks with the gap stated;
+  their constituent primitives (`fspecial`/`filter2`/morphology/`watershed`/`bwdist`/
+  `interp2`) ARE validated live. Gprocesskret's **no-smoothing** branch (combine,
+  delay, magS) needs no `roifilt2` and IS live.
+- **The reference composites bundle plotting.** `splitPatchesX.m` / `fusePatchesX.m`
+  (and `getMouseAreasX.m`) interleave `figure`/`imagesc`/`contour` with the compute
+  and won't run headless; `getMouseAreasX` is additionally the full GUI pipeline.
+  Their end-to-end orchestration is OpenISI's, validated as a regression-lock against
+  the frozen genuine-run fixture, with the building-block primitives validated live
+  (the genuine end-to-end cannot be re-run headless in Octave — stated, not hidden).
 
 ## Divergence ledger
 
@@ -77,6 +92,8 @@ skipped cases.
 | `getVisualSpace` | NAT `Patch.getVisualSpace` | bit-identical (0 px) | Driven as the genuine class method; `VisualGrid` built to NAT's hardcoded ranges (alt [-40,60), azi [-20,120)) since our `derive_visual_grid` is a regression-lock OpenISI choice, not the oracle. |
 | `split_patch_from_ecc` | NAT `Patch.split2` (watershed branch) | patch count + order-free union identical | Driven as the genuine class method (variable-count patch dict). **Forced the env re-pin** that surfaced the skimage-0.19.3 anachronism (`sm.watershed` removed in 0.19) → re-pinned to skimage 0.18.3 / Python 3.9, skeletonize verified bit-identical so no existing result moved. |
 | `position_phasor_delay_subtracted` + `delay_map` | **SNLC** `Gprocesskret.m` (Octave) | combine phasor agree (4·ε_f32), delay agree (512·ε_f32) | Driven as the genuine function. **The live run exposed a transcription artifact:** the frozen golden generator fed `Gprocesskret`'s formula the *post-negation* angles directly, hiding its internal `ang = angle(-ang_input)` step. To drive the genuine `.m` faithfully we feed `-exp(i·θ)` so its internal negation recovers θ — then the genuine kmap/delay match. Combine compared as a phasor (wrap-safe); delay single-valued in (0,π]. |
+| `position_amplitude` | **SNLC** `Gprocesskret.m` `magS.hor` (Octave) | agree to f32 (rel 4·ε_f32) | `magS` is taken before the phase negation, so full complex fwd/rev fed directly. No-smoothing branch (no `roifilt2`). |
+| `interp2_spline` | Octave `interp2(...,'spline')` | agree to f64 (rel 64·ε_f64) | Library-primitive not-a-knot tensor-product cubic spline. |
 | `patch_com` | **SNLC** `getPatchCoM.m` (Octave) | centroid set identical (Tol abs 128·ε_f64) | Driven as the genuine `.m`; MATLAB `bwlabel` column-major vs our row-major → compared order-independently. Snap-correction path covered by the frozen fixture. |
 | `watershed_octave{4,8}` | Octave IPT `watershed(A,conn)` | bit-identical i32 labels | Library-primitive — Octave's own watershed; our wrapper mirrors it. |
 | `bwdist` | Octave IPT `bwdist` | identical to f32 (Octave returns single) | Library-primitive Euclidean DT. |

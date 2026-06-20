@@ -103,6 +103,15 @@ switch req.fn
     [kmap_hor, kmap_vert, delay_hor, delay_vert, sh, magS] = ...
         Gprocesskret({ang0, ang0, ang2, ang2}, bw, false, [], []);
     outs = {kmap_hor, delay_hor};
+  case 'gprocesskret_mags'  % genuine Gprocesskret magS.hor = (|ang0|+|ang2|)/2
+    % Full complex fwd/rev (re/im); magS is taken from the input magnitudes
+    % BEFORE the negation, so no transform is needed. x{1..4}=fwd_re,fwd_im,
+    % rev_re,rev_im. No smoothing branch.
+    ang0 = x{1} + 1i * x{2};
+    ang2 = x{3} + 1i * x{4};
+    bw = ones(size(ang0));
+    [k1, k2, d1, d2, sh, magS] = Gprocesskret({ang0, ang0, ang2, ang2}, bw, false, [], []);
+    outs = {magS.hor};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end
