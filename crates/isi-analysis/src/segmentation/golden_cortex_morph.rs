@@ -538,24 +538,13 @@ mod tests {
         assert_eq!(total, 0, "binary_skeletonize_skimage diverges from genuine skimage skeletonize");
     }
 
-    /// `dilation_patches2_allen` vs a VERBATIM transcription of Allen
-    /// `dilationPatches2` (`RetinotopicMapping.py` L190-225) run on scipy +
-    /// skimage. Two seed patches placed to collide under dilation, forcing the
-    /// separating skeleton — the case the algorithm exists for. Fixtures from
-    /// `gen_dilation_patches2_golden.py` (dilation_iter=8, border_width=1).
-    #[test]
-    fn dilation_patches2_matches_allen() {
-        const M: usize = 64;
-        let raw = load_mask_n(
-            include_bytes!("../../tests/golden/fixtures/dilpatch_raw.bin"),
-            M,
-        );
-        let golden: &[u8] = include_bytes!("../../tests/golden/fixtures/dilpatch_out.bin");
-        let ours = dilation_patches2_allen(&raw, 8, 1);
-        let d = count_differing(&ours, golden);
-        eprintln!("Allen dilationPatches2 vs scipy+skimage: differing px = {d}");
-        assert_eq!(d, 0, "dilation_patches2_allen diverges from Allen dilationPatches2");
-    }
+    // (Cutover, objective 1) The frozen `dilation_patches2_matches_allen` golden
+    // + its dilpatch_*.bin fixtures + gen_dilation_patches2_golden.py (which
+    // imported the `_allen_oracle` SHIM) were DELETED: the live
+    // `dilation_patches2_matches_genuine_nat_live` below covers the identical
+    // collision scene (two seed patches that collide under dilation → the
+    // separating skeleton, the case the algorithm exists for; iter=8, bw=1)
+    // against genuine NAT `dilationPatches2` in the shim-free uv env.
 
     /// **Live genuine-oracle version**: builds the seed mask in Rust and compares
     /// our `dilation_patches2_allen` against the GENUINE NeuroAnalysisTools
