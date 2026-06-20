@@ -116,6 +116,17 @@ source, never dressed as validated:
 | `derive_visual_grid` | `methods/patch_refinement.rs:1466` — *"regression-lock, NOT an oracle"* | OpenISI rendering choice. |
 | `compute_eccentricity` V1-center | `golden_cortex_morph.rs:643` — *"regression-lock"* | OpenISI V1-center selection differs from SNLC by design. |
 
+**SNLC tests whose named "oracle" is NOT genuine executable reference code** (the
+genuine-execution survey surfaced these — they are formula-pins / regression-locks,
+relabelled honestly, not claimed as live code oracles):
+
+| Test | Honest classification | Why not a live code oracle |
+|---|---|---|
+| `snlc_mag_threshold_roi` (`…matches_overlaymaps`) | **Formula-pin** (`mag^1.1` → rescale [0,1] → `≥0.12`) | `overlaymaps.m`'s ROI block (lines 205-215) is **entirely commented-out dead code** inside a 56-plot GUI script that loads data by animal name — not executable. The formula is elementary arithmetic, grounded in the (dead) reference, not a runnable oracle. |
+| `keep_largest_component` (`…matches_snlc_argmax`) | **Regression-lock**; tie-break grounded in `max` first-index | `getMouseAreasX.m` is the full `figure`/`imagesc`/`contour` GUI pipeline (won't run headless); the largest-CC tie-break is MATLAB `max` returning the first index — a language guarantee, not a callable oracle. |
+| `polar_angle` (`…matches_snlc_atan2…`) | **Formula-pin** (`atan2(Δalt,Δazi)·180/π` about V1 centre) | `atan2` is a primitive; the label-scoped V1-centre logic is OpenISI's. No reference `.m`. |
+| `snlc_cortex_endtoend` | **Regression-lock** at the orchestration level | The full threshold→open→close→fill→dilate→largest-CC sequence is OpenISI's composition; **each primitive is validated live** (Octave IPT), but no single reference `.m` defines the end-to-end chain. |
+
 The cross-cycle `reliability` coherence is the Engel 1994 / Zhuang 2017 **published
 formula** computed via numpy primitives (`sum`/`abs`) — a formula pin, labelled as
 such (it has no canonical reference *code* to execute), not claimed as a code oracle.
