@@ -3241,26 +3241,10 @@ mod garrett {
             }
         }
 
-        /// `bwdist` vs the real Octave `bwdist`. The distances agree exactly
-        /// (both exact Euclidean), but MATLAB/Octave `bwdist` returns
-        /// **single-precision**, so ours (f64) matches only to f32: a relative
-        /// f32 bound (observed max_rel ≈ 0.44·ε_f32). Fixtures from
-        /// `gen_bwdist_golden.m`.
-        #[test]
-        fn bwdist_matches_octave() {
-            let seeds_b: &[u8] = include_bytes!("../../tests/golden/fixtures/bwdist_seeds.bin");
-            let d_exp = load_f64(include_bytes!("../../tests/golden/fixtures/bwdist_d.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/bwdist_meta.bin"));
-            let (h, w) = (meta[0] as usize, meta[1] as usize);
-            let seeds = Array2::from_shape_fn((h, w), |(r, c)| seeds_b[r * w + c] != 0);
-
-            let d = bwdist(&seeds);
-            Tol::rel(2, Eps::F32, 2).assert(
-                "bwdist vs Octave (single-precision oracle)",
-                d.as_slice().expect("contiguous"),
-                &d_exp,
-            );
-        }
+        // (Cutover, objective 1) The frozen `bwdist_matches_octave` golden + its
+        // bwdist_*.bin fixtures + gen_bwdist_golden.m were DELETED: the live
+        // `bwdist_matches_genuine_octave_live` computes the genuine Octave `bwdist`
+        // on scattered seeds (same semantic; f32 single-precision tolerance) live.
 
         /// **Live library-primitive oracle, Octave**: our `bwdist` vs the GENUINE
         /// Octave IPT `bwdist`, executed live. Octave's bwdist is the oracle; the
