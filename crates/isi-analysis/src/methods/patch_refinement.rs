@@ -2884,11 +2884,14 @@ mod garrett {
         Ok(patches_from_labels_majority_sign(&labels, n, &sereno))
     }
 
-    #[cfg(test)]
+    // Every test in this module drives the GENUINE Octave/scipy reference live, so
+    // the whole module is gated behind `oracle_live` (the default `cargo test` stays
+    // interpreter-free). Once the last frozen golden here became live, no non-gated
+    // test remained.
+    #[cfg(all(test, feature = "oracle_live"))]
     mod golden {
         use super::*;
         use agreement::{Eps, Tol};
-        use crate::test_support::load_f64;
 
 
         // (Cutover, objective 1) The frozen `patch_com_matches_snlc_get_patch_com`
@@ -3032,31 +3035,36 @@ mod garrett {
         }
 
 
-        /// **FROZEN library-primitive golden (objective-6 exception, honestly
-        /// labelled — NOT a live oracle).** Octave's fft-based circular Gaussian
-        /// blur is the oracle. `fft_gaussian_smooth` has **no live counterpart yet**
-        /// (unlike `gaussian_smooth`, which is live via scipy) — making it live is a
-        /// follow-up; until then this frozen fixture could drift and must not be read
-        /// as a live oracle. `fft_gaussian_smooth` vs the Octave fft-based circular
-        /// Gaussian blur. Cross-library FFT roundoff (FFTW vs rustfft) precludes
-        /// bit-equality; a relative f64 bound a few ε_f64 wide is the right
-        /// grounding. Fixtures from `gen_fftgauss_golden.m`.
+        /// **Live library-primitive oracle, Octave**: our `fft_gaussian_smooth`
+        /// (the SNLC fft-based circular Gaussian blur,
+        /// `real(ifft2(fft2(map).*abs(fft2(fspecial('gaussian',size,sigma)))))`)
+        /// vs the GENUINE Octave computation, executed live. Octave's
+        /// `fspecial`/`fft2`/`ifft2` are the oracle; the bridge only calls them.
+        /// A smooth non-separable map, sigma=2 (the kmap-smoothing case).
+        /// Cross-library FFT roundoff (rustfft vs FFTW) precludes bit-equality; a
+        /// relative f64 bound (observed max_rel ≈ 30·ε_f64 → K=64) is the right
+        /// grounding. Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
         #[test]
-        fn fft_gaussian_smooth_matches_octave() {
-            let inp = load_f64(include_bytes!("../../tests/golden/fixtures/fftgauss_in.bin"));
-            let exp = load_f64(include_bytes!("../../tests/golden/fixtures/fftgauss_out.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/fftgauss_meta.bin"));
-            let (h, w, sigma) = (meta[0] as usize, meta[1] as usize, meta[2]);
-            let map = Array2::from_shape_fn((h, w), |(r, c)| inp[r * w + c]);
+        fn fft_gaussian_smooth_matches_genuine_octave_live() {
+            use crate::test_support::oracle;
+            const H: usize = 40;
+            const W: usize = 48;
+            let sigma = 2.0;
+            let map = Array2::from_shape_fn((H, W), |(r, c)| {
+                5.0 * (c as f64 / 5.0).sin() * (r as f64 / 7.0).cos()
+                    + 0.4 * c as f64
+                    - 0.25 * r as f64
+            });
 
-            let out = fft_gaussian_smooth(&map, sigma);
-            // Cross-library FFT roundoff (rustfft vs FFTW); observed max_rel ≈
-            // 30·ε_f64 → K=64 (smallest power-of-two bounding it, with margin).
+            let genuine = oracle::snlc("fft_gaussian", &[map.clone()], &[("sigma", sigma)]).remove(0);
+            let ours = fft_gaussian_smooth(&map, sigma);
             Tol::rel(64, Eps::F64, 64).assert(
-                "fft_gaussian_smooth vs Octave",
-                out.as_slice().expect("contiguous"),
-                &exp,
+                "fft_gaussian_smooth vs GENUINE Octave (live)",
+                ours.as_slice().expect("contiguous"),
+                genuine.as_slice().expect("contiguous"),
             );
+            eprintln!("fft_gaussian_smooth vs GENUINE Octave (live): matched");
         }
 
         // (Cutover, objective 1) The frozen `interp2_spline_matches_octave` golden

@@ -80,6 +80,11 @@ switch req.fn
     outs = {double(imdilate(logical(x{1}), strel('disk', p.radius, 0)))};
   case 'imfill_holes'    % raw Octave IPT: imfill(mask, 'holes')
     outs = {double(imfill(logical(x{1}), 'holes'))};
+  case 'fft_gaussian'    % Octave fft-based circular Gaussian blur (the SNLC smoother)
+    % mapS = real(ifft2(fft2(map) .* abs(fft2(fspecial('gaussian',size,sigma))))).
+    % Octave's fspecial/fft are the oracle; the bridge only calls them.
+    hh = fspecial('gaussian', size(x{1}), p.sigma);
+    outs = {real(ifft2(fft2(x{1}) .* abs(fft2(hh))))};
   case 'interp2_spline'  % raw Octave builtin: interp2(1:W,1:H,Z,XI,YI,'spline')
     % The genuine oracle is Octave's own not-a-knot tensor-product cubic spline.
     % x{1}=Z (HxW), x{2}=xi (1 x U*W), x{3}=yi (1 x U*H). Unit-spaced source grid

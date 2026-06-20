@@ -117,9 +117,10 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_centerpatch_golden.m",
         "gen_resetpatch_golden.m",
         "gen_getnlocalmin_golden.m",
-        // library-primitive frozen golden retired for objective 6 (the method is
-        // computed LIVE each run by separable_filter_matches_genuine_scipy_live):
-        "gen_reflect_wrap_golden.py",
+        // library-primitive frozen goldens retired for objective 6 (the method is
+        // now computed LIVE each run against the genuine reference):
+        "gen_reflect_wrap_golden.py",   // -> separable_filter_matches_genuine_scipy_live
+        "gen_fftgauss_golden.m",        // -> fft_gaussian_smooth_matches_genuine_octave_live
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -154,7 +155,6 @@ fn every_surviving_generator_is_classified_non_transcription() {
         ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy; now mainly provides the shared cortex_morph_input mask (its open/close test retired → live)
         ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
         ("gen_cortex_morph_golden.m", "LibraryPrimitive"),     // Octave IPT imopen/imclose/imfill/imdilate
-        ("gen_fftgauss_golden.m", "LibraryPrimitive"),         // Octave fft-based gaussian blur
         ("gen_cortex_full_golden.m", "LibraryPrimitive"),      // Octave-IPT sequence (OpenISI orchestration)
         ("gen_adaptsmooth_golden.m", "GenuineRun"),            // genuine adaptiveSmoother.m (no roifilt2)
         ("gen_snr_golden.py", "RegressionLock"),               // OpenISI's own multi-bin SNR rule, no ref
