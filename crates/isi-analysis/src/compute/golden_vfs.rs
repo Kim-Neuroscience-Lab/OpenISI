@@ -632,6 +632,46 @@ mod tests {
         Tol::abs(16, Eps::F32).assert("dF/F vs Allen normalizeMovie", &got, &dff_ref);
     }
 
+    /// **Live library-primitive oracle**: the ΔF/F baseline `temporal_mean_baseline`
+    /// vs the GENUINE `numpy.mean(movie, axis=0)`, executed live in the uv-locked
+    /// env. numpy is the oracle (the bridge only calls it). `normalizeMovie` does
+    /// NOT exist in NeuroAnalysisTools — the baseline's only library primitive is
+    /// this reduction; the `(F−F0)/F0` that follows is a formula-pin. Gated behind
+    /// `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn baseline_matches_genuine_numpy_mean_live() {
+        use crate::compute::temporal_mean_baseline;
+        use crate::test_support::oracle;
+        use ndarray::Array3;
+        const N: usize = 20;
+        const H: usize = 16;
+        const W: usize = 16;
+        // A deterministic u16 movie with per-pixel DC + drift so the mean varies.
+        let frames = Array3::<u16>::from_shape_fn((N, H, W), |(t, r, c)| {
+            (1000 + 10 * (r + c) + 3 * t + (t * r) % 7) as u16
+        });
+        let movie_f64: Vec<f64> = frames.iter().map(|&v| v as f64).collect();
+
+        let genuine = oracle::nat_raw_nd(
+            "numpy_mean_axis0",
+            &[(movie_f64.as_slice(), &[N, H, W])],
+            &[],
+        )
+        .remove(0)
+        .f64();
+        let ours = temporal_mean_baseline(&frames);
+
+        let mut maxd = 0.0f64;
+        for r in 0..H {
+            for c in 0..W {
+                maxd = maxd.max((ours[[r, c]] - genuine[[r, c]]).abs());
+            }
+        }
+        eprintln!("baseline F0 vs GENUINE numpy.mean (live): max diff = {maxd:.3e}");
+        assert!(maxd <= 64.0 * f64::EPSILON * 4096.0, "temporal_mean_baseline diverges from genuine numpy.mean: {maxd:.3e}");
+    }
+
     /// **Response-normalization equivalence (item 4).** The oracle-faithful
     /// absolute-ΔF F1 (`OracleAbsoluteDeltaF`, `F − F0`, SNLC `Gf1image.m` /
     /// Allen `generatePhaseMap2`) and OpenISI's fractional ΔF/F F1

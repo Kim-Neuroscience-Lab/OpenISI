@@ -118,8 +118,11 @@ library, which they should compute *live* (condition 6), not the named reference
     `binary_closing` (4-conn cross, `border_value=0`; bit-identical — the patch-
     extraction morphology), `separable_filter` vs `scipy.ndimage.correlate1d`
     (mode='reflect', cols then rows; ≈5e-15 — exercises the large-radius
-    periodic-wrap `reflect` fold). `label` is compared label-invariantly (a CC
-    labeling is defined only up to relabeling); the others bit-/precision-identical.
+    periodic-wrap `reflect` fold), `temporal_mean_baseline` (the ΔF/F F0) vs
+    `numpy.mean(movie, axis=0)` (bit-identical), `AllenZhuang2017ClipNegative`
+    (half-wave rectify) vs `numpy.maximum(x, 0)` (bit-identical). `label` is
+    compared label-invariantly (a CC labeling is defined only up to relabeling);
+    the others bit-/precision-identical.
   - **Not a single-library-primitive → not made "live" as one (classified
     honestly):**
     - `patch_threshold` (`AllenZhuang2017FixedSignMapThr`, `Garrett2014SigmaScaled`)

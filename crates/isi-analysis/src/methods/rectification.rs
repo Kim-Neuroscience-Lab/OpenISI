@@ -72,4 +72,37 @@ mod tests {
             assert_eq!(*g, *e, "None rectification must be a pass-through");
         }
     }
+
+    /// **Live library-primitive oracle**: `AllenZhuang2017ClipNegative` vs the
+    /// GENUINE `numpy.maximum(x, 0)` (Allen's `aveMovNorRec[aveMovNorRec<0]=0`),
+    /// executed live in the uv-locked env. numpy is the oracle; the bridge only
+    /// calls it. Mixed signs incl. ±0 and a tiny negative. Gated `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn clip_negative_matches_genuine_numpy_live() {
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const H: usize = 4;
+        const W: usize = 5;
+        // Deterministic mixed-sign field with exact 0 and a tiny negative.
+        let mut a = Array2::<f64>::from_shape_fn((H, W), |(r, c)| (r as f64 - 1.5) * (c as f64 - 2.0));
+        a[[0, 0]] = -1e-7;
+        a[[1, 1]] = 0.0;
+
+        let genuine = oracle::nat("numpy_maximum_zero", &[a.clone()], &[]).remove(0);
+        // Drive our rectifier on the same values via a [1,H,W] movie.
+        let flat: Vec<f32> = a.iter().map(|&v| v as f32).collect();
+        let movie = Tensor::<Backend, 3>::from_data(TensorData::new(flat, [1, H, W]), &device());
+        let rect = RectificationMethod::AllenZhuang2017ClipNegative.apply(movie);
+        let ours = tensor_to_array2_f64(rect.reshape([H, W])).unwrap();
+
+        let mut maxd = 0.0f64;
+        for r in 0..H {
+            for c in 0..W {
+                maxd = maxd.max((ours[[r, c]] - genuine[[r, c]]).abs());
+            }
+        }
+        eprintln!("clip-negative vs GENUINE numpy.maximum(x,0) (live): max diff = {maxd:.3e}");
+        assert_eq!(maxd, 0.0, "clip-negative diverges from genuine numpy.maximum(x,0)");
+    }
 }

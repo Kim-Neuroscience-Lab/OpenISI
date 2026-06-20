@@ -94,6 +94,15 @@ def dispatch(fn, x, p):
         out = _ss.watershed(x[0], markers, mask=mask,
                             connectivity=np.ones((3, 3)), watershed_line=False)
         return [out.astype(np.int32)]
+    if fn == "numpy_maximum_zero":
+        # Genuine oracle = numpy. Allen half-wave rectify: aveMovNorRec[<0]=0,
+        # i.e. elementwise np.maximum(x, 0).
+        return [np.ascontiguousarray(np.maximum(x[0], 0.0))]
+    if fn == "numpy_mean_axis0":
+        # Genuine oracle = numpy. x[0] is a 3-D movie [n,H,W]; the temporal-mean
+        # baseline F0 = np.mean(movie, axis=0). (The dF/F = (F-F0)/F0 that follows
+        # is a formula, not reference code — only this reduction is a primitive.)
+        return [np.ascontiguousarray(np.mean(x[0], axis=0))]
     if fn == "scipy_correlate1d_separable":
         # Separable correlation with a centered 1-D kernel, mode='reflect', along
         # cols then rows (the exact two passes our separable_filter does). scipy's
