@@ -1193,86 +1193,56 @@ mod allen {
             assert_eq!(diff, 0, "watershed_from_markers diverges from genuine skimage watershed");
         }
 
-        /// `sigma_area` vs Allen `getSigmaArea` = `np.sum(int_mask · detMap)`.
-        /// Five cases incl. NaN inside / outside the patch (where `0·NaN=NaN`
-        /// must propagate) and a negative determinant. Fixtures from
-        /// `gen_sigmaarea_golden.py` (mask/det are H·W = 768 px; the sum is
-        /// orientation-free).
-        #[test]
-        fn sigma_area_matches_allen_get_sigma_area() {
-            fn run(name: &str, mask_b: &[u8], det_b: &[u8], exp_b: &[u8]) {
-                const H: usize = 24;
-                const W: usize = 32;
-                let mask = Array2::from_shape_fn((H, W), |(r, c)| mask_b[r * W + c] != 0);
-                let dv = load_f64(det_b);
-                let det = Array2::from_shape_fn((H, W), |(r, c)| dv[r * W + c]);
-                let exp = f64::from_le_bytes(exp_b[0..8].try_into().unwrap());
-                let got = sigma_area(&mask, &det);
-                // Area-sum, f64; observed ≈ ε_f64 relative. The comparator's
-                // NaN-position match handles the NaN fixtures (both NaN → pass).
-                // Was a magic 1e-6.
-                Tol::rel(64, Eps::F64, 64).assert(&format!("sigma_area {name}"), &[got], &[exp]);
-            }
-            run(
-                "finiteall",
-                include_bytes!("../../tests/golden/fixtures/sigarea_finiteall_mask.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_finiteall_det.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_finiteall_exp.bin"),
-            );
-            run(
-                "nanin",
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanin_mask.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanin_det.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanin_exp.bin"),
-            );
-            run(
-                "nanout",
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanout_mask.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanout_det.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_nanout_exp.bin"),
-            );
-            run(
-                "multicomp",
-                include_bytes!("../../tests/golden/fixtures/sigarea_multicomp_mask.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_multicomp_det.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_multicomp_exp.bin"),
-            );
-            run(
-                "negzero",
-                include_bytes!("../../tests/golden/fixtures/sigarea_negzero_mask.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_negzero_det.bin"),
-                include_bytes!("../../tests/golden/fixtures/sigarea_negzero_exp.bin"),
-            );
-        }
+        // (Cutover, objective 1) The frozen `sigma_area_matches_allen_get_sigma_area`
+        // golden + its sigarea_*.bin fixtures + gen_sigmaarea_golden.py were DELETED.
+        // gen_sigmaarea_golden.py was a VERBATIM transcription of getSigmaArea
+        // (np.sum(mask*detMap)). The live `sigma_area_matches_genuine_nat_live` above
+        // was enriched to cover the same five cases (finite, NaN-in, NaN-out,
+        // multi-component, negative/zero determinant) against the genuine NAT
+        // `Patch.getSigmaArea` in the shim-free uv env.
 
         /// **Live genuine-oracle version**: our `sigma_area` vs the GENUINE
-        /// `Patch.getSigmaArea` (`sum(array * detMap)`). The probe case is a NaN
-        /// OUTSIDE the mask: genuine numpy computes `0.0 * NaN = NaN` so the whole
-        /// sum is NaN, whereas a masked sum stays finite. This surfaces the real
-        /// NaN-handling behaviour against the actual reference. Gated `oracle_live`.
+        /// `Patch.getSigmaArea` (`sum(array * detMap)`), covering every case the
+        /// retired frozen golden held: finite, a NaN INSIDE the mask, a NaN OUTSIDE
+        /// the mask (genuine numpy `0.0 * NaN = NaN` → whole sum NaN — the real
+        /// NaN-handling surface), a MULTI-component mask, and a negative/zero
+        /// determinant. Gated `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn sigma_area_matches_genuine_nat_live() {
             use crate::test_support::oracle;
             const H: usize = 24;
             const W: usize = 32;
-            let mask = Array2::from_shape_fn((H, W), |(r, c)| (4..12).contains(&r) && (4..12).contains(&c));
-            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            let one_sq = Array2::from_shape_fn((H, W), |(r, c)| (4..12).contains(&r) && (4..12).contains(&c));
+            // Two disjoint components.
+            let two_sq = Array2::from_shape_fn((H, W), |(r, c)| {
+                ((4..10).contains(&r) && (4..10).contains(&c)) || ((14..20).contains(&r) && (20..28).contains(&c))
+            });
             let base = Array2::from_shape_fn((H, W), |(r, c)| (r as f64 - c as f64) * 0.05 + 1.0);
             let mut nanin = base.clone();
             nanin[[6, 6]] = f64::NAN; // NaN inside the mask
             let mut nanout = base.clone();
             nanout[[20, 28]] = f64::NAN; // NaN outside the mask
-            let cases: [(&str, &Array2<f64>); 3] =
-                [("finite", &base), ("nanin", &nanin), ("nanout", &nanout)];
+            // Negative determinant + exact zeros.
+            let negzero = Array2::from_shape_fn((H, W), |(r, c)| {
+                if (r + c) % 3 == 0 { 0.0 } else { (c as f64 - r as f64) * 0.1 - 0.5 }
+            });
+            let cases: [(&str, &Array2<bool>, &Array2<f64>); 5] = [
+                ("finite", &one_sq, &base),
+                ("nanin", &one_sq, &nanin),
+                ("nanout", &one_sq, &nanout),
+                ("multicomp", &two_sq, &base),
+                ("negzero", &one_sq, &negzero),
+            ];
             let eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + b.abs());
 
             let mut diffs = Vec::new();
-            for (name, det) in cases {
-                let g = oracle::nat_raw("getSigmaArea", &[mask_f.clone(), det.clone()], &[])
+            for (name, mask, det) in cases {
+                let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+                let g = oracle::nat_raw("getSigmaArea", &[mask_f, (*det).clone()], &[])
                     .remove(0)
                     .f64()[[0, 0]];
-                let o = sigma_area(&mask, det);
+                let o = sigma_area(mask, det);
                 eprintln!("  sigma_area {name}: ours={o} genuine={g}");
                 if !eq(o, g) {
                     diffs.push(format!("{name}: ours={o} genuine={g}"));
