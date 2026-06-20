@@ -20,7 +20,10 @@ foundation*.
     `skimage.morphology.watershed` still exists (the reference's `Patch.split2`
     calls it; it was removed in skimage 0.19), so the vendored reference runs
     **natively — no shim**. See `nat/pyproject.toml` for the full pin derivation.
-  - `snlc/` *(pending)* — SNLC/Garrett MATLAB, via a pinned Octave.
+  - `snlc/` — SNLC/Garrett MATLAB (`reference/ISI/*.m`), executed via **Octave
+    11.2.0** + the `image` package (`OPENISI_OCTAVE` → `octave-cli`; CI installs
+    `octave octave-image`). Live arms: getPatchSign, getPatchCoM, and the IPT
+    builtins watershed/bwdist/imimposemin.
 - **The reference code is byte-pristine.** Nothing here modifies
   `reference/…`; the env is shaped to fit the reference, not the reverse.
 - **Live, not frozen.** `bridge.py` (per oracle) is a pure caller — it marshals
@@ -73,6 +76,10 @@ skipped cases.
 | `getSigmaArea` | NAT `Patch.getSigmaArea` | bit-identical incl. NaN cases | The audit *suspected* a NaN-handling divergence; the live oracle **disproved** it — ours propagates `0·NaN = NaN` (NaN outside the mask) exactly like genuine numpy. No divergence. |
 | `getVisualSpace` | NAT `Patch.getVisualSpace` | bit-identical (0 px) | Driven as the genuine class method; `VisualGrid` built to NAT's hardcoded ranges (alt [-40,60), azi [-20,120)) since our `derive_visual_grid` is a regression-lock OpenISI choice, not the oracle. |
 | `split_patch_from_ecc` | NAT `Patch.split2` (watershed branch) | patch count + order-free union identical | Driven as the genuine class method (variable-count patch dict). **Forced the env re-pin** that surfaced the skimage-0.19.3 anachronism (`sm.watershed` removed in 0.19) → re-pinned to skimage 0.18.3 / Python 3.9, skeletonize verified bit-identical so no existing result moved. |
+| `patch_com` | **SNLC** `getPatchCoM.m` (Octave) | centroid set identical (Tol abs 128·ε_f64) | Driven as the genuine `.m`; MATLAB `bwlabel` column-major vs our row-major → compared order-independently. Snap-correction path covered by the frozen fixture. |
+| `watershed_octave{4,8}` | Octave IPT `watershed(A,conn)` | bit-identical i32 labels | Library-primitive — Octave's own watershed; our wrapper mirrors it. |
+| `bwdist` | Octave IPT `bwdist` | identical to f32 (Octave returns single) | Library-primitive Euclidean DT. |
+| `imimposemin` | Octave IPT `imimposemin` | agree to f64 (64·ε_f64) | Library-primitive morphological reconstruction. |
 | `getPatchSign` (signs) | **SNLC** `getPatchSign` (Octave) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
 
 *(Updated as each method migrates.)*

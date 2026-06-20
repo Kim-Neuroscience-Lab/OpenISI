@@ -54,6 +54,21 @@ switch req.fn
     % dependency), which is what we compare against.
     [patchSign, ~] = getPatchSign(x{1}, x{2});
     outs = {patchSign};
+  case 'watershed'       % raw Octave IPT builtin: watershed(A, conn={4,8})
+    % The genuine oracle is Octave's own watershed; our watershed_octave{4,8}
+    % wraps exactly this. conn passed as a param. Labels returned as double.
+    L = watershed(x{1}, p.conn);
+    outs = {double(L)};
+  case 'bwdist'          % raw Octave IPT builtin: bwdist(seeds) Euclidean DT
+    % Octave bwdist returns SINGLE; widening single->double here is exact, so the
+    % Rust f64 side compares to f32 precision (the documented oracle dtype).
+    D = bwdist(logical(x{1}));
+    outs = {double(D)};
+  case 'imimposemin'     % raw Octave IPT builtin: imimposemin(I, BW)
+    % Morphological reconstruction imposing regional minima at BW. Genuine oracle
+    % is Octave's own imimposemin; our imimposemin mirrors it.
+    R = imimposemin(x{1}, logical(x{2}));
+    outs = {double(R)};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end

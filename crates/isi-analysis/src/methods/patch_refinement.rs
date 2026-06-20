@@ -3211,6 +3211,45 @@ mod garrett {
             Tol::abs(128, Eps::F64).assert("getPatchCoM CoMxy", &g, &e);
         }
 
+        /// **Live genuine-oracle, SNLC/Octave**: our `patch_com` vs the GENUINE
+        /// `getPatchCoM.m` (`reference/ISI`), executed live via Octave. Three
+        /// rectangles → centroids are each exactly on-patch (no snap-correction
+        /// tie ambiguity — that path stays covered by the frozen fixture). MATLAB
+        /// `bwlabel` is column-major vs our row-major `label_4conn`, so the centroid
+        /// SET is compared order-independently. Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn patch_com_matches_genuine_snlc_live() {
+            use crate::test_support::oracle;
+            const H: usize = 32;
+            const W: usize = 40;
+            let mut im_f = Array2::<f64>::zeros((H, W));
+            for (r0, r1, c0, c1) in [(4, 12, 5, 15), (20, 28, 24, 36), (6, 22, 30, 34)] {
+                for r in r0..r1 {
+                    for c in c0..c1 {
+                        im_f[[r, c]] = 1.0;
+                    }
+                }
+            }
+            let im = im_f.mapv(|v| v != 0.0);
+
+            let genuine = oracle::snlc("getPatchCoM", &[im_f], &[]);
+            let comxy = &genuine[0]; // np x 2 (x, y)
+            let np = comxy.dim().0;
+            let got = patch_com(&im);
+            assert_eq!(got.len(), np, "patch count vs genuine getPatchCoM");
+
+            let sort = |v: &mut Vec<(f64, f64)>| v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut got_s = got.clone();
+            let mut exp_s: Vec<(f64, f64)> = (0..np).map(|i| (comxy[[i, 0]], comxy[[i, 1]])).collect();
+            sort(&mut got_s);
+            sort(&mut exp_s);
+            let g: Vec<f64> = got_s.iter().flat_map(|&(x, y)| [x, y]).collect();
+            let e: Vec<f64> = exp_s.iter().flat_map(|&(x, y)| [x, y]).collect();
+            eprintln!("getPatchCoM vs GENUINE SNLC (live): {} patches", np);
+            Tol::abs(128, Eps::F64).assert("getPatchCoM CoMxy vs genuine SNLC", &g, &e);
+        }
+
         /// `get_center_patch` vs SNLC `getCenterPatch` (`splitPatchesX.m`
         /// subfunction): the eccentricity threshold + disk-2 opening + 3×3
         /// median, validated as a unit. Bit-for-bit mask. Fixtures from
@@ -3282,6 +3321,37 @@ mod garrett {
             );
         }
 
+        /// **Live library-primitive oracle, Octave**: our `watershed_octave{4,8}`
+        /// vs the GENUINE Octave IPT `watershed(A, conn)`, executed live. Octave's
+        /// watershed IS the oracle; the bridge only calls it. A two-well elevation
+        /// → exact i32 catchment labels (incl. watershed-line 0s and Octave's own
+        /// label numbering). Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn watershed_octave_matches_genuine_octave_live() {
+            use crate::test_support::oracle;
+            const N: usize = 24;
+            // Two basins (paraboloid wells) on a ridge → a clean watershed line.
+            let elev = Array2::from_shape_fn((N, N), |(r, c)| {
+                let d1 = (r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2);
+                let d2 = (r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2);
+                d1.min(d2)
+            });
+            for (conn, ours) in [(4.0_f64, watershed_octave4(&elev)), (8.0, watershed_octave8(&elev))] {
+                let genuine = oracle::snlc("watershed", &[elev.clone()], &[("conn", conn)]).remove(0);
+                let mut diff = 0usize;
+                for r in 0..N {
+                    for c in 0..N {
+                        if ours[[r, c]] != genuine[[r, c]].round() as i32 {
+                            diff += 1;
+                        }
+                    }
+                }
+                eprintln!("watershed{} vs GENUINE Octave (live): diff={diff}", conn as i32);
+                assert_eq!(diff, 0, "watershed_octave diverges from genuine Octave watershed");
+            }
+        }
+
         /// `bwdist` vs the real Octave `bwdist`. The distances agree exactly
         /// (both exact Euclidean), but MATLAB/Octave `bwdist` returns
         /// **single-precision**, so ours (f64) matches only to f32: a relative
@@ -3301,6 +3371,33 @@ mod garrett {
                 d.as_slice().expect("contiguous"),
                 &d_exp,
             );
+        }
+
+        /// **Live library-primitive oracle, Octave**: our `bwdist` vs the GENUINE
+        /// Octave IPT `bwdist`, executed live. Octave's bwdist is the oracle; the
+        /// bridge only calls it. Octave returns SINGLE, so the comparison is to f32
+        /// precision (the documented oracle dtype). Scattered seeds. Gated
+        /// behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn bwdist_matches_genuine_octave_live() {
+            use crate::test_support::oracle;
+            const H: usize = 20;
+            const W: usize = 28;
+            let mut seeds_f = Array2::<f64>::zeros((H, W));
+            for (r, c) in [(2, 3), (5, 20), (15, 8), (18, 25), (9, 13)] {
+                seeds_f[[r, c]] = 1.0;
+            }
+            let seeds = seeds_f.mapv(|v| v != 0.0);
+
+            let genuine = oracle::snlc("bwdist", &[seeds_f], &[]).remove(0);
+            let ours = bwdist(&seeds);
+            Tol::rel(2, Eps::F32, 2).assert(
+                "bwdist vs GENUINE Octave (single-precision oracle)",
+                ours.as_slice().expect("contiguous"),
+                genuine.as_slice().expect("contiguous"),
+            );
+            eprintln!("bwdist vs GENUINE Octave (live): matched to f32");
         }
 
         /// `reset_patch` vs the real SNLC `resetPatch` (transcribed, calling real
@@ -3425,6 +3522,31 @@ mod garrett {
                 got.as_slice().expect("contiguous"),
                 &outb,
             );
+        }
+
+        /// **Live library-primitive oracle, Octave**: our `imimposemin` vs the
+        /// GENUINE Octave IPT `imimposemin`, executed live. Octave's morphological
+        /// reconstruction is the oracle; the bridge only calls it. A bumpy field
+        /// with two marker minima. Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn imimposemin_matches_genuine_octave_live() {
+            use crate::test_support::oracle;
+            const N: usize = 20;
+            let im = Array2::from_shape_fn((N, N), |(r, c)| {
+                (r as f64 * 0.4).sin() + (c as f64 * 0.3).cos() + 0.02 * (r * c) as f64
+            });
+            let bw = Array2::from_shape_fn((N, N), |(r, c)| (r, c) == (5, 5) || (r, c) == (14, 12));
+            let bw_f = bw.mapv(|b| if b { 1.0 } else { 0.0 });
+
+            let genuine = oracle::snlc("imimposemin", &[im.clone(), bw_f], &[]).remove(0);
+            let ours = imimposemin(&im, &bw);
+            Tol::rel(64, Eps::F64, 64).assert(
+                "imimposemin vs GENUINE Octave (live)",
+                ours.as_slice().expect("contiguous"),
+                genuine.as_slice().expect("contiguous"),
+            );
+            eprintln!("imimposemin vs GENUINE Octave (live): matched");
         }
 
         /// `get_nlocalmin` vs the real SNLC `getNlocalmin` (transcribed; calls
