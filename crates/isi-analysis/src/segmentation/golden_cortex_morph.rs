@@ -262,6 +262,33 @@ mod tests {
         );
     }
 
+    /// **Live library-primitive oracle**: our `gaussian_smooth_f64` vs
+    /// `scipy.ndimage.gaussian_filter` (reflect, truncate=4) computed LIVE in the
+    /// NAT env's pinned scipy 1.9.3 — the library is the genuine oracle, and it is
+    /// computed each run (no frozen fixture to drift; condition 6). Gated `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn gaussian_smooth_matches_genuine_scipy_live() {
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const G: usize = 96;
+        let input = Array2::from_shape_fn((G, G), |(r, c)| {
+            let (x, y) = (c as f64 / G as f64, r as f64 / G as f64);
+            x + 0.5 * y
+                + (-(((r as f64 - 30.0).powi(2) + (c as f64 - 40.0).powi(2)) / 100.0)).exp()
+        });
+        let genuine = oracle::nat("scipy_gaussian_filter", &[input.clone()], &[("sigma", 4.0)]).remove(0);
+        let ours = gaussian_smooth_f64(&input, 4.0);
+        let mut maxd = 0.0f64;
+        for r in 0..G {
+            for c in 0..G {
+                maxd = maxd.max((ours[[r, c]] - genuine[[r, c]]).abs());
+            }
+        }
+        eprintln!("gaussian_smooth vs GENUINE scipy (live): max diff = {maxd:.3e}");
+        assert!(maxd < 1e-6, "gaussian_smooth diverges from live scipy gaussian_filter: {maxd:.3e}");
+    }
+
     /// Load a square uint8 fixture of explicit side `n` as a bool mask.
     fn load_mask_n(bytes: &[u8], n: usize) -> Array2<bool> {
         assert_eq!(bytes.len(), n * n, "fixture size mismatch");

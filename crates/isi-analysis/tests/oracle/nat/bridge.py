@@ -62,6 +62,12 @@ def dispatch(fn, x, p):
     if fn == "is_adjacent":
         return [np.array([[IA.is_adjacent(x[0], x[1], borderWidth=int(p["borderWidth"]))]],
                          dtype=np.int8)]
+    # --- library-primitive oracles: the LIBRARY (pinned in this env: scipy 1.9.3,
+    # numpy 1.23.5) is the genuine oracle. Pure single-call pass-throughs, computed
+    # live so no frozen fixture can drift from the library (condition 6). ---
+    if fn == "scipy_gaussian_filter":
+        import scipy.ndimage as _sni
+        return [_sni.gaussian_filter(x[0], p["sigma"], mode="reflect", truncate=4.0)]
     # --- class methods: construct the genuine object, set the inputs the method
     # reads, call the REAL method. The method body is 100% the reference's; only
     # the input-wiring is ours (as in any unit test of a method). ---
