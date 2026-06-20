@@ -237,6 +237,54 @@ mod tests {
         );
     }
 
+    /// **Live genuine-oracle, SNLC/Octave**: our `position_phasor_delay_subtracted`
+    /// (Kalatsky combine) and `delay_map` vs the GENUINE `Gprocesskret.m`
+    /// (`reference/ISI/ISIAnGUI/F1`), executed live via Octave. Fed fresh fwd/rev
+    /// phase ramps (built into unit phasors exactly as `Complex2::from_phase`
+    /// does, matching Gprocesskret's no-smoothing branch). The combine is compared
+    /// as a phasor (cos/sin of the oracle kmap, in radians) so ±2π wrap can't
+    /// create false diffs; the delay is single-valued in (0, π], compared in
+    /// radians. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn combine_and_delay_match_genuine_snlc_gprocesskret_live() {
+        use crate::test_support::oracle;
+        // Two independent phase ramps over the full circle (the product grid
+        // crosses the delay flip region), with an offset so fwd != rev.
+        let twopi = 2.0 * std::f64::consts::PI;
+        let a0_arr = Array2::from_shape_fn((N, N), |(_r, c)| -std::f64::consts::PI + twopi * c as f64 / N as f64);
+        let a2_arr = Array2::from_shape_fn((N, N), |(r, _c)| -std::f64::consts::PI + twopi * r as f64 / N as f64 + 0.3);
+        let a0: Vec<f64> = a0_arr.iter().copied().collect();
+        let a2: Vec<f64> = a2_arr.iter().copied().collect();
+
+        let genuine = oracle::snlc("gprocesskret_hor", &[a0_arr.clone(), a2_arr.clone()], &[]);
+        let kmap_deg = genuine[0].as_slice().expect("contiguous");
+        let delay_deg = genuine[1].as_slice().expect("contiguous");
+
+        let fwd = Complex2::from_phase(phase_tensor(&a0));
+        let rev = Complex2::from_phase(phase_tensor(&a2));
+
+        // Combine: phasor vs cos/sin of the oracle kmap (oracle is in degrees).
+        let result = position_phasor_delay_subtracted(&fwd, &rev);
+        let re = tensor_to_array2_f64(result.real()).unwrap();
+        let im = tensor_to_array2_f64(result.imag()).unwrap();
+        let deg2rad = std::f64::consts::PI / 180.0;
+        let cos_ref: Vec<f64> = kmap_deg.iter().map(|k| (k * deg2rad).cos()).collect();
+        let sin_ref: Vec<f64> = kmap_deg.iter().map(|k| (k * deg2rad).sin()).collect();
+        Tol::abs(4, Eps::F32).assert("kalatsky combine re vs GENUINE Gprocesskret", re.as_slice().unwrap(), &cos_ref);
+        Tol::abs(4, Eps::F32).assert("kalatsky combine im vs GENUINE Gprocesskret", im.as_slice().unwrap(), &sin_ref);
+
+        // Delay: ours (radians, (0,π]) vs oracle (degrees → radians).
+        let ours_delay = tensor_to_array2_f64(delay_map(&fwd, &rev)).unwrap();
+        let delay_rad_ref: Vec<f64> = delay_deg.iter().map(|d| d * deg2rad).collect();
+        Tol::abs(512, Eps::F32).assert(
+            "delay_map vs GENUINE Gprocesskret",
+            ours_delay.as_slice().unwrap(),
+            &delay_rad_ref,
+        );
+        eprintln!("combine + delay vs GENUINE SNLC Gprocesskret (live): matched");
+    }
+
     /// `magnification_anisotropy` vs SNLC `getMagFactors.m` (`prefAxisMF` +
     /// `Distrtion`): the doubled-angle anisotropy of the visual-field Jacobian.
     /// The axis is compared **circularly** (period 180°) so a pixel near the

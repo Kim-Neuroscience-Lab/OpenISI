@@ -19,7 +19,10 @@ req = jsondecode(fileread(reqpath));
 here = fileparts(mfilename('fullpath'));
 % oracle/snlc/ -> repo root is five levels up.
 repo = fullfile(here, '..', '..', '..', '..', '..');
-addpath(fullfile(repo, 'reference', 'ISI'));   % genuine SNLC .m, pristine
+% genpath so the genuine .m in subdirs (ISIAnGUI/F1 = Gprocesskret/adaptiveSmoother,
+% ISI_Processing = shadow, …) resolve too. The reference tree stays byte-pristine;
+% we only add it to Octave's search path.
+addpath(genpath(fullfile(repo, 'reference', 'ISI')));   % genuine SNLC .m, pristine
 
 % The SNLC reference uses MATLAB Image Processing Toolbox functions (bwlabel,
 % imopen/imclose/imfill/imdilate, fspecial, watershed, bwdist); in Octave these
@@ -77,6 +80,20 @@ switch req.fn
     outs = {double(imdilate(logical(x{1}), strel('disk', p.radius, 0)))};
   case 'imfill_holes'    % raw Octave IPT: imfill(mask, 'holes')
     outs = {double(imfill(logical(x{1}), 'holes'))};
+  case 'gprocesskret_hor'  % genuine SNLC Gprocesskret.m (Kalatsky combine + delay)
+    % Inputs are the fwd/rev PHASE maps (radians) AFTER Gprocesskret's internal
+    % negation (i.e. what the Rust Complex2::from_phase consumes). Gprocesskret's
+    % no-smoothing branch does ang = angle(-ang_input), so to make its internal
+    % angle equal x{i} we feed ang_input = -exp(i*x{i}); then angle(-ang_input) =
+    % x{i} and its kmap_hor/delay_hor match our function fed exp(i*x{i}). No
+    % smoothing (hl=hh=[], adaptbit=false); vertical slots are dummies. Returns
+    % kmap_hor and delay_hor in DEGREES (bw=1 everywhere).
+    ang0 = -exp(1i * x{1});
+    ang2 = -exp(1i * x{2});
+    bw = ones(size(ang0));
+    [kmap_hor, kmap_vert, delay_hor, delay_vert, sh, magS] = ...
+        Gprocesskret({ang0, ang0, ang2, ang2}, bw, false, [], []);
+    outs = {kmap_hor, delay_hor};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end
