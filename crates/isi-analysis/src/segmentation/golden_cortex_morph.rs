@@ -149,6 +149,44 @@ mod tests {
         assert_eq!(d, 0, "raw_patch_map_allen diverges from scipy _getRawPatchMap");
     }
 
+    /// **Live genuine-oracle, CLASS METHOD**: drives the real
+    /// `RetinotopicMappingTrial._getRawPatchMap` (constructed in the bridge with
+    /// `signMapThr=0.5` so its threshold reproduces our binary input) and compares
+    /// our `raw_patch_map_allen`. This validates the orchestration against Allen's
+    /// actual method, not a scipy transcription of it. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn raw_patch_map_matches_genuine_nat_live() {
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 96;
+        // A few patches large enough to survive opening(iter=3), built in Rust.
+        let mut imseg_f = Array2::<f64>::zeros((M, M));
+        for (r0, r1, c0, c1) in [(10, 30, 10, 30), (50, 80, 40, 75), (20, 35, 60, 78)] {
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    imseg_f[[r, c]] = 1.0;
+                }
+            }
+        }
+        let imseg = imseg_f.mapv(|v| v != 0.0);
+
+        let genuine = oracle::nat_raw(
+            "getRawPatchMap",
+            &[imseg_f],
+            &[("signMapThr", 0.5), ("openIter", 3.0), ("closeIter", 3.0)],
+        )
+        .remove(0)
+        .bool();
+        let ours = raw_patch_map_allen(&imseg, 3, 3);
+
+        let d = ndarray::Zip::from(&ours)
+            .and(&genuine)
+            .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+        eprintln!("_getRawPatchMap vs GENUINE NAT method (live): differing px = {d}");
+        assert_eq!(d, 0, "raw_patch_map_allen diverges from genuine NAT _getRawPatchMap");
+    }
+
     /// `gaussian_smooth_f64` vs scipy `ni.gaussian_filter` (what Allen's
     /// `_getSignMap` / `phaseFilter` call): scipy defaults `truncate=4.0`,
     /// `mode='reflect'`. Fixture from `gen_gaussian_golden.py`.
@@ -234,6 +272,86 @@ mod tests {
         let d = count_differing(&ours, golden);
         eprintln!("Allen dilationPatches2 vs scipy+skimage: differing px = {d}");
         assert_eq!(d, 0, "dilation_patches2_allen diverges from Allen dilationPatches2");
+    }
+
+    /// **Live genuine-oracle version**: builds the seed mask in Rust and compares
+    /// our `dilation_patches2_allen` against the GENUINE NeuroAnalysisTools
+    /// `dilationPatches2`, executed live in its uv-locked env. Binary output →
+    /// exercises the typed (`bool`) bridge path. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn dilation_patches2_matches_genuine_nat_live() {
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 64;
+        let mut raw_f64 = Array2::<f64>::zeros((M, M));
+        for r in 16..30 {
+            for c in 14..28 {
+                raw_f64[[r, c]] = 1.0; // patch A
+            }
+        }
+        for r in 34..50 {
+            for c in 36..52 {
+                raw_f64[[r, c]] = 1.0; // patch B (collides under dilation)
+            }
+        }
+        let raw_bool = raw_f64.mapv(|v| v != 0.0);
+
+        let genuine = oracle::nat_raw(
+            "dilationPatches2",
+            &[raw_f64],
+            &[("dilationIter", 8.0), ("borderWidth", 1.0)],
+        )
+        .remove(0)
+        .bool();
+        let ours = dilation_patches2_allen(&raw_bool, 8, 1);
+
+        let d = ndarray::Zip::from(&ours)
+            .and(&genuine)
+            .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+        eprintln!("dilationPatches2 vs GENUINE NAT (live): differing px = {d}");
+        assert_eq!(d, 0, "dilation_patches2_allen diverges from genuine NAT dilationPatches2");
+    }
+
+    /// **Live genuine-oracle version**: our `is_adjacent` vs the GENUINE
+    /// `core.ImageAnalysis.is_adjacent`, on fresh Rust-built patch pairs across
+    /// border widths. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn is_adjacent_matches_genuine_nat_live() {
+        use crate::segmentation::connectivity::is_adjacent;
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 32;
+        let sq = |r0: usize, r1: usize, c0: usize, c1: usize| {
+            let mut a = Array2::<f64>::zeros((M, M));
+            for r in r0..r1 {
+                for c in c0..c1 {
+                    a[[r, c]] = 1.0;
+                }
+            }
+            a
+        };
+        let cases = [
+            ("overlap", sq(5, 12, 5, 12), sq(10, 17, 10, 17)),
+            ("gap2", sq(5, 12, 5, 10), sq(5, 12, 12, 17)),
+            ("far", sq(5, 12, 2, 7), sq(5, 12, 24, 29)),
+        ];
+        let mut mismatches = 0usize;
+        for (name, a, b) in &cases {
+            let (ab, bb) = (a.mapv(|v| v != 0.0), b.mapv(|v| v != 0.0));
+            for bw in [1.0_f64, 2.0, 3.0] {
+                let genuine = oracle::nat_raw("is_adjacent", &[a.clone(), b.clone()], &[("borderWidth", bw)])
+                    .remove(0)
+                    .bool()[[0, 0]];
+                let ours = is_adjacent(&ab, &bb, bw as i32);
+                if ours != genuine {
+                    mismatches += 1;
+                    eprintln!("  is_adjacent {name} bw={bw}: ours={ours} genuine={genuine}");
+                }
+            }
+        }
+        assert_eq!(mismatches, 0, "is_adjacent diverges from genuine NAT is_adjacent");
     }
 
     /// `keep_largest_component` tie-break vs SNLC `getMouseAreasX.m`

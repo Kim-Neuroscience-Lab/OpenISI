@@ -88,6 +88,59 @@ mod tests {
         );
     }
 
+    /// **Live genuine-oracle version** of `vfs_matches_allen_visual_sign_map_on_smooth_input`:
+    /// builds the same smooth phase maps in Rust and compares against the GENUINE
+    /// NeuroAnalysisTools `visualSignMap`, executed live in its own uv-locked
+    /// period-correct env (`tests/oracle/nat/`) — no transcription, no fixture.
+    /// Gated behind `oracle_live`; run with `--features oracle_live` (needs `uv`).
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn vfs_matches_genuine_nat_visual_sign_map_live() {
+        use crate::test_support::oracle;
+        use std::f64::consts::{PI, TAU};
+
+        // Smooth (no-wrap) phase maps — the INPUT, built in Rust, handed to the
+        // genuine oracle live. `meshgrid(xs, ys)`: X varies along cols, Y rows.
+        let lin = |i: usize| i as f64 / (N - 1) as f64;
+        let mut phi1 = Array2::<f64>::zeros((N, N));
+        let mut phi2 = Array2::<f64>::zeros((N, N));
+        for r in 0..N {
+            for c in 0..N {
+                let (x, y) = (lin(c), lin(r));
+                phi1[[r, c]] = 0.8 * x + 0.15 * y;
+                phi2[[r, c]] = 0.30 * (TAU * y).sin() + 0.15 * x;
+            }
+        }
+        assert!(
+            phi1.iter().chain(phi2.iter()).all(|v| v.abs() < PI),
+            "inputs would wrap"
+        );
+
+        // GENUINE oracle: real NAT visualSignMap, live, in its locked env.
+        let allen = oracle::nat("visualSignMap", &[phi1.clone(), phi2.clone()], &[]).remove(0);
+
+        // Ours (same crate-internal path as the fixture test).
+        let p1: Vec<f64> = phi1.iter().copied().collect();
+        let p2: Vec<f64> = phi2.iter().copied().collect();
+        let z_azi = Complex2::from_phase(phase_tensor(&p1));
+        let z_alt = Complex2::from_phase(phase_tensor(&p2));
+        let (d_azi_dx, d_azi_dy) = phase_gradients(&z_azi);
+        let (d_alt_dx, d_alt_dy) = phase_gradients(&z_alt);
+        let ours = tensor_to_array2_f64(compute_vfs(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy)).unwrap();
+
+        let mut max_same = 0.0f64;
+        for i in 1..N - 1 {
+            for j in 1..N - 1 {
+                max_same = max_same.max((ours[[i, j]] - allen[[i, j]]).abs());
+            }
+        }
+        eprintln!("VFS vs GENUINE NAT (live, interior): max|ours-allen|={max_same:.3e}");
+        assert!(
+            max_same < 5e-2,
+            "VFS deviates from genuine NAT beyond discretization tolerance: {max_same:.3e}"
+        );
+    }
+
     /// The other half of the equivalence claim: "more numerically stable near
     /// phase wraps." A steep azimuth ramp is stored as its wrapped angle. Our
     /// chain-rule path sees the continuous phasor and recovers the *true*
@@ -244,6 +297,37 @@ mod tests {
         Tol::abs(128, Eps::F64).assert("garrett eccentricity vs Allen", &ours, &golden);
     }
 
+    /// **Live genuine-oracle version**: builds altitude/azimuth degree maps in
+    /// Rust and compares our `eccentricity_pixel_deg` against the GENUINE
+    /// NeuroAnalysisTools `eccentricityMap`, executed live. Gated `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn eccentricity_matches_genuine_nat_eccentricitymap_live() {
+        use crate::test_support::oracle;
+        const ALT_C: f64 = 5.0;
+        const AZI_C: f64 = 10.0;
+        // Smooth, non-degenerate degree ramps (the formula is per-pixel; any
+        // non-trivial maps exercise it).
+        let lin = |i: usize, lo: f64, hi: f64| lo + (hi - lo) * i as f64 / (N - 1) as f64;
+        let alt = Array2::from_shape_fn((N, N), |(r, _)| lin(r, -20.0, 20.0));
+        let azi = Array2::from_shape_fn((N, N), |(_, c)| lin(c, -30.0, 30.0));
+
+        let genuine = oracle::nat(
+            "eccentricityMap",
+            &[alt.clone(), azi.clone()],
+            &[("altCenter", ALT_C), ("aziCenter", AZI_C)],
+        )
+        .remove(0);
+        let ours: Vec<f64> = (0..N * N)
+            .map(|i| crate::math::eccentricity_pixel_deg(alt.as_slice().unwrap()[i], azi.as_slice().unwrap()[i], ALT_C, AZI_C))
+            .collect();
+        Tol::abs(128, Eps::F64).assert(
+            "eccentricity vs GENUINE NAT eccentricityMap (live)",
+            &ours,
+            genuine.as_slice().unwrap(),
+        );
+    }
+
     /// `compute_magnification_jacobian` (our `magnification_raw`, |det J|) vs Allen
     /// `RetinotopicMapping._getDeterminantMap` (L1184), plus the inverted
     /// `magnification` leaf (cortical magnification factor = 1/max(|det J|, eps)).
@@ -278,6 +362,39 @@ mod tests {
         let labels = Array2::from_elem((MG, MG), 1i32); // all in-ROI
         let cmf = crate::math::cortical_magnification_factor(&got, &labels);
         Tol::abs(256, Eps::F32).assert("CMF (1/|det J|)", cmf.as_slice().expect("contiguous"), &cmf_g);
+    }
+
+    /// **Live genuine-oracle, CLASS METHOD**: our `compute_magnification_jacobian`
+    /// (|det J|) vs the GENUINE `RetinotopicMappingTrial._getDeterminantMap`,
+    /// driven on non-affine position maps built in Rust. Gated `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn magnification_matches_genuine_nat_determinant_map_live() {
+        use crate::test_support::oracle;
+        const MG: usize = 48;
+        // Non-affine alt/azi degree maps → spatially-varying Jacobian.
+        let pos = |r: usize, c: usize| {
+            let (x, y) = (c as f64 / (MG - 1) as f64, r as f64 / (MG - 1) as f64);
+            (10.0 * x + 5.0 * y * y + 3.0 * x * y, 20.0 * y - 4.0 * x * x + 2.0 * x * y)
+        };
+        let alt = Array2::from_shape_fn((MG, MG), |(r, c)| pos(r, c).0);
+        let azi = Array2::from_shape_fn((MG, MG), |(r, c)| pos(r, c).1);
+
+        let genuine = oracle::nat("getDeterminantMap", &[alt.clone(), azi.clone()], &[]).remove(0);
+
+        let alt_t = tensor2(alt.iter().map(|&v| v as f32).collect(), MG, MG);
+        let azi_t = tensor2(azi.iter().map(|&v| v as f32).collect(), MG, MG);
+        let (d_alt_dx, d_alt_dy) = real_gradients(alt_t);
+        let (d_azi_dx, d_azi_dy) = real_gradients(azi_t);
+        let mag = compute_magnification_jacobian(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, 1.0, 1.0);
+        let got = tensor_to_array2_f64(mag).unwrap();
+
+        // f32 gradients + det cancellation vs genuine f64 (same as the fixture test, K=64).
+        Tol::abs(64, Eps::F32).assert(
+            "det J vs GENUINE NAT _getDeterminantMap (live)",
+            got.as_slice().expect("contiguous"),
+            genuine.as_slice().expect("contiguous"),
+        );
     }
 
     /// patch_threshold: `AllenZhuang2017FixedSignMapThr` (|signMapf|≥0.35) and

@@ -79,6 +79,14 @@ noisy_float = "0.2.1"
 # CUDA — device selection is a runtime value; see compute/backend.rs.)
 cuda = ["dep:burn-cuda", "burn-dispatch/cuda"]
 
+# Live genuine-oracle validation. The in-crate oracle tests, when this is on,
+# build their inputs in Rust and call the GENUINE reference code (run in its own
+# uv-locked per-oracle environment under tests/oracle/) live, comparing against
+# its real output — no transcriptions, no frozen fixtures. Off by default so the
+# normal `cargo test` needs no Python/Octave; CI runs `--features oracle_live`.
+# Requires `uv` on PATH (or OPENISI_UV).
+oracle_live = []
+
 [dev-dependencies]
 # Dev-only synthetic ground-truth generator (forward model → raw movie) for the
 # correctness / recover-and-compare tests. Leaf crate; never a runtime dep.

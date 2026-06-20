@@ -1110,6 +1110,42 @@ mod allen {
             );
         }
 
+        /// **Live genuine-oracle version**: our `sigma_area` vs the GENUINE
+        /// `Patch.getSigmaArea` (`sum(array * detMap)`). The probe case is a NaN
+        /// OUTSIDE the mask: genuine numpy computes `0.0 * NaN = NaN` so the whole
+        /// sum is NaN, whereas a masked sum stays finite. This surfaces the real
+        /// NaN-handling behaviour against the actual reference. Gated `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn sigma_area_matches_genuine_nat_live() {
+            use crate::test_support::oracle;
+            const H: usize = 24;
+            const W: usize = 32;
+            let mask = Array2::from_shape_fn((H, W), |(r, c)| (4..12).contains(&r) && (4..12).contains(&c));
+            let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            let base = Array2::from_shape_fn((H, W), |(r, c)| (r as f64 - c as f64) * 0.05 + 1.0);
+            let mut nanin = base.clone();
+            nanin[[6, 6]] = f64::NAN; // NaN inside the mask
+            let mut nanout = base.clone();
+            nanout[[20, 28]] = f64::NAN; // NaN outside the mask
+            let cases: [(&str, &Array2<f64>); 3] =
+                [("finite", &base), ("nanin", &nanin), ("nanout", &nanout)];
+            let eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + b.abs());
+
+            let mut diffs = Vec::new();
+            for (name, det) in cases {
+                let g = oracle::nat_raw("getSigmaArea", &[mask_f.clone(), det.clone()], &[])
+                    .remove(0)
+                    .f64()[[0, 0]];
+                let o = sigma_area(&mask, det);
+                eprintln!("  sigma_area {name}: ours={o} genuine={g}");
+                if !eq(o, g) {
+                    diffs.push(format!("{name}: ours={o} genuine={g}"));
+                }
+            }
+            assert!(diffs.is_empty(), "sigma_area diverges from genuine NAT getSigmaArea: {diffs:?}");
+        }
+
         /// `eccentricity_full_image` (great-circle formula + NaN propagation)
         /// and `patch_visual_center` (the `!= 0`, per-coordinate centre) vs
         /// verbatim Allen `eccentricityMap` + `getPixelVisualCenter`
@@ -1205,6 +1241,32 @@ mod allen {
             assert_eq!(total, 0, "local_min_markers diverges from Allen localMin");
         }
 
+        /// **Live genuine-oracle version**: our `local_min_markers` vs the GENUINE
+        /// NeuroAnalysisTools `localMin`, on a two-basin ecc map built in Rust.
+        /// Integer marker maps compared exactly. Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn local_min_matches_genuine_nat_live() {
+            use crate::test_support::oracle;
+            const N: usize = 32;
+            let well = |r: usize, c: usize, cr: f64, cc: f64| {
+                let (dr, dc) = (r as f64 - cr, c as f64 - cc);
+                (dr * dr + dc * dc).sqrt()
+            };
+            let ecc = Array2::from_shape_fn((N, N), |(r, c)| {
+                0.1 * well(r, c, 8.0, 8.0).min(well(r, c, 24.0, 24.0))
+            });
+            let genuine = oracle::nat_raw("localMin", &[ecc.clone()], &[("binSize", 0.5)])
+                .remove(0)
+                .i32();
+            let ours = local_min_markers(&ecc, 0.5);
+            let d = ndarray::Zip::from(&ours)
+                .and(&genuine)
+                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+            eprintln!("local_min vs GENUINE NAT (live): differing = {d}");
+            assert_eq!(d, 0, "local_min_markers diverges from genuine NAT localMin");
+        }
+
         /// `merge_two` vs verbatim Allen `mergePatches`
         /// (`RetinotopicMapping.py` L435-447), `border_width=2`. `flag=1` →
         /// `Some(spc)`; `flag=0` → `None` (Allen raises "too far apart").
@@ -1279,6 +1341,50 @@ mod allen {
                 total += check(name, a, b, o, f);
             }
             assert_eq!(total, 0, "merge_two diverges from Allen mergePatches");
+        }
+
+        /// **Live genuine-oracle version**: our `merge_two` vs the GENUINE
+        /// NeuroAnalysisTools `mergePatches` (which RAISES when the two patches
+        /// are too far apart → our `None`). Built-in-Rust mergeable + far cases.
+        /// Gated behind `oracle_live`.
+        #[cfg(feature = "oracle_live")]
+        #[test]
+        fn merge_two_matches_genuine_nat_live() {
+            use crate::test_support::oracle;
+            const N: usize = 32;
+            let sq = |r0: usize, r1: usize, c0: usize, c1: usize| {
+                let mut a = Array2::<f64>::zeros((N, N));
+                for r in r0..r1 {
+                    for c in c0..c1 {
+                        a[[r, c]] = 1.0;
+                    }
+                }
+                a
+            };
+            let cases = [
+                ("mergeable", sq(8, 16, 6, 12), sq(8, 16, 13, 19)), // 1px gap → closing(2) bridges
+                ("far", sq(8, 16, 4, 9), sq(8, 16, 22, 27)),        // far → 2 CC → raises
+            ];
+            let mut diffs = Vec::new();
+            for (name, a_f, b_f) in &cases {
+                let (a, b) = (a_f.mapv(|v| v != 0.0), b_f.mapv(|v| v != 0.0));
+                let outs = oracle::nat_raw("mergePatches", &[a_f.clone(), b_f.clone()], &[("borderWidth", 2.0)]);
+                let g_mergeable = outs[1].bool()[[0, 0]];
+                let g_spc = outs[0].bool();
+                let ours = merge_two(&a, &b, 2);
+                if ours.is_some() != g_mergeable {
+                    diffs.push(format!("{name}: mergeable ours={} genuine={g_mergeable}", ours.is_some()));
+                    continue;
+                }
+                if let Some(m) = ours {
+                    let d = ndarray::Zip::from(&m).and(&g_spc).fold(0usize, |acc, &o, &gg| acc + (o != gg) as usize);
+                    if d != 0 {
+                        diffs.push(format!("{name}: merged map differs by {d} px"));
+                    }
+                }
+                eprintln!("  merge_two {name}: mergeable ours={} genuine={g_mergeable}", g_mergeable);
+            }
+            assert!(diffs.is_empty(), "merge_two diverges from genuine NAT mergePatches: {diffs:?}");
         }
 
         /// `patch_visual_space` vs verbatim Allen `Patch.getVisualSpace`

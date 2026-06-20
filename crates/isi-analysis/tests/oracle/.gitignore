@@ -1,0 +1,5 @@
+# Per-oracle uv environments: commit the REPRODUCIBLE inputs (pyproject.toml +
+# uv.lock + bridge), never the materialized venv. `uv sync` rebuilds .venv from
+# the committed lock on any machine.
+*/.venv/
+**/__pycache__/

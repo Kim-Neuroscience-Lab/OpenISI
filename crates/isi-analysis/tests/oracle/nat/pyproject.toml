@@ -1,0 +1,39 @@
+# Locked, isolated, period-correct environment for the GENUINE
+# NeuroAnalysisTools 3.1.0 oracle (Allen/Zhuang retinotopy).
+#
+# This env exists so the vendored reference under reference/NeuroAnalysisTools is
+# executed in a numerical environment of its own era — NOT against whatever the
+# host machine happens to have. The reference is run AS-IS, byte-pristine; nothing
+# here modifies it.
+#
+# Era pin rationale: NAT 3.1.0's live code uses `np.int` (removed in numpy 1.24),
+# so it requires numpy < 1.24, which in turn requires Python <= 3.11. Its 4
+# `xrange` uses are commented-out dead code. In this env it therefore runs
+# NATIVELY — no shim. (NAT's own requirements.txt is unversioned, so these pins are
+# a locked period-correct reconstruction, not the authors' exact machine.)
+#
+# uv.lock (committed) makes this reproducible on any machine / CI.
+# Run the genuine oracle:  uv run --project <this dir> python bridge.py <req.json>
+
+[project]
+name = "openisi-oracle-nat"
+version = "0.0.0"
+description = "Locked period-correct env for the genuine NeuroAnalysisTools 3.1.0 oracle."
+requires-python = "==3.10.*"
+# The full set the genuine NAT import chain pulls in (RetinotopicMapping +
+# core.ImageAnalysis/FileTools/PlottingTools): numpy, scipy, scikit-image,
+# matplotlib, opencv (cv2), h5py, scikit-learn. All pinned period-correct (NAT
+# 3.1.0 era, ~2022, numpy<1.24). Only numpy/scipy/scikit-image affect the oracle
+# numbers; the rest are import-chain requirements pinned for reproducibility.
+dependencies = [
+    "numpy==1.23.5",
+    "scipy==1.9.3",
+    "scikit-image==0.19.3",
+    "matplotlib==3.6.2",
+    "opencv-python==4.6.0.66",
+    "h5py==3.7.0",
+    "scikit-learn==1.1.3",
+]
+
+[tool.uv]
+package = false
