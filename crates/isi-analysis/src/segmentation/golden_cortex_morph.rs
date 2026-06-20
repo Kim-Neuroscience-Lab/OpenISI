@@ -615,15 +615,28 @@ mod tests {
             }
             a
         };
+        // Covers every semantic boundary the retired frozen golden exercised:
+        // overlap (adjacent at all bw), edge-touch (gap 0), and gaps of 2/4/wide
+        // pixels — so the dilation gap-closing threshold flips at the right bw —
+        // across bw 1..=4. bw=1 is the critical `iterations=0` converge-to-fill
+        // case (genuine declares every non-empty pair adjacent; ours matches).
         let cases = [
             ("overlap", sq(5, 12, 5, 12), sq(10, 17, 10, 17)),
+            ("touch", sq(5, 12, 5, 10), sq(5, 12, 10, 15)),
             ("gap2", sq(5, 12, 5, 10), sq(5, 12, 12, 17)),
+            ("gap4", sq(5, 12, 5, 10), sq(5, 12, 14, 19)),
             ("far", sq(5, 12, 2, 7), sq(5, 12, 24, 29)),
+            // diagonal-only corner contact — exercises the 4-conn cross structure
+            // (NOT 8-conn): the two squares meet only at the (8,8)/(9,9) corner.
+            ("diag", sq(5, 9, 5, 9), sq(9, 13, 9, 13)),
+            // one patch empty — the predicate `amax(p1d+p2d)>1` can never hold, so
+            // genuine returns not-adjacent at every bw; ours must match.
+            ("empty", sq(5, 12, 5, 12), sq(0, 0, 0, 0)),
         ];
         let mut mismatches = 0usize;
         for (name, a, b) in &cases {
             let (ab, bb) = (a.mapv(|v| v != 0.0), b.mapv(|v| v != 0.0));
-            for bw in [1.0_f64, 2.0, 3.0] {
+            for bw in [1.0_f64, 2.0, 3.0, 4.0] {
                 let genuine = oracle::nat_raw("is_adjacent", &[a.clone(), b.clone()], &[("borderWidth", bw)])
                     .remove(0)
                     .bool()[[0, 0]];
@@ -670,76 +683,13 @@ mod tests {
         );
     }
 
-    /// `is_adjacent` vs a verbatim Allen `tools.ImageAnalysis.is_adjacent`
-    /// (`scipy.ndimage.binary_dilation(iterations=bw-1)` overlap). 10 pairs ×
-    /// 4 border-widths; `bw==1` is the `iterations=0` dilate-to-convergence
-    /// case (any two non-empty patches adjacent). Fixtures from
-    /// `gen_is_adjacent_golden.py` (case order is load-bearing).
-    #[test]
-    fn is_adjacent_matches_allen() {
-        use crate::segmentation::connectivity::is_adjacent;
-        const M: usize = 32;
-        let pairs: [(&[u8], &[u8]); 10] = [
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_overlap_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_overlap_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_touch_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_touch_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_gap1_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_gap1_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_gap2_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_gap2_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_gap3_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_gap3_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_diag_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_diag_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_far_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_far_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_thin_gap1_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_thin_gap1_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_b_empty_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_b_empty_b.bin"),
-            ),
-            (
-                include_bytes!("../../tests/golden/fixtures/isadj_edge_gap2_a.bin"),
-                include_bytes!("../../tests/golden/fixtures/isadj_edge_gap2_b.bin"),
-            ),
-        ];
-        let expected: &[u8] = include_bytes!("../../tests/golden/fixtures/isadj_expected.bin");
-        let bws = [1i32, 2, 3, 4];
-        let mut idx = 0usize;
-        let mut wrong = 0usize;
-        for (a_b, b_b) in &pairs {
-            let a = load_mask_n(a_b, M);
-            let b = load_mask_n(b_b, M);
-            for &bw in &bws {
-                let got = is_adjacent(&a, &b, bw);
-                let exp = expected[idx] != 0;
-                if got != exp {
-                    eprintln!("  is_adjacent mismatch at idx {idx} (bw={bw}): got {got} exp {exp}");
-                    wrong += 1;
-                }
-                idx += 1;
-            }
-        }
-        assert_eq!(wrong, 0, "is_adjacent diverges from Allen is_adjacent");
-    }
+    // (Cutover, objective 1) The frozen `is_adjacent_matches_allen` golden + its
+    // 21 isadj_*.bin fixtures + gen_is_adjacent_golden.py (which imported the
+    // `_allen_oracle` SHIM) were DELETED: the live
+    // `is_adjacent_matches_genuine_nat_live` above was enriched to cover every
+    // semantic case the frozen golden held (overlap/touch/gap2/gap4/far/diag/empty
+    // × border-width 1..=4, incl. the bw=1 converge-to-fill semantic) and computes
+    // the genuine NAT `is_adjacent` live in the shim-free uv-locked env.
 
     /// `segment_threshold_only`'s opening must be Allen's
     /// `ni.binary_opening(iterations=3)` (4-conn cross diamond, border_value=0)
