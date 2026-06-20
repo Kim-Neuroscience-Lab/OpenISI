@@ -157,10 +157,11 @@ def dispatch(fn, x, p):
     if fn == "getVisualSpace":
         patch = RM.Patch(x[0], 1)
         close = int(p["closeIter"]) if "closeIter" in p else None
-        vs, _uniq, _altc, _azic = patch.getVisualSpace(
+        vs, uniq, _altc, _azic = patch.getVisualSpace(
             x[1], x[2], pixelSize=p.get("pixelSize", 1.0), closeIter=close
         )
-        return [np.asarray(vs)]
+        # Return the visual-space mask AND uniqueArea (count·pixelSize²).
+        return [np.asarray(vs), np.array([[float(uniq)]], dtype=np.float64)]
     raise KeyError(f"unknown oracle fn {fn!r}")
 
 

@@ -1375,147 +1375,68 @@ mod allen {
         }
 
         /// **Live genuine-oracle, CLASS METHOD**: our `patch_visual_space` vs the
-        /// GENUINE `Patch.getVisualSpace`, on a patch + alt/azi maps built in Rust.
-        /// We construct the `VisualGrid` to NAT's hardcoded ranges (alt [-40,60),
-        /// azi [-20,120)) since our `derive_visual_grid` is an OpenISI choice, not
-        /// the oracle; `closeIter=0` (no closing). Gated behind `oracle_live`.
+        /// GENUINE `Patch.getVisualSpace`, covering every case the retired frozen
+        /// golden held: the scatter-into-grid (floor division) + `binary_closing`
+        /// (cross SE) across closeIter 0/1/2/3, **uniqueArea** (`count·pixelSize²`),
+        /// out-of-range gating (pixels outside the hardcoded alt [-40,60)/azi
+        /// [-20,120) ranges are dropped), and NaN-skip. The `VisualGrid` is built to
+        /// NAT's hardcoded ranges (our `derive_visual_grid` bounding box is an
+        /// OpenISI choice, not the oracle). Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn patch_visual_space_matches_genuine_nat_live() {
             use crate::test_support::oracle;
             const MH: usize = 40;
             const MW: usize = 40;
-            // A patch + smooth alt/azi degree maps placing its pixels inside the
-            // hardcoded ranges.
             let lin = |i: usize, n: usize, lo: f64, hi: f64| lo + (hi - lo) * i as f64 / (n - 1) as f64;
             let mask = Array2::from_shape_fn((MH, MW), |(r, c)| (8..28).contains(&r) && (6..30).contains(&c));
             let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
+            // In-range smooth maps.
             let alt = Array2::from_shape_fn((MH, MW), |(r, _)| lin(r, MH, -30.0, 50.0));
             let azi = Array2::from_shape_fn((MH, MW), |(_, c)| lin(c, MW, -10.0, 110.0));
-
-            // genuine getVisualSpace(altMap, aziMap, pixelSize, closeIter)
-            let genuine = oracle::nat_raw(
-                "getVisualSpace",
-                &[mask_f, alt.clone(), azi.clone()],
-                &[("pixelSize", 1.0), ("closeIter", 0.0)],
-            )
-            .remove(0)
-            .bool();
+            // Push some patch pixels OUT of the hardcoded ranges (gating) and inject
+            // a NaN inside the patch (skip).
+            let mut alt_edge = alt.clone();
+            let mut azi_edge = azi.clone();
+            alt_edge[[8, 6]] = 200.0; // > 60 → gated out
+            azi_edge[[27, 29]] = -100.0; // < -20 → gated out
+            alt_edge[[15, 15]] = f64::NAN; // NaN → skipped
+            azi_edge[[20, 20]] = f64::NAN;
 
             let grid = VisualGrid { alt_min: -40.0, azi_min: -20.0, pixel_size: 1.0, h: 100, w: 140 };
-            let (ours, _area) = patch_visual_space(&mask, &azi, &alt, &grid, 0);
-
-            assert_eq!(ours.dim(), genuine.dim(), "visual-space grid shape mismatch");
-            let d = ndarray::Zip::from(&ours)
-                .and(&genuine)
-                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
-            eprintln!("getVisualSpace vs GENUINE NAT (live): differing px = {d}");
-            assert_eq!(d, 0, "patch_visual_space diverges from genuine NAT getVisualSpace");
-        }
-
-        /// `patch_visual_space` vs verbatim Allen `Patch.getVisualSpace`
-        /// (`RetinotopicMapping.py` L2745-2797): the scatter-into-grid (floor
-        /// division), `binary_closing` (cross SE, border 0), and `uniqueArea =
-        /// count·pixelSize²`. The grid is built to Allen's hardcoded ranges (the
-        /// meta fixture carries `alt_min, azi_min, pixel_size, vs_h, vs_w`) so the
-        /// projection/closing math is isolated from the (separately divergent)
-        /// `derive_visual_grid` bounding box. Four cases (in/out-of-range gating,
-        /// floor-division boundaries, NaN skip, border closing). Fixtures from
-        /// `gen_patchvs_golden.py` (cortex grid 40×40).
-        #[test]
-        fn patch_visual_space_matches_allen_get_visual_space() {
-            const MH: usize = 40;
-            const MW: usize = 40;
-            fn check(
-                name: &str,
-                mask_b: &[u8],
-                alt_b: &[u8],
-                azi_b: &[u8],
-                out_b: &[u8],
-                meta_b: &[u8],
-                close_iter: i32,
-            ) {
-                let meta = meta_b
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                    .collect::<Vec<_>>();
-                let (alt_min, azi_min, ps) = (meta[0], meta[1], meta[2]);
-                let (vs_h, vs_w) = (meta[3] as usize, meta[4] as usize);
-                let ua_exp = meta[5];
-
-                let alt_v = alt_b
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                    .collect::<Vec<_>>();
-                let azi_v = azi_b
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                    .collect::<Vec<_>>();
-                let mask = Array2::from_shape_fn((MH, MW), |(r, c)| mask_b[r * MW + c] != 0);
-                let alt = Array2::from_shape_fn((MH, MW), |(r, c)| alt_v[r * MW + c]);
-                let azi = Array2::from_shape_fn((MH, MW), |(r, c)| azi_v[r * MW + c]);
-
-                let grid = VisualGrid {
-                    alt_min,
-                    azi_min,
-                    pixel_size: ps,
-                    h: vs_h,
-                    w: vs_w,
-                };
-                let (vs, ua) = patch_visual_space(&mask, &azi, &alt, &grid, close_iter);
-                assert_eq!((vs.nrows(), vs.ncols()), (vs_h, vs_w), "{name}: vs shape");
-                let mut diff = 0usize;
-                for r in 0..vs_h {
-                    for c in 0..vs_w {
-                        if (vs[[r, c]] as u8) != out_b[r * vs_w + c] {
-                            diff += 1;
-                        }
+            let scenes: [(&str, &Array2<f64>, &Array2<f64>); 2] =
+                [("inrange", &alt, &azi), ("edge_nan", &alt_edge, &azi_edge)];
+            let mut fails = Vec::new();
+            for (name, a, z) in scenes {
+                for close in [0.0_f64, 1.0, 2.0, 3.0] {
+                    let g = oracle::nat_raw(
+                        "getVisualSpace",
+                        &[mask_f.clone(), a.clone(), z.clone()],
+                        &[("pixelSize", 1.0), ("closeIter", close)],
+                    );
+                    let g_vs = g[0].bool();
+                    let g_area = g[1].f64()[[0, 0]];
+                    let (ours, our_area) = patch_visual_space(&mask, z, a, &grid, close as i32);
+                    let d = ndarray::Zip::from(&ours).and(&g_vs).fold(0usize, |acc, &o, &gg| acc + (o != gg) as usize);
+                    eprintln!("  patchvs {name} close={close}: vs_diff={d} area ours={our_area} genuine={g_area}");
+                    if ours.dim() != g_vs.dim() || d != 0 {
+                        fails.push(format!("{name} close={close}: vs_diff={d}"));
+                    }
+                    if (our_area - g_area).abs() > 1e-9 {
+                        fails.push(format!("{name} close={close}: area {our_area} != {g_area}"));
                     }
                 }
-                eprintln!("  patchvs {name:8} vs_diff={diff}  area got={ua} exp={ua_exp}");
-                assert_eq!(diff, 0, "{name}: visual-space mask diverges from Allen");
-                assert!(
-                    (ua - ua_exp).abs() < 1e-9,
-                    "{name}: uniqueArea {ua} != {ua_exp}"
-                );
             }
-            check(
-                "basic",
-                include_bytes!("../../tests/golden/fixtures/patchvs_mask_basic.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_alt_basic.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_azi_basic.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_out_basic.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_meta_basic.bin"),
-                2,
-            );
-            check(
-                "exact",
-                include_bytes!("../../tests/golden/fixtures/patchvs_mask_exact.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_alt_exact.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_azi_exact.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_out_exact.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_meta_exact.bin"),
-                1,
-            );
-            check(
-                "border",
-                include_bytes!("../../tests/golden/fixtures/patchvs_mask_border.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_alt_border.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_azi_border.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_out_border.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_meta_border.bin"),
-                3,
-            );
-            check(
-                "random",
-                include_bytes!("../../tests/golden/fixtures/patchvs_mask_random.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_alt_random.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_azi_random.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_out_random.bin"),
-                include_bytes!("../../tests/golden/fixtures/patchvs_meta_random.bin"),
-                1,
-            );
+            assert!(fails.is_empty(), "patch_visual_space diverges from genuine NAT getVisualSpace: {fails:?}");
         }
+
+        // (Cutover, objective 1) The frozen `patch_visual_space_matches_allen_
+        // get_visual_space` golden + its patchvs_*.bin fixtures + gen_patchvs_golden.py
+        // (a transcription) were DELETED: the live
+        // `patch_visual_space_matches_genuine_nat_live` above was enriched to cover the
+        // same cases — scatter-into-grid + binary_closing across closeIter 0/1/2/3,
+        // uniqueArea, out-of-range gating, and NaN-skip — against the genuine NAT
+        // `Patch.getVisualSpace` live (the bridge now also returns uniqueArea).
 
         /// `visual_space_overlap` = `count(a ∧ b) · pixel_size²` — Allen's
         /// `Patch.getOverlap` numerator (the shared visual-space area used by the
@@ -2991,7 +2912,7 @@ mod garrett {
     mod golden {
         use super::*;
         use agreement::{Eps, Tol};
-        use crate::test_support::{count_differing, load_f64, load_i32};
+        use crate::test_support::{count_differing, load_f64};
 
         /// `over_rep` vs SNLC `overRep` (`splitPatchesX.m:188-215`). Projection +
         /// fill/close is integer/topological, so the coverage mask must match

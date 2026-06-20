@@ -17,13 +17,15 @@
 mod tests {
     use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt, CortexSourceMethod};
     use crate::methods::patch_extraction::raw_patch_map_allen;
-    use crate::segmentation::connectivity::{
-        dilation_patches2_allen, keep_largest_component, label_4conn,
-    };
+    use crate::segmentation::connectivity::{keep_largest_component, label_4conn};
     use crate::segmentation::morphology::{
         binary_closing_cross, binary_closing_disk, binary_dilation_disk, binary_fill_holes,
-        binary_opening_cross, binary_opening_disk, binary_skeletonize_skimage, gaussian_smooth_f64,
+        binary_opening_cross, binary_opening_disk, gaussian_smooth_f64,
     };
+    // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
+    // which also used these in the default build, were retired in the cutover).
+    #[cfg(feature = "oracle_live")]
+    use crate::segmentation::connectivity::dilation_patches2_allen;
     use crate::test_support::{count_differing, load_f64, load_i32};
     use ndarray::Array2;
 
@@ -320,7 +322,7 @@ mod tests {
         const M: usize = 32;
         let mut im = Array2::<f64>::zeros((M, M));
         let mut sgn = Array2::<f64>::zeros((M, M));
-        let mut paint = |r0: usize, r1: usize, c0: usize, c1: usize, s: f64, im: &mut Array2<f64>, sgn: &mut Array2<f64>| {
+        let paint = |r0: usize, r1: usize, c0: usize, c1: usize, s: f64, im: &mut Array2<f64>, sgn: &mut Array2<f64>| {
             for r in r0..r1 {
                 for c in c0..c1 {
                     im[[r, c]] = 1.0;

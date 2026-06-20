@@ -19,10 +19,15 @@
 mod tests {
     use crate::compute::responsiveness::reliability;
     use crate::compute::{
-        amp_weighted_complex_smooth, compute_magnification_jacobian, compute_vfs, delay_map,
-        device, gaussian_smooth, magnification_anisotropy, phase_gradients, position_amplitude,
-        position_gaussian_smooth, position_phasor_delay_subtracted, real_gradients,
-        tensor_to_array2_f64, Backend, Complex2,
+        amp_weighted_complex_smooth, compute_vfs, device, gaussian_smooth, magnification_anisotropy,
+        phase_gradients, position_gaussian_smooth, tensor_to_array2_f64, Backend, Complex2,
+    };
+    // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
+    // which also used these in the default build, were retired in the cutover).
+    #[cfg(feature = "oracle_live")]
+    use crate::compute::{
+        compute_magnification_jacobian, delay_map, position_amplitude,
+        position_phasor_delay_subtracted, real_gradients,
     };
     use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
     use crate::test_support::{count_differing, load_f32, load_f64};
