@@ -117,6 +117,9 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_centerpatch_golden.m",
         "gen_resetpatch_golden.m",
         "gen_getnlocalmin_golden.m",
+        // library-primitive frozen golden retired for objective 6 (the method is
+        // computed LIVE each run by separable_filter_matches_genuine_scipy_live):
+        "gen_reflect_wrap_golden.py",
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -149,7 +152,6 @@ fn every_surviving_generator_is_classified_non_transcription() {
     // (filename, category) — source-verified by reading each generator's oracle source.
     const MANIFEST: &[(&str, &str)] = &[
         ("gen_patch_morph_golden.py", "LibraryPrimitive"),     // scipy.ndimage binary_opening/closing
-        ("gen_reflect_wrap_golden.py", "LibraryPrimitive"),    // scipy.ndimage correlate1d
         ("gen_watershed_markers_golden.py", "LibraryPrimitive"), // skimage.segmentation.watershed
         ("gen_cortex_morph_golden.m", "LibraryPrimitive"),     // Octave IPT imopen/imclose/imfill/imdilate
         ("gen_fftgauss_golden.m", "LibraryPrimitive"),         // Octave fft-based gaussian blur

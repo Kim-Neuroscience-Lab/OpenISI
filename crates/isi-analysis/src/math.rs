@@ -663,46 +663,12 @@ fn rot90(arr: &Array2<Complex64>, k: i32) -> Array2<Complex64> {
 mod tests {
     use super::*;
 
-    /// `reflect` (the scipy `mode='reflect'` index fold) and `separable_filter`
-    /// vs scipy, specifically the LARGE-RADIUS periodic-wrap branch (radius > n)
-    /// that the gaussian goldens never reach. Part 1 pins the raw index map
-    /// over `-9..=12` for n=4 (recovered from scipy `correlate1d` single-taps);
-    /// part 2 the 2-pass separable filter on a 4×4 grid with a length-15 kernel.
-    /// Fixtures from `gen_reflect_wrap_golden.py`. Predicted-match.
-    #[test]
-    fn reflect_and_separable_match_scipy_large_radius() {
-        // Part 1 — index mapping (n=4, radius 9, probes -9..=12).
-        let idxmap: Vec<i32> =
-            include_bytes!("../tests/golden/fixtures/reflect_wrap_idxmap.bin")
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-        let probes: Vec<isize> = (-9..=12).collect();
-        assert_eq!(idxmap.len(), probes.len(), "probe count mismatch");
-        for (k, &i) in probes.iter().enumerate() {
-            assert_eq!(reflect(i, 4) as i32, idxmap[k], "reflect({i}, 4)");
-        }
-
-        // Part 2 — separable filter, kernel length 15 > n=4.
-        let ld = |b: &[u8]| -> Vec<f64> {
-            b.chunks_exact(8)
-                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                .collect()
-        };
-        let inp = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_input.bin"));
-        let kernel = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_kernel.bin"));
-        let out_exp = ld(include_bytes!("../tests/golden/fixtures/reflect_wrap_output.bin"));
-        let input = Array2::from_shape_fn((4, 4), |(r, c)| inp[r * 4 + c]);
-        let out = separable_filter(&input, &kernel);
-        let mut md = 0.0f64;
-        for r in 0..4 {
-            for c in 0..4 {
-                md = md.max((out[[r, c]] - out_exp[r * 4 + c]).abs());
-            }
-        }
-        eprintln!("separable_filter (radius>n) vs scipy: max diff = {md:.2e}");
-        assert!(md < 1e-12, "separable_filter wrap branch diverges from scipy: {md:.2e}");
-    }
+    // (Cutover, objective 6) The frozen `reflect_and_separable_match_scipy_large_radius`
+    // golden + its reflect_wrap_*.bin fixtures + gen_reflect_wrap_golden.py were
+    // DELETED: the live `separable_filter_matches_genuine_scipy_live` (golden_vfs)
+    // exercises `separable_filter` — and thus the `reflect` index fold in its
+    // large-radius periodic-wrap branch — against the genuine scipy.ndimage.correlate1d
+    // live, so the library-primitive is computed each run (no frozen fixture to drift).
 
     /// **Live library-primitive oracle**: our `separable_filter` (which exercises
     /// the `reflect` index fold, including the large-radius periodic-wrap branch)
