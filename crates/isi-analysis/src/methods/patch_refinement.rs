@@ -1065,81 +1065,44 @@ mod allen {
             assert_eq!(udiff, 0, "split2 union diverges from genuine NAT split2");
         }
 
-        /// `uniform_filter_finite` vs `scipy.ndimage.uniform_filter`
-        /// (`mode='reflect'`): odd size 15 and even size 10 on a 48×48 field,
-        /// size 5 on 11×11. Even sizes are the asymmetric-window stress.
-        /// Fixtures from `gen_uniform_filter_ecc_golden.py`.
-        #[test]
-        fn uniform_filter_matches_scipy_reflect() {
-            fn maxdiff(out: &Array2<f64>, golden: &[f64], h: usize, w: usize) -> f64 {
-                let mut m = 0.0f64;
-                for r in 0..h {
-                    for c in 0..w {
-                        let (o, g) = (out[[r, c]], golden[r * w + c]);
-                        if o.is_nan() || g.is_nan() {
-                            assert_eq!(o.is_nan(), g.is_nan(), "NaN mismatch at {r},{c}");
-                        } else {
-                            m = m.max((o - g).abs());
-                        }
-                    }
-                }
-                m
-            }
-            let ia = load_f64(include_bytes!("../../tests/golden/fixtures/uf_in_a.bin"));
-            let a = Array2::from_shape_fn((48, 48), |(r, c)| ia[r * 48 + c]);
-            let d15 = maxdiff(
-                &uniform_filter_finite(&a, 15),
-                &load_f64(include_bytes!("../../tests/golden/fixtures/uf_out_a15.bin")),
-                48,
-                48,
-            );
-            let d10 = maxdiff(
-                &uniform_filter_finite(&a, 10),
-                &load_f64(include_bytes!("../../tests/golden/fixtures/uf_out_a10.bin")),
-                48,
-                48,
-            );
-            let ib = load_f64(include_bytes!("../../tests/golden/fixtures/uf_in_b.bin"));
-            let b = Array2::from_shape_fn((11, 11), |(r, c)| ib[r * 11 + c]);
-            let d5 = maxdiff(
-                &uniform_filter_finite(&b, 5),
-                &load_f64(include_bytes!("../../tests/golden/fixtures/uf_out_b5.bin")),
-                11,
-                11,
-            );
-            eprintln!("uniform_filter vs scipy: d15={d15:.2e} d10={d10:.2e} d5={d5:.2e}");
-            assert!(
-                d15 < 1e-9 && d10 < 1e-9 && d5 < 1e-9,
-                "uniform_filter_finite diverges from scipy uniform_filter (reflect)"
-            );
-        }
+        // (Cutover, objective 1) The frozen `uniform_filter_matches_scipy_reflect`
+        // golden + its uf_*.bin fixtures + gen_uniform_filter_ecc_golden.py were
+        // DELETED: the live `uniform_filter_matches_genuine_scipy_live` below was
+        // enriched to cover the same cases (size 15 + 10 on 48×48, size 5 on 11×11)
+        // against the genuine `scipy.ndimage.uniform_filter(mode='reflect')` live.
 
         /// **Live library-primitive oracle**: our `uniform_filter_finite` vs the
         /// GENUINE `scipy.ndimage.uniform_filter(mode='reflect')`, executed live in
-        /// the uv-locked env. scipy is the oracle; the bridge only calls it. Odd
-        /// (15) and even (10) window sizes — even is the asymmetric-window stress.
-        /// Gated behind `oracle_live`.
+        /// the uv-locked env. scipy is the oracle; the bridge only calls it. Covers
+        /// every case the retired frozen golden held: odd (15) and even (10) windows
+        /// on a 48×48 field (even = the asymmetric-window stress), and a small
+        /// window (5) on an 11×11 field (window > a fraction of the grid). Gated
+        /// behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn uniform_filter_matches_genuine_scipy_live() {
             use crate::test_support::oracle;
-            const N: usize = 48;
-            // A smooth field + a ramp so the window average is non-trivial everywhere.
-            let a = Array2::from_shape_fn((N, N), |(r, c)| {
-                (r as f64 * 0.3).sin() + (c as f64 * 0.2).cos() + 0.05 * (r + c) as f64
-            });
+            let smooth = |n: usize| {
+                Array2::from_shape_fn((n, n), |(r, c)| {
+                    (r as f64 * 0.3).sin() + (c as f64 * 0.2).cos() + 0.05 * (r + c) as f64
+                })
+            };
+            let big = smooth(48);
+            let small = smooth(11);
+            let cases: [(&Array2<f64>, usize); 3] = [(&big, 15), (&big, 10), (&small, 5)];
             let mut maxd = 0.0f64;
-            for size in [15usize, 10] {
+            for (a, size) in cases {
+                let n = a.dim().0;
                 let genuine = oracle::nat("scipy_uniform_filter", &[a.clone()], &[("size", size as f64)])
                     .remove(0);
-                let ours = uniform_filter_finite(&a, size as i32);
+                let ours = uniform_filter_finite(a, size as i32);
                 let mut d = 0.0f64;
-                for r in 0..N {
-                    for c in 0..N {
+                for r in 0..n {
+                    for c in 0..n {
                         d = d.max((ours[[r, c]] - genuine[[r, c]]).abs());
                     }
                 }
-                eprintln!("  uniform_filter size={size} vs GENUINE scipy (live): max diff = {d:.2e}");
+                eprintln!("  uniform_filter {n}x{n} size={size} vs GENUINE scipy (live): max diff = {d:.2e}");
                 maxd = maxd.max(d);
             }
             assert!(maxd < 1e-9, "uniform_filter_finite diverges from genuine scipy uniform_filter");
