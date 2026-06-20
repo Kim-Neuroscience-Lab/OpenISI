@@ -16,7 +16,6 @@
 #[cfg(test)]
 mod tests {
     use crate::methods::cortex_source::{CortexResolveContext, CortexSourceExt, CortexSourceMethod};
-    use crate::methods::patch_extraction::raw_patch_map_allen;
     use crate::segmentation::connectivity::{keep_largest_component, label_4conn};
     use crate::segmentation::morphology::{
         binary_closing_cross, binary_closing_disk, binary_dilation_disk, binary_fill_holes,
@@ -24,6 +23,8 @@ mod tests {
     };
     // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
     // which also used these in the default build, were retired in the cutover).
+    #[cfg(feature = "oracle_live")]
+    use crate::methods::patch_extraction::raw_patch_map_allen;
     #[cfg(feature = "oracle_live")]
     use crate::segmentation::connectivity::dilation_patches2_allen;
     #[cfg(feature = "oracle_live")]
