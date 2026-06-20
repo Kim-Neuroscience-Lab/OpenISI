@@ -298,14 +298,13 @@ fn merkle_invalidation_is_exact() {
 
 #[test]
 fn cache_restores_retinotopy_from_disk() {
-    let input = manifest().join("tests/fixtures/oisi/R43_smoke.oisi");
-    if !input.exists() {
-        eprintln!(
-            "[incremental] fixture missing, skipping: {}",
-            input.display()
-        );
-        return;
-    }
+    let input = manifest().join("tests/fixtures/synthetic/smoke.oisi");
+    assert!(
+        input.exists(),
+        "committed synthetic fixture missing — regenerate with \
+         `cargo run -p isi-analysis --example gen_synthetic_smoke`: {}",
+        input.display()
+    );
     let out = std::env::temp_dir().join(format!("oisi_incr_{}.oisi", std::process::id()));
     std::fs::copy(&input, &out).expect("copy fixture");
 
@@ -385,15 +384,16 @@ fn read_f64_2d(path: &Path, dataset: &str) -> Array2<f64> {
 // value, overwritten with a constant after run A, survives run B iff that stage
 // was read from disk rather than recomputed.
 
-/// Copy the smoke fixture to a fresh temp path and load its (migrated) params.
-/// Returns `None` when the fixture is absent (CI without the data) so the test
-/// can skip cleanly.
+/// Copy the committed synthetic smoke fixture to a fresh temp path and load its
+/// (migrated) params. Always present (committed), so callers always get `Some`.
 fn setup_fixture(tag: &str) -> Option<(PathBuf, AnalysisParams)> {
-    let input = manifest().join("tests/fixtures/oisi/R43_smoke.oisi");
-    if !input.exists() {
-        eprintln!("[incremental] fixture missing, skipping: {}", input.display());
-        return None;
-    }
+    let input = manifest().join("tests/fixtures/synthetic/smoke.oisi");
+    assert!(
+        input.exists(),
+        "committed synthetic fixture missing — regenerate with \
+         `cargo run -p isi-analysis --example gen_synthetic_smoke`: {}",
+        input.display()
+    );
     let out = std::env::temp_dir().join(format!("oisi_cut_{}_{}.oisi", tag, std::process::id()));
     std::fs::copy(&input, &out).expect("copy fixture");
 

@@ -16,6 +16,12 @@ dev_figures/
 *.hdf5
 *.mat
 
+# ...EXCEPT the committed SYNTHETIC e2e fixtures (tiny, deterministic, no real
+# data) — they let the pipeline equivalence/incremental/schema gates run on CI.
+# Real data (R43, rig captures) stays ignored and is never published.
+!crates/isi-analysis/tests/fixtures/synthetic/
+!crates/isi-analysis/tests/fixtures/synthetic/*.oisi
+
 # Image files (data output, not source assets)
 *.png
 !src-tauri/icons/*.png

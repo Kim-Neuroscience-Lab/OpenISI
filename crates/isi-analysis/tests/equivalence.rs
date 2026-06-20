@@ -364,42 +364,66 @@ const I8_DATASETS: &[&str] = &["area_signs"];
 
 // ─── Main equivalence test ───────────────────────────────────────────
 
+/// **Always-on, CI-runnable equivalence gate** on a committed SYNTHETIC fixture.
+/// The synthetic `.oisi` is tiny, deterministic, and verified to recover its known
+/// ground truth (see `examples/gen_synthetic_smoke.rs`), so this regression pin runs
+/// everywhere — including a clean CI checkout — unlike the gitignored real R43 data.
+#[test]
+fn equivalence_synthetic_smoke() {
+    let manifest = manifest_path();
+    let fixture = manifest.join("tests/fixtures/synthetic/smoke.oisi");
+    let baseline = manifest.join("tests/fixtures/synthetic/smoke.baseline.oisi");
+    assert!(
+        fixture.exists() && baseline.exists(),
+        "committed synthetic smoke fixtures missing — regenerate with \
+         `cargo run -p isi-analysis --example gen_synthetic_smoke` + `capture_baseline`:\n  {}\n  {}",
+        fixture.display(),
+        baseline.display()
+    );
+    run_equivalence("synthetic_smoke", &fixture, &baseline);
+}
+
+/// Same gate on the REAL R43 data — a dev-time validation, not a program test. The
+/// R43 fixtures are real SNLC-derived data, intentionally gitignored (`*.oisi`) and
+/// never published, so on a clean checkout / general CI they are absent → SKIP
+/// loudly (matches `regression_oisi.rs`). No `#[ignore]`: runs by default where the
+/// data lives. Real data adds real-world value ranges the synthetic gate can't.
 #[test]
 fn equivalence_r43_smoke() {
     let manifest = manifest_path();
     let fixture = manifest.join("tests/fixtures/oisi/R43_smoke.oisi");
     let baseline = manifest.join("tests/fixtures/baseline/R43_smoke.baseline.oisi");
-
-    // This is a DEV-TIME method-validation gate (bit-identical pipeline output vs a
-    // real R43 baseline), not a program-correctness test. The R43 fixtures are real
-    // SNLC-derived data, intentionally gitignored (`*.oisi`) and never published —
-    // so on a clean checkout (general CI) they are absent. Run the gate wherever the
-    // data lives; when absent, SKIP loudly rather than hard-fail (matches
-    // `regression_oisi.rs`). No `#[ignore]`: it still runs by default where present.
     if !fixture.exists() || !baseline.exists() {
         eprintln!(
             "SKIP equivalence_r43_smoke: R43 fixture/baseline absent (gitignored real data — \
-             a dev-time validation, not run on general CI).\n  fixture:  {}\n  baseline: {}",
+             a dev-time validation; the synthetic gate covers CI).\n  fixture:  {}\n  baseline: {}",
             fixture.display(),
             baseline.display()
         );
         return;
     }
+    run_equivalence("R43_smoke", &fixture, &baseline);
+}
 
+/// Re-run `analyze` on a fresh copy of `fixture` and compare every
+/// `/complex_maps/*` and `/results/*` against `baseline` within the committed
+/// per-dataset tolerances. Shared by the synthetic (always-on) and R43 (local) gates.
+fn run_equivalence(tag: &str, fixture: &Path, baseline: &Path) {
+    let manifest = manifest_path();
     // Run analyze on a fresh copy of the fixture under target/.
     let candidate = manifest
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("target/equivalence/R43_smoke.candidate.oisi");
-    run_analyze_into(&fixture, &candidate);
+        .join(format!("target/equivalence/{tag}.candidate.oisi"));
+    run_analyze_into(fixture, &candidate);
 
     let tols = load_tolerances();
     let mut failures: Vec<String> = Vec::new();
 
     println!();
-    println!("=== Cross-implementation equivalence: R43_smoke ===");
+    println!("=== Cross-implementation equivalence: {tag} ===");
     println!("  fixture   = {}", fixture.display());
     println!("  baseline  = {}", baseline.display());
     println!("  candidate = {}", candidate.display());
@@ -410,7 +434,7 @@ fn equivalence_r43_smoke() {
         let ds = format!("complex_maps/{name}");
         let label = format!("/{ds}");
         let c = read_f64(&candidate, &ds);
-        let b = read_f64(&baseline, &ds);
+        let b = read_f64(baseline, &ds);
         assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
         let c_flat = into_vec(c);
         let b_flat = into_vec(b);
@@ -440,7 +464,7 @@ fn equivalence_r43_smoke() {
         let ds = format!("results/{name}");
         let label = format!("/{ds}");
 
-        if !dataset_exists(&candidate, &ds) && !dataset_exists(&baseline, &ds) {
+        if !dataset_exists(&candidate, &ds) && !dataset_exists(baseline, &ds) {
             // Optional dataset (e.g., snr_* only present with raw acquisition).
             println!("  {:<40} (absent in both — skipped)", label);
             continue;
@@ -450,13 +474,13 @@ fn equivalence_r43_smoke() {
             "{label}: missing from candidate"
         );
         assert!(
-            dataset_exists(&baseline, &ds),
+            dataset_exists(baseline, &ds),
             "{label}: missing from baseline"
         );
 
         if I32_LABEL_DATASETS.contains(&name.as_str()) {
             let c = read_i32(&candidate, &ds);
-            let b = read_i32(&baseline, &ds);
+            let b = read_i32(baseline, &ds);
             assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
             let c_bytes: Vec<u8> = into_vec(c)
                 .iter()
@@ -469,20 +493,20 @@ fn equivalence_r43_smoke() {
             assert_bit_exact_bytes(&label, &c_bytes, &b_bytes, &mut failures);
         } else if I8_DATASETS.contains(&name.as_str()) {
             let c = read_i8(&candidate, &ds);
-            let b = read_i8(&baseline, &ds);
+            let b = read_i8(baseline, &ds);
             assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
             let c_bytes: Vec<u8> = into_vec(c).iter().map(|&v| v as u8).collect();
             let b_bytes: Vec<u8> = into_vec(b).iter().map(|&v| v as u8).collect();
             assert_bit_exact_bytes(&label, &c_bytes, &b_bytes, &mut failures);
         } else if BOOL_MASK_DATASETS.contains(&name.as_str()) {
             let c = read_u8(&candidate, &ds);
-            let b = read_u8(&baseline, &ds);
+            let b = read_u8(baseline, &ds);
             assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
             assert_bit_exact_bytes(&label, &into_vec(c), &into_vec(b), &mut failures);
         } else {
             // Float dataset.
             let c = read_f64(&candidate, &ds);
-            let b = read_f64(&baseline, &ds);
+            let b = read_f64(baseline, &ds);
             assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
             let c_flat = into_vec(c);
             let b_flat = into_vec(b);
