@@ -379,25 +379,31 @@ mod tests {
         assert_eq!(d_garrett, 0, "Garrett sigma-scaled threshold diverges from reference");
     }
 
-    /// The TENSOR (f32) `gaussian_smooth` vs scipy `gaussian_filter` — the same
-    /// canonical convention (4σ truncation, scipy `reflect` border) as the f64
-    /// `gaussian_smooth_f64` golden, now validated at f32 precision too. Same
-    /// fixture (`gen_gaussian_golden.py`), f32 tolerance.
+    /// **Live library-primitive oracle**: the TENSOR (f32) `gaussian_smooth` vs the
+    /// GENUINE `scipy.ndimage.gaussian_filter` (4σ truncation, `reflect` border),
+    /// computed live in the uv-locked env on a fresh field. Validates the f32
+    /// separable-convolution path (the f64 `gaussian_smooth_f64` path is covered by
+    /// `gaussian_smooth_matches_genuine_scipy_live`). Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
     #[test]
-    fn tensor_gaussian_smooth_matches_scipy() {
+    fn tensor_gaussian_smooth_matches_genuine_scipy_live() {
+        use crate::test_support::oracle;
         const G: usize = 96;
-        let inp = load_f64(include_bytes!("../../tests/golden/fixtures/gauss_input.bin"));
-        let golden = load_f64(include_bytes!("../../tests/golden/fixtures/gauss_sigma4.bin"));
-        let f32s: Vec<f32> = inp.iter().map(|&v| v as f32).collect();
+        let input = Array2::from_shape_fn((G, G), |(r, c)| {
+            (r as f64 * 0.11).sin() + (c as f64 * 0.07).cos() + 0.01 * (r * c) as f64
+        });
+        let genuine = oracle::nat("scipy_gaussian_filter", &[input.clone()], &[("sigma", 4.0)]).remove(0);
+
+        let f32s: Vec<f32> = input.iter().map(|&v| v as f32).collect();
         let t = Tensor::<Backend, 2>::from_data(TensorData::new(f32s, [G, G]), &device());
-        let out = gaussian_smooth(t, 4.0);
-        let ours = tensor_to_array2_f64(out).unwrap();
-        // f32 separable convolution vs scipy f64; observed ≈ 5.9e-7 ≈ 5·ε_f32 →
-        // K=8. (Was a magic 1e-4.)
-        Tol::abs(8, Eps::F32).assert(
-            "tensor gaussian_smooth vs scipy",
+        let ours = tensor_to_array2_f64(gaussian_smooth(t, 4.0)).unwrap();
+        // f32 separable convolution vs scipy f64. Gaussian smoothing is magnitude-
+        // preserving, so the error is RELATIVE to the local value (abs would scale
+        // with the field magnitude); observed max_rel ≈ 3.5·ε_f32 → K=8.
+        Tol::rel(8, Eps::F32, 8).assert(
+            "tensor gaussian_smooth vs GENUINE scipy (live)",
             ours.as_slice().expect("contiguous"),
-            &golden,
+            genuine.as_slice().expect("contiguous"),
         );
     }
 

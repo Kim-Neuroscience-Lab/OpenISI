@@ -20,12 +20,14 @@ mod tests {
     use crate::segmentation::connectivity::{keep_largest_component, label_4conn};
     use crate::segmentation::morphology::{
         binary_closing_cross, binary_closing_disk, binary_dilation_disk, binary_fill_holes,
-        binary_opening_cross, binary_opening_disk, gaussian_smooth_f64,
+        binary_opening_cross, binary_opening_disk,
     };
     // Used only by the `oracle_live`-gated live tests (their frozen counterparts,
     // which also used these in the default build, were retired in the cutover).
     #[cfg(feature = "oracle_live")]
     use crate::segmentation::connectivity::dilation_patches2_allen;
+    #[cfg(feature = "oracle_live")]
+    use crate::segmentation::morphology::gaussian_smooth_f64;
     use crate::test_support::{count_differing, load_f64, load_i32};
     use ndarray::Array2;
 
@@ -359,28 +361,12 @@ mod tests {
         assert_eq!(mismatch, 0, "patch signs diverge from genuine SNLC getPatchSign (non-zero-mean)");
     }
 
-    /// `gaussian_smooth_f64` vs scipy `ni.gaussian_filter` (what Allen's
-    /// `_getSignMap` / `phaseFilter` call): scipy defaults `truncate=4.0`,
-    /// `mode='reflect'`. Fixture from `gen_gaussian_golden.py`.
-    #[test]
-    fn gaussian_smooth_matches_scipy_gaussian_filter() {
-        let inp = load_f64(include_bytes!("../../tests/golden/fixtures/gauss_input.bin"));
-        let golden = load_f64(include_bytes!("../../tests/golden/fixtures/gauss_sigma4.bin"));
-        let input = Array2::from_shape_fn((N, N), |(r, c)| inp[r * N + c]);
-
-        let out = gaussian_smooth_f64(&input, 4.0);
-        let mut maxd = 0.0f64;
-        for r in 0..N {
-            for c in 0..N {
-                maxd = maxd.max((out[[r, c]] - golden[r * N + c]).abs());
-            }
-        }
-        eprintln!("gaussian_smooth vs scipy (sigma=4): max diff = {maxd:.3e}");
-        assert!(
-            maxd < 1e-6,
-            "gaussian_smooth diverges from scipy gaussian_filter: {maxd:.3e}"
-        );
-    }
+    // (Cutover, objective 1) The frozen `gaussian_smooth_matches_scipy_gaussian_filter`
+    // (f64) + `tensor_gaussian_smooth_matches_scipy` (f32) goldens + their shared
+    // gauss_*.bin fixtures + gen_gaussian_golden.py were DELETED: the live
+    // `gaussian_smooth_matches_genuine_scipy_live` (below, f64) and
+    // `tensor_gaussian_smooth_matches_genuine_scipy_live` (golden_vfs, f32) compute the
+    // genuine scipy.ndimage.gaussian_filter live on fresh fields.
 
     /// **Live library-primitive oracle**: our `gaussian_smooth_f64` vs
     /// `scipy.ndimage.gaussian_filter` (reflect, truncate=4) computed LIVE in the
