@@ -48,4 +48,15 @@ jobs:
         run: echo "CMAKE_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
 
       - name: Run tests
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --no-fail-fast 2>&1 | tee test-output.txt || true
+          # Surface failing test names + panics as annotations (readable via the
+          # public check-runs API without log auth) so CI failures are diagnosable.
+          grep -nE '\.\.\. FAILED|test result: FAILED|panicked at|error\[' test-output.txt \
+            | sed 's/^/::error::/' || true
+          if grep -qE '\.\.\. FAILED|test result: FAILED|error\[E|could not compile' test-output.txt; then
+            echo "::error::cargo test --workspace failed on ${{ matrix.os }}"
+            exit 1
+          fi
