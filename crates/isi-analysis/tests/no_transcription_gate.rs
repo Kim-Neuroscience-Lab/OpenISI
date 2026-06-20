@@ -73,6 +73,7 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_patch_extraction_golden.py", // scipy composition mimicking _getRawPatchMap
         "gen_splitpatch_golden.py",     // scipy/skimage transcription of Patch.split2
         "gen_eccfull_golden.py",        // inlined eccentricityMap + getPixelVisualCenter
+        "gen_visualgrid_golden.py",     // transcribed getVisualSpace (now live); was dead (orphan fixtures)
         // _allen_oracle-shim genuine-run-via-shim generators (now live, shim-free):
         "gen_vfs_golden.py",
         "gen_dilation_patches2_golden.py",
