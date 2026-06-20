@@ -293,41 +293,13 @@ mod tests {
         );
     }
 
-    /// `compute_magnification_jacobian` (our `magnification_raw`, |det J|) vs Allen
-    /// `RetinotopicMapping._getDeterminantMap` (L1184), plus the inverted
-    /// `magnification` leaf (cortical magnification factor = 1/max(|det J|, eps)).
-    /// `np.gradient` == our `real_gradients`, and Allen's `np.linalg.det` of
-    /// `[[∇alt],[∇azi]]` is the same two product terms as our determinant, so this
-    /// is an f32-precision match. Fixtures from `gen_magnification_golden.py`.
-    #[test]
-    fn magnification_jacobian_matches_allen_determinant_map() {
-        const MG: usize = 48;
-        let alt = load_f64(include_bytes!("../../tests/golden/fixtures/mag_alt.bin"));
-        let azi = load_f64(include_bytes!("../../tests/golden/fixtures/mag_azi.bin"));
-        let det_g = load_f64(include_bytes!("../../tests/golden/fixtures/mag_det.bin"));
-        let cmf_g = load_f64(include_bytes!("../../tests/golden/fixtures/mag_cmf.bin"));
-
-        let alt_t = tensor2(alt.iter().map(|&v| v as f32).collect(), MG, MG);
-        let azi_t = tensor2(azi.iter().map(|&v| v as f32).collect(), MG, MG);
-        // real_gradients returns (d/d_col, d/d_row) = (dx, dy).
-        let (d_alt_dx, d_alt_dy) = real_gradients(alt_t);
-        let (d_azi_dx, d_azi_dy) = real_gradients(azi_t);
-        // Maps already in degrees → unit scale (Allen applies none).
-        let mag = compute_magnification_jacobian(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, 1.0, 1.0);
-        let got = tensor_to_array2_f64(mag).unwrap();
-
-        // f32 gradients + a cancellation difference in det; observed ≈ 4.7e-6 ≈
-        // 40·ε_f32 → K=64. (Was a magic 1e-3.)
-        Tol::abs(64, Eps::F32).assert("det J vs Allen", got.as_slice().expect("contiguous"), &det_g);
-
-        // Inversion check: the `magnification` leaf is the reciprocal CMF. The
-        // 1/det amplifies f32 error; observed ≈ 1.55e-5 ≈ 130·ε_f32 → K=256 (on
-        // this smooth synthetic det stays away from zero, so a flat K suffices;
-        // the production map is κ-grounded in tolerances.toml). Was a magic 1e-2.
-        let labels = Array2::from_elem((MG, MG), 1i32); // all in-ROI
-        let cmf = crate::math::cortical_magnification_factor(&got, &labels);
-        Tol::abs(256, Eps::F32).assert("CMF (1/|det J|)", cmf.as_slice().expect("contiguous"), &cmf_g);
-    }
+    // (Cutover, objective 1) The frozen `magnification_jacobian_matches_allen_
+    // determinant_map` golden + its mag_*.bin fixtures + gen_magnification_golden.py
+    // (a transcription of `_getDeterminantMap` + the 1/det leaf) were DELETED: the
+    // live `magnification_matches_genuine_nat_determinant_map_live` below was
+    // enriched to ALSO carry the CMF inversion check (our det and the genuine det
+    // both run through `cortical_magnification_factor`, required to agree), driving
+    // the genuine NAT `_getDeterminantMap` live.
 
     /// **Live genuine-oracle, CLASS METHOD**: our `compute_magnification_jacobian`
     /// (|det J|) vs the GENUINE `RetinotopicMappingTrial._getDeterminantMap`,
@@ -359,6 +331,20 @@ mod tests {
             "det J vs GENUINE NAT _getDeterminantMap (live)",
             got.as_slice().expect("contiguous"),
             genuine.as_slice().expect("contiguous"),
+        );
+
+        // Inversion check (the `magnification`/CMF leaf = 1/max(|det J|, eps), an
+        // OpenISI choice): feed BOTH our det and the GENUINE det through the same
+        // `cortical_magnification_factor` and require they agree — proving the
+        // reciprocal leaf is consistent and that our det matches genuine through
+        // the (error-amplifying) inversion. 1/det amplifies f32 error → K=256.
+        let labels = Array2::from_elem((MG, MG), 1i32); // all in-ROI
+        let cmf_ours = crate::math::cortical_magnification_factor(&got, &labels);
+        let cmf_genuine = crate::math::cortical_magnification_factor(&genuine, &labels);
+        Tol::abs(256, Eps::F32).assert(
+            "CMF (1/|det J|) vs genuine-det inversion (live)",
+            cmf_ours.as_slice().expect("contiguous"),
+            cmf_genuine.as_slice().expect("contiguous"),
         );
     }
 
