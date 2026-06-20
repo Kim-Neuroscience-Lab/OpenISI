@@ -2953,36 +2953,12 @@ mod garrett {
             Tol::rel(64, Eps::F64, 64).assert("overRep JacCoverage", &[cov.jac_coverage], &[jac_exp]);
         }
 
-        /// `patch_com` vs the REAL SNLC `getPatchCoM` (`reference/ISI/getPatchCoM.m`,
-        /// called directly — standalone, no plotting). Includes a C-shaped patch
-        /// whose centroid falls off the patch, exercising the snap correction.
-        /// CoMxy is a mean of integer coords (or an exact snapped pixel) → pure
-        /// f64 vs MATLAB, `Tol::abs(128, F64)` (the patch_visual_center class).
-        /// Fixtures from `gen_patchcom_golden.m`.
-        #[test]
-        fn patch_com_matches_snlc_get_patch_com() {
-            let im_b: &[u8] = include_bytes!("../../tests/golden/fixtures/patchcom_im.bin");
-            let comxy = load_f64(include_bytes!("../../tests/golden/fixtures/patchcom_comxy.bin"));
-            let meta = load_f64(include_bytes!("../../tests/golden/fixtures/patchcom_meta.bin"));
-            let (h, w, np) = (meta[0] as usize, meta[1] as usize, meta[2] as usize);
-            let im = Array2::from_shape_fn((h, w), |(r, c)| im_b[r * w + c] != 0);
-
-            let got = patch_com(&im);
-            assert_eq!(got.len(), np, "patch count");
-            // MATLAB `bwlabel` numbers components column-major, our `label_4conn`
-            // row-major (scipy/skimage) — same centroid SET, different index. The
-            // labelings are internally consistent (getV1id+getPatchCoM both use
-            // label_4conn), so compare the centroids order-independently.
-            let sort = |v: &mut Vec<(f64, f64)>| v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let mut got_s = got.clone();
-            let mut exp_s: Vec<(f64, f64)> =
-                (0..np).map(|i| (comxy[i * 2], comxy[i * 2 + 1])).collect();
-            sort(&mut got_s);
-            sort(&mut exp_s);
-            let g: Vec<f64> = got_s.iter().flat_map(|&(x, y)| [x, y]).collect();
-            let e: Vec<f64> = exp_s.iter().flat_map(|&(x, y)| [x, y]).collect();
-            Tol::abs(128, Eps::F64).assert("getPatchCoM CoMxy", &g, &e);
-        }
+        // (Cutover, objective 1) The frozen `patch_com_matches_snlc_get_patch_com`
+        // golden + its patchcom_*.bin fixtures + gen_patchcom_golden.m were DELETED:
+        // the live `patch_com_matches_genuine_snlc_live` above was enriched with an
+        // L-shaped patch whose centroid lands off-patch (unique nearest pixel, no
+        // tie) to exercise the same snap-to-nearest-pixel correction against the
+        // genuine getPatchCoM.m live.
 
         /// **Live genuine-oracle, SNLC/Octave**: our `patch_com` vs the GENUINE
         /// `getPatchCoM.m` (`reference/ISI`), executed live via Octave. Three
@@ -2994,14 +2970,29 @@ mod garrett {
         #[test]
         fn patch_com_matches_genuine_snlc_live() {
             use crate::test_support::oracle;
-            const H: usize = 32;
-            const W: usize = 40;
+            const H: usize = 40;
+            const W: usize = 48;
             let mut im_f = Array2::<f64>::zeros((H, W));
-            for (r0, r1, c0, c1) in [(4, 12, 5, 15), (20, 28, 24, 36), (6, 22, 30, 34)] {
+            // Two clean rectangles (on-patch centroids, no snap).
+            for (r0, r1, c0, c1) in [(4, 12, 5, 15), (24, 32, 28, 42)] {
                 for r in r0..r1 {
                     for c in c0..c1 {
                         im_f[[r, c]] = 1.0;
                     }
+                }
+            }
+            // An L-shape whose centroid lands OFF the patch → exercises the
+            // snap-to-nearest-pixel correction. Geometry chosen so the nearest
+            // patch pixel to the centroid is UNIQUE (the vertical arm is closer
+            // than the horizontal arm), avoiding the MATLAB-find tie-break.
+            for r in 4..20 {
+                for c in 18..21 {
+                    im_f[[r, c]] = 1.0; // vertical arm (3 wide, 16 tall)
+                }
+            }
+            for r in 17..20 {
+                for c in 21..33 {
+                    im_f[[r, c]] = 1.0; // horizontal arm (12 wide, 3 tall)
                 }
             }
             let im = im_f.mapv(|v| v != 0.0);
