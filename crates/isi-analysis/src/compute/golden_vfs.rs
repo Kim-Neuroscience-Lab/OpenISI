@@ -493,33 +493,11 @@ mod tests {
         );
     }
 
-    /// Stage-0 single-bin F1 DFT (`dft_projection_at_freq`) vs numpy
-    /// `np.fft.fft(...)[1]`. `dt=1, freq=1/n` makes our kernel
-    /// `exp(-2πi·t/n)` exactly numpy's bin 1; the DC offset in the fixture
-    /// confirms bin-1 rejects DC. Fixture from `gen_dft_golden.py`.
-    #[test]
-    fn dft_projection_matches_numpy_fft_bin1() {
-        const NF: usize = 24;
-        const HW: usize = 16;
-        let movie_f32: Vec<f32> = include_bytes!("../../tests/golden/fixtures/dft_movie.bin")
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let f1_re = load_f64(include_bytes!("../../tests/golden/fixtures/dft_f1_re.bin"));
-        let f1_im = load_f64(include_bytes!("../../tests/golden/fixtures/dft_f1_im.bin"));
-        assert_eq!(movie_f32.len(), NF * HW * HW);
-
-        let movie =
-            Tensor::<Backend, 3>::from_data(TensorData::new(movie_f32, [NF, HW, HW]), &device());
-        let f1 = crate::compute::dft_projection_at_freq(movie, 1.0, 1.0 / NF as f64);
-        let re = tensor_to_array2_f64(f1.real()).unwrap();
-        let im = tensor_to_array2_f64(f1.imag()).unwrap();
-
-        // f32 length-24 DFT reduction vs numpy f64; observed ≈ 8.4e-6 ≈ 70·ε_f32
-        // → K=128. (Was a magic 1e-3.)
-        Tol::abs(128, Eps::F32).assert("F1 DFT re vs numpy", re.as_slice().expect("contiguous"), &f1_re);
-        Tol::abs(128, Eps::F32).assert("F1 DFT im vs numpy", im.as_slice().expect("contiguous"), &f1_im);
-    }
+    // (Cutover, objective 1) The frozen `dft_projection_matches_numpy_fft_bin1`
+    // golden + its dft_*.bin fixtures + gen_dft_golden.py were DELETED: the live
+    // `dft_projection_matches_genuine_numpy_fft_live` (below) computes the genuine
+    // numpy.fft oracle every run on a fresh movie (DC offset → bin-1 rejection),
+    // fully superseding the frozen fixture.
 
     /// **Live library-primitive oracle**: stage-0 single-bin F1 DFT
     /// (`dft_projection_at_freq`) vs the GENUINE `numpy.fft.fft(...)[1]`, executed
