@@ -35,6 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The oracle `.m`/`.py` generators addpath/import the genuine reference, which
+      # is gitignored (large third-party). Materialise it byte-pristine at the
+      # committed pinned commits before regenerating goldens.
+      - name: Materialise pinned oracle reference (byte-pristine)
+        run: bash tools/oracle/fetch-reference.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 

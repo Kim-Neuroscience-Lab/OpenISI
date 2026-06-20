@@ -35,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The genuine reference code (SNLC `.m`, NeuroAnalysisTools) is third-party
+      # and large (~289 MB full tree) — gitignored, NOT vendored. Materialise it
+      # byte-pristine at the committed pinned commits, so this job validates against
+      # the EXACT reference, reconstructed from committed pins (objective 3 + 7).
+      - name: Materialise pinned oracle reference (byte-pristine)
+        run: bash tools/oracle/fetch-reference.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
