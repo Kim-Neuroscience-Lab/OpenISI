@@ -9,6 +9,10 @@ on:
 jobs:
   test:
     strategy:
+      # Don't cancel the other OSes when one fails — we need each OS's result
+      # independently (e.g. to tell a windows-only path issue from an all-OS
+      # numerical/repro issue).
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
