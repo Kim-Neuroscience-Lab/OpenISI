@@ -3159,85 +3159,49 @@ mod garrett {
             assert_eq!(diff, 0, "getCenterPatch diverges from SNLC");
         }
 
-        /// `watershed_octave{4,8}` vs the real Octave `watershed(·,{4,8})` —
-        /// exact i32 label match (incl. watershed-line 0s and bwlabeln label
-        /// numbers), on Octave's own `watershed.cc-tst` vectors + a
-        /// distance-transform case. Fixtures from `gen_watershed4_golden.m`.
-        #[test]
-        fn watershed_octave_matches_octave() {
-            fn check(name: &str, in_b: &[u8], out4_b: &[u8], out8_b: &[u8], meta_b: &[u8]) {
-                let meta = load_f64(meta_b);
-                let (h, w) = (meta[0] as usize, meta[1] as usize);
-                let inv = load_f64(in_b);
-                let im = Array2::from_shape_fn((h, w), |(r, c)| inv[r * w + c]);
-                for (conn, exp_b, got) in [
-                    (4, out4_b, watershed_octave4(&im)),
-                    (8, out8_b, watershed_octave8(&im)),
-                ] {
-                    let exp = load_i32(exp_b);
-                    let mut diff = 0usize;
-                    for r in 0..h {
-                        for c in 0..w {
-                            if got[[r, c]] != exp[r * w + c] {
-                                diff += 1;
-                            }
-                        }
-                    }
-                    eprintln!("watershed{conn} {name}: diff={diff}");
-                    assert_eq!(diff, 0, "{name}: watershed_octave{conn} diverges from Octave");
-                }
-            }
-            check(
-                "rampA",
-                include_bytes!("../../tests/golden/fixtures/ws4_rampA_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_rampA_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws8_rampA_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_rampA_meta.bin"),
-            );
-            check(
-                "stress",
-                include_bytes!("../../tests/golden/fixtures/ws4_stress_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_stress_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws8_stress_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_stress_meta.bin"),
-            );
-            check(
-                "distxform",
-                include_bytes!("../../tests/golden/fixtures/ws4_distxform_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_distxform_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws8_distxform_out.bin"),
-                include_bytes!("../../tests/golden/fixtures/ws4_distxform_meta.bin"),
-            );
-        }
+        // (Cutover, objective 1) The frozen `watershed_octave_matches_octave`
+        // golden + its ws4_*/ws8_*.bin fixtures + gen_watershed4_golden.m were
+        // DELETED: the live `watershed_octave_matches_genuine_octave_live` above was
+        // enriched to cover the same topology classes (monotonic ramp = single
+        // basin, two-basin, four-well multi-basin stress) × conn {4,8} against the
+        // genuine Octave `watershed` live, exact i32 labels.
 
         /// **Live library-primitive oracle, Octave**: our `watershed_octave{4,8}`
         /// vs the GENUINE Octave IPT `watershed(A, conn)`, executed live. Octave's
-        /// watershed IS the oracle; the bridge only calls it. A two-well elevation
-        /// → exact i32 catchment labels (incl. watershed-line 0s and Octave's own
-        /// label numbering). Gated behind `oracle_live`.
+        /// watershed IS the oracle; the bridge only calls it. Exact i32 catchment
+        /// labels (incl. watershed-line 0s and Octave's own label numbering) across
+        /// the topologies the retired frozen golden held: a monotonic ramp (single
+        /// basin), two basins (one ridge), and a four-well stress (multi-basin).
+        /// Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn watershed_octave_matches_genuine_octave_live() {
             use crate::test_support::oracle;
             const N: usize = 24;
-            // Two basins (paraboloid wells) on a ridge → a clean watershed line.
-            let elev = Array2::from_shape_fn((N, N), |(r, c)| {
-                let d1 = (r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2);
-                let d2 = (r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2);
-                d1.min(d2)
+            let well = |r: usize, c: usize, cr: f64, cc: f64| (r as f64 - cr).powi(2) + (c as f64 - cc).powi(2);
+            let ramp = Array2::from_shape_fn((N, N), |(r, c)| (r + c) as f64);
+            let two_basins = Array2::from_shape_fn((N, N), |(r, c)| well(r, c, 6.0, 6.0).min(well(r, c, 17.0, 17.0)));
+            let four_wells = Array2::from_shape_fn((N, N), |(r, c)| {
+                well(r, c, 5.0, 5.0)
+                    .min(well(r, c, 5.0, 18.0))
+                    .min(well(r, c, 18.0, 5.0))
+                    .min(well(r, c, 18.0, 18.0))
             });
-            for (conn, ours) in [(4.0_f64, watershed_octave4(&elev)), (8.0, watershed_octave8(&elev))] {
-                let genuine = oracle::snlc("watershed", &[elev.clone()], &[("conn", conn)]).remove(0);
-                let mut diff = 0usize;
-                for r in 0..N {
-                    for c in 0..N {
-                        if ours[[r, c]] != genuine[[r, c]].round() as i32 {
-                            diff += 1;
+            let scenes = [("ramp", ramp), ("two_basins", two_basins), ("four_wells", four_wells)];
+            for (name, elev) in &scenes {
+                for (conn, ours) in [(4.0_f64, watershed_octave4(elev)), (8.0, watershed_octave8(elev))] {
+                    let genuine = oracle::snlc("watershed", &[elev.clone()], &[("conn", conn)]).remove(0);
+                    let mut diff = 0usize;
+                    for r in 0..N {
+                        for c in 0..N {
+                            if ours[[r, c]] != genuine[[r, c]].round() as i32 {
+                                diff += 1;
+                            }
                         }
                     }
+                    eprintln!("watershed{} {name} vs GENUINE Octave (live): diff={diff}", conn as i32);
+                    assert_eq!(diff, 0, "watershed_octave {name} diverges from genuine Octave watershed");
                 }
-                eprintln!("watershed{} vs GENUINE Octave (live): diff={diff}", conn as i32);
-                assert_eq!(diff, 0, "watershed_octave diverges from genuine Octave watershed");
             }
         }
 
