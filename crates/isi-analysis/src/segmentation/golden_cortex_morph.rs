@@ -413,44 +413,11 @@ mod tests {
         Array2::from_shape_fn((n, n), |(r, c)| bytes[r * n + c] != 0)
     }
 
-    /// `binary_skeletonize_skimage` vs skimage `skeletonize` — the exact
-    /// function Allen `dilationPatches2` (`RetinotopicMapping.py` L201) calls.
-    /// Our Rust ports skimage's `_fast_skeletonize` 256-entry LUT verbatim
-    /// (skimage's variant differs from a textbook Zhang-Suen by a few px on
-    /// thin features, so faithfulness to Allen requires matching skimage, not
-    /// the textbook). Fixtures from `gen_skeletonize_golden.py`.
-    #[test]
-    fn skeletonize_matches_skimage() {
-        const M: usize = 64;
-        let cases: [(&str, &[u8], &[u8]); 3] = [
-            (
-                "block",
-                include_bytes!("../../tests/golden/fixtures/skel_block_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/skel_block_out.bin"),
-            ),
-            (
-                "halo",
-                include_bytes!("../../tests/golden/fixtures/skel_halo_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/skel_halo_out.bin"),
-            ),
-            (
-                "bridge",
-                include_bytes!("../../tests/golden/fixtures/skel_bridge_in.bin"),
-                include_bytes!("../../tests/golden/fixtures/skel_bridge_out.bin"),
-            ),
-        ];
-        let mut total = 0usize;
-        for (name, inp, golden) in &cases {
-            let ours = binary_skeletonize_skimage(&load_mask_n(inp, M));
-            let d = count_differing(&ours, golden);
-            eprintln!("  skeletonize {name:8} differing px = {d}");
-            total += d;
-        }
-        assert_eq!(
-            total, 0,
-            "binary_skeletonize_zs diverges from skimage skeletonize (per-case counts above)"
-        );
-    }
+    // (Cutover, objective 1) The frozen `skeletonize_matches_skimage` golden +
+    // its `skel_*` fixtures + `gen_skeletonize_golden.py` were DELETED: the live
+    // `skeletonize_matches_genuine_skimage_live` (below) computes the genuine
+    // skimage `skeletonize` oracle on every run, fully superseding the frozen
+    // transcription-era fixture (no committed fixture can silently drift).
 
     /// **Live library-primitive oracle**: our `label_4conn` vs the GENUINE
     /// `scipy.ndimage.label` (4-conn cross structure), executed live in the
