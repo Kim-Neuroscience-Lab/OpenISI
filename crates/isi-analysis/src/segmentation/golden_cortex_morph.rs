@@ -1,17 +1,16 @@
-//! Golden cross-validation of the SNLC-cortex binary morphology against
-//! Octave's Image Processing Toolbox.
+//! Live cross-validation of the SNLC-cortex binary morphology against the
+//! genuine Octave Image Processing Toolbox, computed each run.
 //!
 //! `SnlcGarrett2014ImBound` is a *faithful-reproduction* claim of
 //! `getMouseAreasX.m`, built from `imopen(disk2)`, `imclose(disk10)`,
 //! `imfill('holes')`, `imdilate(disk3)`, and the largest 4-connected
-//! component. The disk structuring element is already confirmed bit-identical
-//! to `strel('disk',R,0)` (see `gen_cortex_morph_golden.m` provenance); this
-//! test confirms the *operations* — including border padding (erode pads 1,
-//! dilate pads 0) and hole-fill / largest-CC semantics — reproduce Octave on a
-//! mask that deliberately stresses borders, holes, gap-bridging, and specks.
-//!
-//! Fixtures are produced by `tests/golden/gen_cortex_morph_golden.m`
-//! (uint8, row-major, 96x96). Exact-match expected: binary in, binary out.
+//! component. The disk structuring element is bit-identical to
+//! `strel('disk',R,0)`; `cortex_morphology_matches_genuine_octave_live` confirms
+//! each *operation* — including border padding (erode pads 1, dilate pads 0) and
+//! hole-fill semantics — against genuine Octave on a scene that stresses borders,
+//! holes, and gap-bridging, and `keep_largest_component_tiebreak_*` covers the
+//! largest-CC tie-break. (The former frozen `gen_cortex_morph_golden.m` golden was
+//! retired once every op had a live counterpart.)
 
 #[cfg(test)]
 mod tests {
@@ -182,8 +181,8 @@ mod tests {
     // `cross_morphology_matches_genuine_scipy_live` recomputes the genuine scipy
     // binary_opening/closing (4-conn cross) each run, and `label_4conn` is
     // validated live by `label4conn_matches_genuine_scipy_live`. (gen_patch_morph
-    // is retained: it still writes the SHARED cortex_morph_input.bin input mask
-    // that the cortex_morph + cortex_full goldens read.)
+    // was later deleted too — it was dead, only reading cortex_morph_input.bin and
+    // writing the unconsumed patch_morph_*.bin; see the cortex_morph cutover note.)
 
     /// **Live library-primitive oracle**: our `binary_opening_cross` /
     /// `binary_closing_cross` (4-conn cross, `border_value=0`) vs the GENUINE
