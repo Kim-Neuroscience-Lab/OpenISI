@@ -1121,11 +1121,16 @@ mod allen {
             use crate::test_support::oracle;
             const N: usize = 24;
             // Two wells on a flat-ish plateau; markers seed each well; mask = the
-            // whole interior with a couple of holes.
+            // whole interior with a couple of holes. (A clean colliding-basins
+            // scene with no watershed-line tie ambiguity — the border-touching-
+            // marker / thin-isthmus edge cases sit on plateaus where ours and
+            // skimage legitimately differ on boundary placement, so they stay in
+            // the frozen `watershed_from_markers_matches_skimage` golden, which is
+            // a LIBRARY-PRIMITIVE pin against skimage, not a transcription.)
             let elevation = Array2::from_shape_fn((N, N), |(r, c)| {
                 let d1 = (((r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2)) as f64).sqrt();
                 let d2 = (((r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2)) as f64).sqrt();
-                d1.min(d2) // ridge midway between the two basins
+                d1.min(d2)
             });
             let mut markers = Array2::<i32>::zeros((N, N));
             markers[[6, 6]] = 1;
