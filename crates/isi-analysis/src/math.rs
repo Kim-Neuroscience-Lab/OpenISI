@@ -704,6 +704,37 @@ mod tests {
         assert!(md < 1e-12, "separable_filter wrap branch diverges from scipy: {md:.2e}");
     }
 
+    /// **Live library-primitive oracle**: our `separable_filter` (which exercises
+    /// the `reflect` index fold, including the large-radius periodic-wrap branch)
+    /// vs the GENUINE `scipy.ndimage.correlate1d(mode='reflect')` applied along
+    /// cols then rows, executed live in the uv-locked env. scipy is the oracle;
+    /// the bridge only calls it. Kernel length 15 > n=4 forces the wrap branch.
+    /// Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn separable_filter_matches_genuine_scipy_live() {
+        use crate::test_support::oracle;
+        const N: usize = 4;
+        const K: usize = 15;
+        let input = Array2::from_shape_fn((N, N), |(r, c)| (r * N + c) as f64 * 0.5 - 3.0);
+        // An asymmetric (non-palindromic) kernel so a wrong axis/origin would show.
+        let kernel: Vec<f64> = (0..K).map(|i| (i as f64 - 7.0) * 0.1 + 0.3).collect();
+        let kernel_row = Array2::from_shape_fn((1, K), |(_, i)| kernel[i]);
+
+        let genuine = oracle::nat("scipy_correlate1d_separable", &[input.clone(), kernel_row], &[])
+            .remove(0);
+        let ours = separable_filter(&input, &kernel);
+
+        let mut md = 0.0f64;
+        for r in 0..N {
+            for c in 0..N {
+                md = md.max((ours[[r, c]] - genuine[[r, c]]).abs());
+            }
+        }
+        eprintln!("separable_filter vs GENUINE scipy.correlate1d (live): max diff = {md:.2e}");
+        assert!(md < 1e-12, "separable_filter diverges from genuine scipy correlate1d: {md:.2e}");
+    }
+
     #[test]
     fn test_gaussian_kernel_normalizes() {
         let k = gaussian_kernel_1d(2.0, 6);

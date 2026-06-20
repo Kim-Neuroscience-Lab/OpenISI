@@ -94,6 +94,24 @@ def dispatch(fn, x, p):
         out = _ss.watershed(x[0], markers, mask=mask,
                             connectivity=np.ones((3, 3)), watershed_line=False)
         return [out.astype(np.int32)]
+    if fn == "scipy_correlate1d_separable":
+        # Separable correlation with a centered 1-D kernel, mode='reflect', along
+        # cols then rows (the exact two passes our separable_filter does). scipy's
+        # correlate1d IS the oracle. x[0]=image, x[1]=kernel as a (1,K) row.
+        import scipy.ndimage as _sni
+        ker = np.asarray(x[1]).ravel()
+        tmp = _sni.correlate1d(x[0], ker, axis=1, mode="reflect")
+        out = _sni.correlate1d(tmp, ker, axis=0, mode="reflect")
+        return [np.ascontiguousarray(out)]
+    if fn in ("scipy_binary_opening_cross", "scipy_binary_closing_cross"):
+        # The morphology Allen patch-extraction uses: 4-conn cross structuring
+        # element, border_value=0 (edge erodes). The LIBRARY (scipy) is the oracle.
+        import scipy.ndimage as _sni
+        cross = _sni.generate_binary_structure(2, 1)  # 4-conn cross
+        it = int(p["iterations"])
+        op = _sni.binary_opening if fn.endswith("opening_cross") else _sni.binary_closing
+        out = op(x[0] != 0, structure=cross, iterations=it, border_value=0)
+        return [out.astype(np.int8)]
     # --- class methods: construct the genuine object, set the inputs the method
     # reads, call the REAL method. The method body is 100% the reference's; only
     # the input-wiring is ours (as in any unit test of a method). ---

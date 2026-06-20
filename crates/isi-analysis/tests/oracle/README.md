@@ -113,11 +113,25 @@ library, which they should compute *live* (condition 6), not the named reference
     the reduction differs), `uniform_filter_finite` vs
     `scipy.ndimage.uniform_filter(mode='reflect')` (≈3e-15), `watershed_from_markers`
     vs `skimage.segmentation.watershed(connectivity=ones((3,3)), watershed_line=
-    False)` (bit-identical — the call `Patch.split2` makes). `label` is compared
-    label-invariantly (a CC labeling is defined only up to relabeling); the others
-    bit-/precision-identical.
-  - **Still frozen-fixture, pending live cutover:** `reflect_wrap`, `patch_morph`,
-    `largestcc`, `patch_threshold`.
+    False)` (bit-identical — the call `Patch.split2` makes),
+    `binary_opening_cross`/`binary_closing_cross` vs `scipy.ndimage.binary_opening`/
+    `binary_closing` (4-conn cross, `border_value=0`; bit-identical — the patch-
+    extraction morphology), `separable_filter` vs `scipy.ndimage.correlate1d`
+    (mode='reflect', cols then rows; ≈5e-15 — exercises the large-radius
+    periodic-wrap `reflect` fold). `label` is compared label-invariantly (a CC
+    labeling is defined only up to relabeling); the others bit-/precision-identical.
+  - **Not a single-library-primitive → not made "live" as one (classified
+    honestly):**
+    - `patch_threshold` (`AllenZhuang2017FixedSignMapThr`, `Garrett2014SigmaScaled`)
+      is a **threshold formula** (`|signMapf| ≥ thr`; `k·std·0.5` with MATLAB N−1
+      std), not a standalone reference function. Its only library primitive is
+      `np.std(ddof=1)`; the rest is OpenISI's rule with literature-grounded
+      constants → a **formula-pin / regression-lock**, not a code oracle.
+    - `keep_largest_component` (largest-CC tie-break) — the genuine reference is
+      **SNLC `getMouseAreasX.m`** `[~,id]=max(S)` (first-max), a composition
+      (label → component sizes → argmax → select), not one library call. It belongs
+      to the **SNLC/Octave live batch** (executed against the real `.m` via the
+      `snlc/` bridge), not a numpy/scipy primitive.
 
 ## Reproducibility (condition 7)
 

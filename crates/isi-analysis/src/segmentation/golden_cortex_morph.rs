@@ -135,6 +135,54 @@ mod tests {
         assert_eq!(n, 7, "label_4conn count diverges from scipy ni.label");
     }
 
+    /// **Live library-primitive oracle**: our `binary_opening_cross` /
+    /// `binary_closing_cross` (4-conn cross, `border_value=0`) vs the GENUINE
+    /// `scipy.ndimage.binary_opening`/`binary_closing` with the same cross
+    /// structure, executed live in the uv-locked env. scipy is the oracle; the
+    /// bridge only calls it. A blob with a thin spur (opening erodes it) and a
+    /// notch (closing fills it) exercises both. Gated behind `oracle_live`.
+    #[cfg(feature = "oracle_live")]
+    #[test]
+    fn cross_morphology_matches_genuine_scipy_live() {
+        use crate::segmentation::morphology::{binary_closing_cross, binary_opening_cross};
+        use crate::test_support::oracle;
+        use ndarray::Array2;
+        const M: usize = 48;
+        let mut f = Array2::<f64>::zeros((M, M));
+        for r in 12..36 {
+            for c in 12..36 {
+                f[[r, c]] = 1.0; // main blob
+            }
+        }
+        for r in 22..26 {
+            for c in 36..44 {
+                f[[r, c]] = 1.0; // thin spur — opening erodes it
+            }
+        }
+        for r in 18..30 {
+            for c in 22..26 {
+                f[[r, c]] = 0.0; // interior notch — closing fills it
+            }
+        }
+        let mask = f.mapv(|v| v != 0.0);
+
+        let mut total = 0usize;
+        for (name, fname, ours) in [
+            ("opening", "scipy_binary_opening_cross", binary_opening_cross(&mask, 3)),
+            ("closing", "scipy_binary_closing_cross", binary_closing_cross(&mask, 3)),
+        ] {
+            let genuine = oracle::nat_raw(fname, &[f.clone()], &[("iterations", 3.0)])
+                .remove(0)
+                .bool();
+            let d = ndarray::Zip::from(&ours)
+                .and(&genuine)
+                .fold(0usize, |a, &o, &g| a + (o != g) as usize);
+            eprintln!("  cross {name} vs GENUINE scipy (live): differing px = {d}");
+            total += d;
+        }
+        assert_eq!(total, 0, "cross morphology diverges from genuine scipy binary_opening/closing");
+    }
+
     /// Allen `_getRawPatchMap` orchestration (open → label → per-patch close →
     /// recombine) via the extracted production helper `raw_patch_map_allen`,
     /// vs the same composition in scipy. Fixture from
