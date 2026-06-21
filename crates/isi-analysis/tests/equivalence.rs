@@ -524,8 +524,13 @@ fn run_equivalence(tag: &str, fixture: &Path, baseline: &Path) {
     if !failures.is_empty() {
         for f in &failures {
             eprintln!("  FAIL: {f}");
+            // Also emit as a GitHub Actions annotation (stdout `::error::` is parsed
+            // by any shell) so the exact per-dataset cross-device drift is visible
+            // on CI without log access — the data needed to set principled,
+            // device-independent tolerances.
+            println!("::error title=equivalence {tag}::{f}");
         }
-        panic!("{} dataset(s) failed equivalence", failures.len());
+        panic!("{} dataset(s) failed equivalence ({tag})", failures.len());
     }
     println!("  PASS — all datasets within tolerance");
 }
