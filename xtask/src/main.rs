@@ -32,6 +32,7 @@
 //! on, so `cargo build -p isi-analysis` / the Tauri app never compile it and
 //! never acquire a Python/Octave dependency.
 
+use agreement::{Eps, Tol};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -315,8 +316,9 @@ fn cmd_goldens(args: &[String]) -> Result<(), String> {
 
     if let Some(before) = before {
         let after = snapshot_fixtures()?;
-        let diffs = diff_snapshots(&before, &after);
-        // Always restore the committed state — --check must not mutate the tree.
+        // Build the freshness report BEFORE restoring (it only reads), then always
+        // restore — --check must not mutate the tree even if the report errors.
+        let report = build_freshness_report(&before, &after);
         restore_fixtures(&before)?;
 
         if !failures.is_empty() {
@@ -326,19 +328,46 @@ fn cmd_goldens(args: &[String]) -> Result<(), String> {
                 failures.join("\n\n")
             ));
         }
-        if diffs.is_empty() {
-            println!("\nfreshness OK: every regenerated fixture is byte-identical to the committed copy.");
+        // A manifest/coverage/decode violation is a *tooling* fault (an unclassified
+        // fixture, a stale manifest entry, a corrupt blob) — distinct from, and more
+        // severe than, numerical drift; surface it as the error.
+        let report = report?;
+
+        // Always log the measured cross-toolchain drift — even on success — so the
+        // CI run records the actual agreement margin (the grounding data for the K
+        // in `FloatTol`, the same way the magnification tolerance was set from
+        // measured cross-CPU drift). Silent success would hide that record.
+        if !report.measurements.is_empty() {
+            println!("\nmeasured agreement vs committed (regenerated on this toolchain):");
+            for m in &report.measurements {
+                println!("  {m}");
+            }
+        }
+
+        if report.problems.is_empty() {
+            println!(
+                "\nfreshness OK: every regenerated fixture agrees with its committed copy \
+                 — discrete fixtures (masks/labels/raw-frames) bit-exact, float fixtures \
+                 within the ε-grounded tolerance (worst over all floats: rel={:.3e}, abs={:.3e}).",
+                report.worst_rel, report.worst_abs,
+            );
             return Ok(());
         }
-        let mut msg = format!("{} fixture(s) drifted from their generators:\n", diffs.len());
-        for d in &diffs {
+        let mut msg = format!(
+            "{} fixture(s) disagree with their generators beyond tolerance:\n",
+            report.problems.len()
+        );
+        for d in &report.problems {
             msg.push_str(&format!("  {d}\n"));
         }
         msg.push_str(
             "\nthe committed fixtures no longer match what the generators + current \
-             toolchain produce. Regenerate with `cargo xtask goldens` and review, \
-             or pin the toolchain in tools/golden/requirements.txt to the version \
-             that produced them.",
+             toolchain produce, beyond the ε-grounded agreement tolerance. Discrete \
+             (mask/label) drift is a real classification change — investigate it. Float \
+             drift beyond tolerance means either a generator changed or the tolerance \
+             is mis-grounded: regenerate with `cargo xtask goldens` and review, or — if \
+             the drift is legitimate cross-toolchain rounding — raise the relevant K in \
+             `FloatTol` to the smallest power of two covering the measured drift above.",
         );
         return Err(msg);
     }
@@ -354,26 +383,325 @@ fn cmd_goldens(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Names that changed / were added / removed between two snapshots.
-fn diff_snapshots(
+// ── fixture dtype manifest + ε-grounded freshness comparison ─────────────────
+//
+// The freshness gate regenerates every fixture on the CURRENT toolchain and
+// compares it to the committed copy. That copy was produced on the dev host
+// (Windows; Octave 11.2.0; a given Python), but CI regenerates on a different
+// toolchain (ubuntu apt-Octave 8.4.0; Python 3.13). Float results therefore
+// differ at the bit level by legitimate cross-toolchain rounding — a byte-
+// identity check would be a device-identity check, which is *not* a validity
+// check (the project's standing rule: agreement is tolerance-based, grounded in
+// IEEE-754 ε, never bit/byte-identity — see crates/agreement). So the comparison
+// goes through the same `agreement::Tol` the goldens and equivalence harness use.
+//
+// Each fixture is a flat little-endian array of one dtype; the dtype is declared
+// here (the single source of truth, mirrored by — and verified against — how the
+// tests read each blob back). Discrete fixtures (integer masks, labels, raw
+// camera frames) must be bit-exact across toolchains: a flipped pixel is a real
+// classification change, not rounding, so they use `Tol::exact()`. Float fixtures
+// use a relative ε-tolerance whose K is grounded in the measured cross-toolchain
+// drift the gate itself prints.
+
+/// On-disk element type of a fixture's flat little-endian payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dtype {
+    /// `<f8` (numpy) / `'double'` (Octave): 8-byte IEEE-754.
+    F64,
+    /// `<f4`: 4-byte IEEE-754 (the f32 compute-backend outputs).
+    F32,
+    /// `<u2`: raw 16-bit camera frames (integer counts).
+    U16,
+    /// 1-byte boolean/label masks.
+    U8,
+    /// `<i4`: connected-component labels.
+    I32,
+}
+
+impl Dtype {
+    /// Discrete (integer-valued) payloads must not drift at all across toolchains.
+    fn is_discrete(self) -> bool {
+        matches!(self, Dtype::U16 | Dtype::U8 | Dtype::I32)
+    }
+
+    /// Widen a flat little-endian blob to `f64` for comparison. Errors if the
+    /// byte length is not a whole number of elements (a corrupt/truncated blob).
+    fn decode(self, b: &[u8], name: &str) -> Result<Vec<f64>, String> {
+        let width = match self {
+            Dtype::F64 => 8,
+            Dtype::F32 | Dtype::I32 => 4,
+            Dtype::U16 => 2,
+            Dtype::U8 => 1,
+        };
+        if !b.len().is_multiple_of(width) {
+            return Err(format!(
+                "{name}: {} bytes is not a whole number of {width}-byte {self:?} elements",
+                b.len()
+            ));
+        }
+        let out = match self {
+            Dtype::F64 => b
+                .chunks_exact(8)
+                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+            Dtype::F32 => b
+                .chunks_exact(4)
+                .map(|c| f64::from(f32::from_le_bytes(c.try_into().unwrap())))
+                .collect(),
+            Dtype::U16 => b
+                .chunks_exact(2)
+                .map(|c| f64::from(u16::from_le_bytes(c.try_into().unwrap())))
+                .collect(),
+            Dtype::U8 => b.iter().map(|&x| f64::from(x)).collect(),
+            Dtype::I32 => b
+                .chunks_exact(4)
+                .map(|c| f64::from(i32::from_le_bytes(c.try_into().unwrap())))
+                .collect(),
+        };
+        Ok(out)
+    }
+
+    /// The ε-grounded tolerance for this dtype's agreement check.
+    fn tol(self) -> Tol {
+        if self.is_discrete() {
+            // Masks/labels/raw frames: any cross-toolchain change is a real
+            // discrete difference, never rounding.
+            Tol::exact()
+        } else {
+            // Float fixtures: relative ε-tolerance with a same-magnitude floor.
+            // K is a PROVISIONAL ceiling, grounded in IEEE-754 ε (K·ε), to be
+            // tightened to the smallest power of two covering the cross-toolchain
+            // drift this gate measures and prints on CI — exactly how the
+            // equivalence `magnification_axis` bound was set from measured drift.
+            // Not magic absolutes: every bound here is K·ε of the right precision.
+            match self {
+                Dtype::F32 => Tol::rel(FloatTol::K_F32, Eps::F32, FloatTol::K_F32),
+                _ => Tol::rel(FloatTol::K_F64, Eps::F64, FloatTol::K_F64),
+            }
+        }
+    }
+}
+
+/// The per-precision relative-tolerance factors `K` (the bound is `K·ε`).
+struct FloatTol;
+impl FloatTol {
+    /// f32 fixtures: `1024·ε_f32 ≈ 1.2e-4` relative. Provisional ceiling.
+    const K_F32: u32 = 1024;
+    /// f64 fixtures: `4096·ε_f64 ≈ 9.1e-13` relative. Provisional ceiling.
+    const K_F64: u32 = 4096;
+}
+
+/// Declared on-disk dtype of every committed fixture — the single source of
+/// truth for the freshness comparison, kept honest by `verify_manifest_coverage`
+/// (every fixture on disk must be listed; no listed fixture may be missing). It
+/// mirrors how each blob is read back by the tests (verified against the
+/// generators' write dtypes), so a drift between the two surfaces here.
+const FIXTURE_DTYPES: &[(&str, Dtype)] = &[
+    // Octave cortex end-to-end: f64 VFS in, uint8 cortex mask out.
+    ("cortex_full_vfs.bin", Dtype::F64),
+    ("cortex_full_golden.bin", Dtype::U8),
+    // cortex-from-reliability: f64 reliability inputs, uint8 masks
+    // (`raw`/`expected` and the unused tie-case, all from gen_cortexrel_golden.py).
+    ("cortexrel_azi_fwd.bin", Dtype::F64),
+    ("cortexrel_azi_rev.bin", Dtype::F64),
+    ("cortexrel_alt_fwd.bin", Dtype::F64),
+    ("cortexrel_alt_rev.bin", Dtype::F64),
+    ("cortexrel_raw.bin", Dtype::U8),
+    ("cortexrel_expected.bin", Dtype::U8),
+    ("cortexrel_tie_azi_fwd.bin", Dtype::F64),
+    ("cortexrel_tie_azi_rev.bin", Dtype::F64),
+    ("cortexrel_tie_alt_fwd.bin", Dtype::F64),
+    ("cortexrel_tie_alt_rev.bin", Dtype::F64),
+    ("cortexrel_tie_expected.bin", Dtype::U8),
+    // ΔF/F: uint16 raw frames, f64 baselines, f32 ΔF/F.
+    ("dff_frames.bin", Dtype::U16),
+    ("dff_f0.bin", Dtype::F64),
+    ("dff_f0_median.bin", Dtype::F64),
+    ("dff_dff.bin", Dtype::F32),
+    // largest-connected-component: uint8 in/out masks.
+    ("largestcc_clear_input.bin", Dtype::U8),
+    ("largestcc_clear_out.bin", Dtype::U8),
+    ("largestcc_tie_input.bin", Dtype::U8),
+    ("largestcc_tie_out.bin", Dtype::U8),
+    // magnification / anisotropy: all f64.
+    ("maganiso_axis.bin", Dtype::F64),
+    ("maganiso_dhdx.bin", Dtype::F64),
+    ("maganiso_dhdy.bin", Dtype::F64),
+    ("maganiso_dvdx.bin", Dtype::F64),
+    ("maganiso_dvdy.bin", Dtype::F64),
+    ("maganiso_distortion.bin", Dtype::F64),
+    // Octave magnitude-ROI: f64 magnitude + meta, uint8 ROI mask.
+    ("magroi_in.bin", Dtype::F64),
+    ("magroi_meta.bin", Dtype::F64),
+    ("magroi_out.bin", Dtype::U8),
+    // Allen power-SNR: f32 movie, uint8 mask.
+    ("powersnr_movie.bin", Dtype::F32),
+    ("powersnr_mask.bin", Dtype::U8),
+    // patch threshold: f64 VFS, uint8 Allen/Garrett masks.
+    ("pthr_vfs.bin", Dtype::F64),
+    ("pthr_allen.bin", Dtype::U8),
+    ("pthr_garrett.bin", Dtype::U8),
+    // reliability: f32 complex parts, f64 expected coherence.
+    ("rel_z_re.bin", Dtype::F32),
+    ("rel_z_im.bin", Dtype::F32),
+    ("rel_expected.bin", Dtype::F64),
+    // spectral SNR: f32 ΔF/F, f64 timestamps + expected (small + large cases).
+    ("snr_small_dff.bin", Dtype::F32),
+    ("snr_small_ts.bin", Dtype::F64),
+    ("snr_small_out.bin", Dtype::F64),
+    ("snr_large_dff.bin", Dtype::F32),
+    ("snr_large_ts.bin", Dtype::F64),
+    ("snr_large_out.bin", Dtype::F64),
+    // spherical (Marshel) stimulus geometry: all f64.
+    ("sph_marshel_cm.bin", Dtype::F64),
+    ("sph_marshel_deg.bin", Dtype::F64),
+    ("sph_marshel_meta.bin", Dtype::F64),
+    // V1 eccentricity: f64 maps/centers, i32 labels.
+    ("v1ecc_alt.bin", Dtype::F64),
+    ("v1ecc_azi.bin", Dtype::F64),
+    ("v1ecc_labels.bin", Dtype::I32),
+    ("v1ecc_rust_map.bin", Dtype::F64),
+    ("v1ecc_rust_center.bin", Dtype::F64),
+    ("v1ecc_snlc_map.bin", Dtype::F64),
+    ("v1ecc_snlc_center.bin", Dtype::F64),
+    // VFS phase-wrap stability (committed-only; no generator regenerates these,
+    // so they never drift in the gate — classified for coverage completeness).
+    ("vfs_wrap_phi1.bin", Dtype::F64),
+    ("vfs_wrap_phi2.bin", Dtype::F64),
+    ("vfs_wrap_allen_true.bin", Dtype::F64),
+    ("vfs_wrap_allen_wrapped.bin", Dtype::F64),
+];
+
+fn dtype_of(name: &str) -> Option<Dtype> {
+    FIXTURE_DTYPES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| *d)
+}
+
+/// Self-check that the dtype manifest exactly covers the committed fixture set:
+/// every fixture present in either snapshot must be classified, and no manifest
+/// entry may be stale (absent from the committed `before` set). This is the
+/// teeth that forces a new fixture to be classified — the same discipline as the
+/// no-transcription gate's MANIFEST.
+fn verify_manifest_coverage(
     before: &BTreeMap<String, Vec<u8>>,
     after: &BTreeMap<String, Vec<u8>>,
-) -> Vec<String> {
-    let mut out = Vec::new();
+) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for name in before.keys().chain(after.keys()) {
+        if dtype_of(name).is_none() {
+            problems.push(format!(
+                "unclassified fixture {name:?}: add it to FIXTURE_DTYPES in xtask"
+            ));
+        }
+    }
+    for (name, _) in FIXTURE_DTYPES {
+        if !before.contains_key(*name) {
+            problems.push(format!(
+                "stale manifest entry {name:?}: no such committed fixture (remove it from FIXTURE_DTYPES)"
+            ));
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "fixture dtype manifest is out of sync with the fixtures dir:\n  {}",
+            problems.join("\n  ")
+        ))
+    }
+}
+
+/// Outcome of the ε-grounded freshness comparison.
+struct FreshnessReport {
+    /// Human-readable agreement failures (drift beyond tolerance, structural
+    /// add/remove, or element-count mismatch). Empty ⇔ fresh.
+    problems: Vec<String>,
+    /// Per-float-fixture measured drift, logged for the grounding record.
+    measurements: Vec<String>,
+    worst_rel: f64,
+    worst_abs: f64,
+}
+
+/// Compare regenerated fixtures to the committed copies through `agreement::Tol`.
+/// Returns `Err` only on a tooling fault (unclassified/stale manifest or a
+/// corrupt blob); numerical/structural disagreements are reported as `problems`.
+fn build_freshness_report(
+    before: &BTreeMap<String, Vec<u8>>,
+    after: &BTreeMap<String, Vec<u8>>,
+) -> Result<FreshnessReport, String> {
+    verify_manifest_coverage(before, after)?;
+
+    let mut problems = Vec::new();
+    let mut measurements = Vec::new();
+    let mut worst_rel = 0.0_f64;
+    let mut worst_abs = 0.0_f64;
+
     for (name, b) in before {
-        match after.get(name) {
-            None => out.push(format!("removed: {name}")),
-            Some(a) if a != b => out.push(format!("changed: {name}")),
-            _ => {}
+        let Some(a) = after.get(name) else {
+            problems.push(format!("removed: {name} (a generator no longer produces it)"));
+            continue;
+        };
+        // Fast path: identical bytes always agree (same-toolchain regen, or a
+        // genuinely deterministic fixture) — skip the decode + compare.
+        if a == b {
+            continue;
+        }
+        // dtype is guaranteed present by verify_manifest_coverage above.
+        let dt = dtype_of(name).expect("classified");
+        let committed = dt.decode(b, name)?;
+        let regenerated = dt.decode(a, name)?;
+        if committed.len() != regenerated.len() {
+            problems.push(format!(
+                "changed: {name} (element count {} → {}; structural, not rounding)",
+                committed.len(),
+                regenerated.len()
+            ));
+            continue;
+        }
+        let drift = dt.tol().check(&regenerated, &committed);
+        if !dt.is_discrete() {
+            worst_rel = worst_rel.max(drift.max_rel);
+            worst_abs = worst_abs.max(drift.max_abs);
+            measurements.push(format!(
+                "{name} ({dt:?}): max_rel={:.3e}, max_abs={:.3e} over {} finite px{}",
+                drift.max_rel,
+                drift.max_abs,
+                drift.n_finite,
+                if drift.n_nan_mismatch > 0 {
+                    format!(", {} NaN-position mismatch(es)", drift.n_nan_mismatch)
+                } else {
+                    String::new()
+                },
+            ));
+        }
+        if !drift.is_agreement() {
+            let kind = if dt.is_discrete() { "discrete change" } else { "float drift" };
+            problems.push(format!(
+                "drift: {name} ({dt:?}, {kind}) — {} px exceed tolerance, {} NaN-position \
+                 mismatch(es) (max_rel={:.3e}, max_abs={:.3e})",
+                drift.n_fail, drift.n_nan_mismatch, drift.max_rel, drift.max_abs,
+            ));
         }
     }
     for name in after.keys() {
         if !before.contains_key(name) {
-            out.push(format!("added:   {name}"));
+            problems.push(format!(
+                "added: {name} (a generator now produces a fixture not in git — commit it)"
+            ));
         }
     }
-    out.sort();
-    out
+    problems.sort();
+    measurements.sort();
+    Ok(FreshnessReport {
+        problems,
+        measurements,
+        worst_rel,
+        worst_abs,
+    })
 }
 
 /// If `render_<stem>.py` has a sibling `crates/isi-analysis/examples/<stem>.rs`

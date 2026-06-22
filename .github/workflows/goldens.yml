@@ -2,8 +2,14 @@ name: Golden freshness
 
 # Oracle golden-fixture freshness gate. Regenerates every golden fixture from
 # its oracle generator (SNLC/Garrett under Octave, Allen/Zhuang transcriptions
-# under Python) and asserts byte-identity with the committed copies — catching
-# the case where a generator is edited but its fixture isn't regenerated.
+# under Python) and asserts AGREEMENT with the committed copies — catching the
+# case where a generator is edited but its fixture isn't regenerated. Agreement
+# is tolerance-based, not byte-identity: this runner's toolchain differs from the
+# dev host that committed the fixtures, so float results round differently, and
+# device-identity is not a validity check. Discrete fixtures (masks/labels/raw
+# frames) are held bit-exact; float fixtures are compared through the project's
+# ε-grounded comparator (crates/agreement), with the measured cross-toolchain
+# drift logged each run. See xtask `build_freshness_report` / `FIXTURE_DTYPES`.
 #
 # Kept SEPARATE from the main `Test` workflow (which stays hermetic and
 # toolchain-free): only this job installs Octave + the pinned Python toolchain,
@@ -31,12 +37,12 @@ on:
 
 jobs:
   goldens:
-    # Pinned Ubuntu (fixed Octave version) — see oracle.yml. NOTE: this freshness
-    # gate byte-compares REGENERATED fixtures, which is inherently same-toolchain;
-    # float fixtures regenerated on this runner's Octave/Python differ at the bit
-    # level from those committed on the dev host (Octave 11.2.0), so the byte check
-    # is being made tolerance-based (the device-independent freshness check) —
-    # tracked separately. Pinning the runner is the env half of that fix.
+    # Pinned Ubuntu (fixed Octave version) — see oracle.yml. The freshness gate
+    # regenerates fixtures on THIS runner's Octave/Python, which differ at the bit
+    # level from the dev host (Octave 11.2.0) that committed them; the comparison
+    # is therefore tolerance-based (ε-grounded, via crates/agreement), so the gate
+    # is device-independent. Pinning the runner fixes the Octave version so the
+    # measured drift the gate logs is stable and auditable across runs.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
