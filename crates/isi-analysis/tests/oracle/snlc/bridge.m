@@ -136,6 +136,18 @@ switch req.fn
     bw = ones(size(ang0));
     [k1, k2, d1, d2, sh, magS] = Gprocesskret({ang0, ang0, ang2, ang2}, bw, false, [], []);
     outs = {magS.hor};
+  case 'splitpatchesx'   % genuine SNLC splitPatchesX(im,kmap_hor,kmap_vert,kmap_rad,pixpermm)
+    % The over-representation split. figTag=0 (no plotting). smoothPatchesX uses
+    % roifilt2 (MATLAB Image Processing Toolbox — ABSENT in Octave), so this arm is
+    % MATLAB-ONLY; the Rust test skips it under Octave. x{1}=im (binary patch map),
+    % x{2}=kmap_hor (azimuth deg), x{3}=kmap_vert (altitude deg), x{4}=kmap_rad
+    % (eccentricity deg). Returns the refined binary patch map.
+    outs = {double(splitPatchesX(logical(x{1}), x{2}, x{3}, x{4}, p.pixpermm))};
+  case 'fusepatchesx'    % genuine SNLC fusePatchesX(im,kmap_hor,kmap_vert,pixpermm)
+    % Fuse pairs of patches whose visual-space coverage overlaps. MATLAB-only (its
+    % overRep subfunction path mirrors splitPatchesX's; figTag=0 → headless).
+    [imf, ~] = fusePatchesX(logical(x{1}), x{2}, x{3}, p.pixpermm);
+    outs = {double(imf)};
   otherwise
     error('unknown oracle fn %s', req.fn);
 end
