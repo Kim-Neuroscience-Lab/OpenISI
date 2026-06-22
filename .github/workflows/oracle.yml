@@ -83,17 +83,21 @@ jobs:
 
   # ── Genuine MATLAB oracle — FREE on this PUBLIC repo (no licence token) ────────
   # OpenISI is a PUBLIC repository, so MathWorks licenses MATLAB in GitHub Actions
-  # for free — the `MLM_LICENSE_TOKEN` / `matlab-batch` token is the *private*-repo
-  # path, which we previously (wrongly) required. `matlab-actions/setup-matlab`
-  # installs MATLAB R2025b + `matlab-batch`; on a public repo the licence is
-  # provided automatically. This runs the genuine-oracle suite under REAL MATLAB
-  # (matching the dev host) — SNLC with NO Octave≈MATLAB approximation, the
-  # `imclose` border exact, and the split/fuse composites runnable. The Octave job
-  # above remains the always-on open fallback. (Empirically validating that the
-  # harness's `matlab-batch` subprocess inherits the public-repo licence — if it
-  # needs the run-command wrapper instead, this job's failure tells us so.)
+  # for free. The `MLM_LICENSE_TOKEN` / `matlab-batch` token is the *private*-repo
+  # path, which we previously (wrongly) required. For public repos, `matlab-batch`
+  # self-licenses via a **GitHub OIDC token**, which requires `permissions:
+  # id-token: write` on the job — without it (our first attempt) matlab-batch finds
+  # no token, falls through to a license-FILE search, and fails "Unable to find a
+  # license". With the OIDC permission granted, the harness's `matlab-batch`
+  # subprocess (spawned by `cargo test`) obtains the free licence itself. This runs
+  # the genuine-oracle suite under REAL MATLAB R2025b — SNLC with NO Octave≈MATLAB
+  # approximation, the `imclose` border exact, the split/fuse composites runnable.
+  # The Octave job above remains the always-on open fallback.
   oracle-matlab:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read    # checkout
+      id-token: write   # GitHub OIDC → free public-repo MATLAB licence for matlab-batch
     steps:
       - uses: actions/checkout@v4
       - name: Materialise pinned oracle reference (byte-pristine)
