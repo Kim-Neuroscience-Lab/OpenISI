@@ -304,12 +304,24 @@ pub(crate) mod oracle {
         // stdout can carry startup noise, so under MATLAB the bridge writes
         // `response.json` and we read that; the Octave path reads stdout unchanged.
         let resp: serde_json::Value = if let Ok(matlab_exe) = std::env::var("OPENISI_MATLAB") {
-            let out = Command::new(&matlab_exe)
-                .args(["-batch", "bridge"])
-                .current_dir(&snlc_dir)
-                .env("OPENISI_ORACLE_REQ", &req_path)
+            // Two invocation forms: a locally-licensed `matlab` takes `-batch <stmt>`;
+            // `matlab-batch` (installed by matlab-actions/setup-matlab for CI) takes
+            // the statement directly and adds `-batch` itself, licensing via
+            // MLM_LICENSE_TOKEN (a free public-repo batch token, set as a secret).
+            let is_batch = std::path::Path::new(&matlab_exe)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains("matlab-batch"));
+            let mut cmd = Command::new(&matlab_exe);
+            cmd.current_dir(&snlc_dir).env("OPENISI_ORACLE_REQ", &req_path);
+            if is_batch {
+                cmd.arg("bridge");
+            } else {
+                cmd.args(["-batch", "bridge"]);
+            }
+            let out = cmd
                 .output()
-                .expect("spawn matlab — set OPENISI_MATLAB to the matlab executable");
+                .expect("spawn matlab — set OPENISI_MATLAB to the matlab (or matlab-batch) executable");
             assert!(
                 out.status.success(),
                 "SNLC MATLAB bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
