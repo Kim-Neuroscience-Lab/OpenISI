@@ -4573,6 +4573,7 @@ dependencies = [
 name = "openisi-stimulus"
 version = "0.1.0"
 dependencies = [
+ "agreement",
  "approx",
  "bytemuck",
  "glyphon",

@@ -680,6 +680,7 @@ mod tests {
     #[test]
     fn separable_filter_matches_genuine_scipy_live() {
         use crate::test_support::oracle;
+        use agreement::{Eps, Tol};
         const N: usize = 4;
         const K: usize = 15;
         let input = Array2::from_shape_fn((N, N), |(r, c)| (r * N + c) as f64 * 0.5 - 3.0);
@@ -691,14 +692,15 @@ mod tests {
             .remove(0);
         let ours = separable_filter(&input, &kernel);
 
-        let mut md = 0.0f64;
-        for r in 0..N {
-            for c in 0..N {
-                md = md.max((ours[[r, c]] - genuine[[r, c]]).abs());
-            }
-        }
-        eprintln!("separable_filter vs GENUINE scipy.correlate1d (live): max diff = {md:.2e}");
-        assert!(md < 1e-12, "separable_filter diverges from genuine scipy correlate1d: {md:.2e}");
+        // Zero-crossing values (the kernel has negative taps and the input crosses
+        // zero) → ABSOLUTE ε bound. MEASURED max_abs ≈ 5.33e-15 ≈ 24·ε_f64 ⇒ K=64
+        // (smallest pow2 with ≳2× cross-platform margin) — was a magic `1e-12`.
+        let (of, gf): (Vec<f64>, Vec<f64>) =
+            (ours.iter().copied().collect(), genuine.iter().copied().collect());
+        let tol = Tol::abs(64, Eps::F64);
+        let d = tol.check(&of, &gf);
+        eprintln!("separable_filter vs GENUINE scipy.correlate1d (live): max_abs={:.3e} ({} px)", d.max_abs, d.n_finite);
+        tol.assert("separable_filter vs scipy.correlate1d", &of, &gf);
     }
 
     #[test]

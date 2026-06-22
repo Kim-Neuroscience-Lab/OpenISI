@@ -22,3 +22,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 approx = "0.5"
+# The project's single ε-grounded numerical-agreement comparator, shared with the
+# isi-analysis goldens and the equivalence harness (no per-test magic thresholds).
+agreement = { path = "../agreement" }

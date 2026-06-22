@@ -471,20 +471,18 @@ mod tests {
         let re = tensor_to_array2_f64(f1.real()).unwrap();
         let im = tensor_to_array2_f64(f1.imag()).unwrap();
 
-        let mut maxd = 0.0f64;
-        for r in 0..HW {
-            for c in 0..HW {
-                maxd = maxd.max((re[[r, c]] - g_re[[r, c]]).abs());
-                maxd = maxd.max((im[[r, c]] - g_im[[r, c]]).abs());
-            }
-        }
-        eprintln!("F1 DFT vs GENUINE numpy.fft (live): max diff = {maxd:.3e}");
-        // f32 length-24 reduction vs numpy f64; same K=128·ε_f32 budget as the
-        // frozen-fixture test above (observed ≈ 8e-6).
-        assert!(
-            maxd < 128.0 * f32::EPSILON as f64,
-            "dft_projection diverges from genuine numpy.fft: {maxd:.3e}"
-        );
+        // re/im both cross zero → ABSOLUTE ε bound. f32 length-24 DFT reduction vs
+        // numpy f64; K=128·ε_f32 (the documented budget; MEASURED ≈ 8.25e-6 ≈
+        // 69·ε_f32, covered with ~1.85× margin). Was an inline `128·f32::EPSILON`
+        // that bypassed the `Tol` type.
+        let mut of: Vec<f64> = re.iter().copied().collect();
+        of.extend(im.iter().copied());
+        let mut gf: Vec<f64> = g_re.iter().copied().collect();
+        gf.extend(g_im.iter().copied());
+        let tol = Tol::abs(128, Eps::F32);
+        let d = tol.check(&of, &gf);
+        eprintln!("F1 DFT vs GENUINE numpy.fft (live): max_abs={:.3e} ({} px)", d.max_abs, d.n_finite);
+        tol.assert("dft_projection vs numpy.fft", &of, &gf);
     }
 
     /// `responsiveness::reliability` (cross-cycle coherence `|ΣZ_k|/Σ|Z_k|`, the
@@ -636,14 +634,16 @@ mod tests {
         .f64();
         let ours = temporal_mean_baseline(&frames);
 
-        let mut maxd = 0.0f64;
-        for r in 0..H {
-            for c in 0..W {
-                maxd = maxd.max((ours[[r, c]] - genuine[[r, c]]).abs());
-            }
-        }
-        eprintln!("baseline F0 vs GENUINE numpy.mean (live): max diff = {maxd:.3e}");
-        assert!(maxd <= 64.0 * f64::EPSILON * 4096.0, "temporal_mean_baseline diverges from genuine numpy.mean: {maxd:.3e}");
+        // F0 = mean over N=20 frames — a positive-magnitude (camera-count) reduction
+        // → RELATIVE with floor; K ≈ 2·N rounded to pow2 = 64 (reduction-order error
+        // propagation). MEASURED max diff = 0 (bit-identical to numpy.mean here).
+        // Was an abs `64·ε_f64·4096` with an unexplained 4096.
+        let (of, gf): (Vec<f64>, Vec<f64>) =
+            (ours.iter().copied().collect(), genuine.iter().copied().collect());
+        let tol = Tol::rel(64, Eps::F64, 64);
+        let d = tol.check(&of, &gf);
+        eprintln!("baseline F0 vs GENUINE numpy.mean (live): max_abs={:.3e} max_rel={:.3e}", d.max_abs, d.max_rel);
+        tol.assert("temporal_mean_baseline vs numpy.mean", &of, &gf);
     }
 
     /// **Response-normalization equivalence (item 4).** The oracle-faithful

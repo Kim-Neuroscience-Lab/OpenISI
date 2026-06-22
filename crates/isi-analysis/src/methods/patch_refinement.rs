@@ -1144,22 +1144,21 @@ mod allen {
             let big = smooth(48);
             let small = smooth(11);
             let cases: [(&Array2<f64>, usize); 3] = [(&big, 15), (&big, 10), (&small, 5)];
-            let mut maxd = 0.0f64;
             for (a, size) in cases {
                 let n = a.dim().0;
                 let genuine = oracle::nat("scipy_uniform_filter", &[a.clone()], &[("size", size as f64)])
                     .remove(0);
                 let ours = uniform_filter_finite(a, size as i32);
-                let mut d = 0.0f64;
-                for r in 0..n {
-                    for c in 0..n {
-                        d = d.max((ours[[r, c]] - genuine[[r, c]]).abs());
-                    }
-                }
-                eprintln!("  uniform_filter {n}x{n} size={size} vs GENUINE scipy (live): max diff = {d:.2e}");
-                maxd = maxd.max(d);
+                // f64 box filter vs genuine scipy.uniform_filter; near-zero pixels
+                // → ABSOLUTE ε bound. MEASURED worst max_abs ≈ 3.55e-15 ≈ 16·ε_f64
+                // ⇒ K=32 (smallest pow2 with 2× margin) — was a magic `1e-9`.
+                let (of, gf): (Vec<f64>, Vec<f64>) =
+                    (ours.iter().copied().collect(), genuine.iter().copied().collect());
+                let tol = Tol::abs(32, Eps::F64);
+                let d = tol.check(&of, &gf);
+                eprintln!("  uniform_filter {n}x{n} size={size} vs GENUINE scipy (live): max_abs={:.3e}", d.max_abs);
+                tol.assert(&format!("uniform_filter {n}x{n} size={size} vs scipy"), &of, &gf);
             }
-            assert!(maxd < 1e-9, "uniform_filter_finite diverges from genuine scipy uniform_filter");
         }
 
         /// **Live library-primitive oracle**: our `watershed_from_markers` vs the
@@ -1256,9 +1255,7 @@ mod allen {
                 ("multicomp", &two_sq, &base),
                 ("negzero", &one_sq, &negzero),
             ];
-            let eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + b.abs());
-
-            let mut diffs = Vec::new();
+            let (mut ours_v, mut gen_v): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
             for (name, mask, det) in cases {
                 let mask_f = mask.mapv(|b| if b { 1.0 } else { 0.0 });
                 let g = oracle::nat_raw("getSigmaArea", &[mask_f, (*det).clone()], &[])
@@ -1266,11 +1263,15 @@ mod allen {
                     .f64()[[0, 0]];
                 let o = sigma_area(mask, det);
                 eprintln!("  sigma_area {name}: ours={o} genuine={g}");
-                if !eq(o, g) {
-                    diffs.push(format!("{name}: ours={o} genuine={g}"));
-                }
+                ours_v.push(o);
+                gen_v.push(g);
             }
-            assert!(diffs.is_empty(), "sigma_area diverges from genuine NAT getSigmaArea: {diffs:?}");
+            // getSigmaArea is a masked reduction (a signed sum); positive/signed
+            // magnitude → relative with floor, and the NaN cases (0·NaN outside the
+            // mask, propagated like genuine numpy) match position-wise — both handled
+            // by `Tol`. MEASURED worst ≈ 1·ε_f64 rel (multicomp 67.2) ⇒ K=16; was a
+            // hand-rolled `|a−b| ≤ 1e-9·(1+|b|)` (a private re-impl of Tol::rel).
+            Tol::rel(16, Eps::F64, 16).assert("sigma_area vs NAT getSigmaArea", &ours_v, &gen_v);
         }
 
         // (Cutover, objective 1) The frozen `eccentricity_full_image_and_center_match_
@@ -1493,7 +1494,10 @@ mod allen {
                     if ours.dim() != g_vs.dim() || d != 0 {
                         fails.push(format!("{name} close={close}: vs_diff={d}"));
                     }
-                    if (our_area - g_area).abs() > 1e-9 {
+                    // Areas are integer pixel counts (pixelSize=1.0) — exact, not a
+                    // float tolerance. (Was a magic `1e-9`; both sides are exact
+                    // integer-valued f64 and must agree exactly.)
+                    if our_area != g_area {
                         fails.push(format!("{name} close={close}: area {our_area} != {g_area}"));
                     }
                 }

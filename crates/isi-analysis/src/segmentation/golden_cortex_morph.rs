@@ -385,6 +385,7 @@ mod tests {
     #[test]
     fn gaussian_smooth_matches_genuine_scipy_live() {
         use crate::test_support::oracle;
+        use agreement::{Eps, Tol};
         use ndarray::Array2;
         const G: usize = 96;
         let input = Array2::from_shape_fn((G, G), |(r, c)| {
@@ -394,14 +395,16 @@ mod tests {
         });
         let genuine = oracle::nat("scipy_gaussian_filter", &[input.clone()], &[("sigma", 4.0)]).remove(0);
         let ours = gaussian_smooth_f64(&input, 4.0);
-        let mut maxd = 0.0f64;
-        for r in 0..G {
-            for c in 0..G {
-                maxd = maxd.max((ours[[r, c]] - genuine[[r, c]]).abs());
-            }
-        }
-        eprintln!("gaussian_smooth vs GENUINE scipy (live): max diff = {maxd:.3e}");
-        assert!(maxd < 1e-6, "gaussian_smooth diverges from live scipy gaussian_filter: {maxd:.3e}");
+        // f64 separable Gaussian vs genuine scipy.ndimage.gaussian_filter. The
+        // smoothed field has near-zero pixels (the low corner) → an ABSOLUTE
+        // ε-floor, not relative. MEASURED max_abs ≈ 1.11e-15 ≈ 5·ε_f64 on this
+        // 96² scene ⇒ K=16 (smallest pow2 with ≳2× cross-platform margin).
+        let (of, gf): (Vec<f64>, Vec<f64>) =
+            (ours.iter().copied().collect(), genuine.iter().copied().collect());
+        let tol = Tol::abs(16, Eps::F64);
+        let d = tol.check(&of, &gf);
+        eprintln!("gaussian_smooth vs GENUINE scipy (live): max_abs={:.3e} ({} px)", d.max_abs, d.n_finite);
+        tol.assert("gaussian_smooth vs scipy.gaussian_filter", &of, &gf);
     }
 
     /// Load a square uint8 fixture of explicit side `n` as a bool mask.
@@ -779,22 +782,21 @@ mod tests {
         let alt = Array2::from_shape_fn((M, M), |(r, c)| lv[r * M + c]);
         let labels = Array2::from_shape_fn((M, M), |(r, c)| labv[r * M + c]);
 
+        use agreement::{Eps, Tol};
         let got = crate::math::compute_eccentricity(&azi, &alt, &labels);
-        let mut md = 0.0f64;
-        for r in 0..M {
-            for c in 0..M {
-                let (o, g) = (got[[r, c]], mapv[r * M + c]);
-                if o.is_nan() || g.is_nan() {
-                    assert_eq!(o.is_nan(), g.is_nan(), "NaN mismatch at {r},{c}");
-                } else {
-                    md = md.max((o - g).abs());
-                }
-            }
-        }
-        eprintln!("compute_eccentricity V1-center (regression-lock): max diff = {md:.2e}");
-        assert!(
-            md < 1e-9,
-            "compute_eccentricity changed (NB: Allen vs SNLC center convention is an open decision)"
+        // Regression-lock vs the frozen f64 map (row-major, same order). Eccentricity
+        // is a ≥0 distance that passes through 0 at the V1 centre and is NaN outside
+        // the labelled area → ABSOLUTE ε bound with NaN-position matching (both via
+        // `Tol`). MEASURED max_abs ≈ 2.49e-14 ≈ 112·ε_f64 (cross-platform compute vs
+        // the dev-host fixture) ⇒ K=256 (was a magic `1e-9`, ~45000× too loose).
+        let got_flat: Vec<f64> = got.iter().copied().collect();
+        let tol = Tol::abs(256, Eps::F64);
+        let d = tol.check(&got_flat, &mapv);
+        eprintln!("compute_eccentricity V1-center (regression-lock): max_abs={:.3e} nan_mm={}", d.max_abs, d.n_nan_mismatch);
+        tol.assert(
+            "compute_eccentricity V1-center (regression-lock; Allen vs SNLC centre is an open decision)",
+            &got_flat,
+            &mapv,
         );
     }
 
@@ -823,27 +825,21 @@ mod tests {
         let alt = Array2::from_shape_fn((M, M), |(r, c)| lv[r * M + c]);
         let labels = Array2::from_shape_fn((M, M), |(r, c)| labv[r * M + c]);
 
+        use agreement::{Eps, Tol};
         let got = crate::math::compute_eccentricity_snlc(&azi, &alt, &labels);
-        let mut md = 0.0f64;
-        for r in 0..M {
-            for c in 0..M {
-                let (o, g) = (got[[r, c]], mapv[r * M + c]);
-                assert_eq!(o.is_nan(), g.is_nan(), "NaN mismatch at {r},{c}");
-                if !o.is_nan() {
-                    md = md.max((o - g).abs());
-                }
-            }
-        }
-        // The oracle center (altC, aziC) is logged for provenance; the map match
-        // is the binding assertion (it folds in the same center selection).
+        // Formula-pin vs the frozen f64 map (row-major). ≥0 distance through 0 at
+        // the centre, NaN outside the area → ABSOLUTE ε bound + NaN-position match
+        // via `Tol`. Same f64 conditioning as the sibling V1-center lock ⇒ K=256
+        // (was a magic `1e-9`). The oracle centre is logged for provenance; the map
+        // match (which folds in the same centre selection) is the binding assert.
+        let got_flat: Vec<f64> = got.iter().copied().collect();
+        let tol = Tol::abs(256, Eps::F64);
+        let d = tol.check(&got_flat, &mapv);
         eprintln!(
-            "compute_eccentricity_snlc vs getAreaBorders: max map diff = {md:.2e}  \
+            "compute_eccentricity_snlc vs getAreaBorders: max_abs={:.3e} nan_mm={}  \
              (oracle center altC={:.4} aziC={:.4})",
-            cen[0], cen[1]
+            d.max_abs, d.n_nan_mismatch, cen[0], cen[1]
         );
-        assert!(
-            md < 1e-9,
-            "compute_eccentricity_snlc diverges from SNLC getAreaBorders: {md:.3e}"
-        );
+        tol.assert("compute_eccentricity_snlc vs getAreaBorders", &got_flat, &mapv);
     }
 }

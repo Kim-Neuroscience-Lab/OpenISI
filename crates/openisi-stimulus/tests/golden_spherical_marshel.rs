@@ -22,6 +22,7 @@
 //! pose is centred (no azimuth/elevation/bisector offset) so the cm↔uv map is
 //! `u = 0.5 + x/W`, `v = 0.5 − y/H`.
 
+use agreement::{Eps, Tol};
 use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};
 
 fn load_f64(bytes: &[u8]) -> Vec<f64> {
@@ -58,19 +59,22 @@ fn spherical_matches_allen_marshel_remap() {
         1080,
     );
 
-    let mut max_az = 0.0f64;
-    let mut max_el = 0.0f64;
+    let mut ours: Vec<f64> = Vec::with_capacity(2 * n);
     for i in 0..n {
         let (x_cm, y_cm) = (cm[2 * i], cm[2 * i + 1]);
         let u = 0.5 + x_cm / w_cm;
         let v = 0.5 - y_cm / h_cm;
         let (az, el) = geom.uv_to_angle(u, v);
-        max_az = max_az.max((az - deg[2 * i]).abs());
-        max_el = max_el.max((el - deg[2 * i + 1]).abs());
+        ours.push(az);
+        ours.push(el);
     }
-    eprintln!("spherical Marshel vs Allen remap: max az diff = {max_az:.2e} deg, max el diff = {max_el:.2e} deg");
-    assert!(
-        max_az < 1e-9 && max_el < 1e-9,
-        "spherical correction diverges from Allen Marshel remap: az {max_az:.2e}, el {max_el:.2e}"
-    );
+    // az/el (degrees) cross zero → ABSOLUTE ε bound, through the project's single
+    // grounded comparator. The Marshel-2012 arctan is algebraically identical to
+    // `uv_to_angle` (asin↔atan), so the only difference is f64 rounding. MEASURED
+    // worst ≈ 7.11e-15 ≈ 32·ε_f64 (elevation) ⇒ K=64 (was a magic `1e-9`).
+    let reference = &deg[..2 * n];
+    let tol = Tol::abs(64, Eps::F64);
+    let d = tol.check(&ours, reference);
+    eprintln!("spherical Marshel vs Allen remap: max_abs={:.3e} deg ({n} pts)", d.max_abs);
+    tol.assert("spherical correction vs Allen Marshel remap", &ours, reference);
 }
