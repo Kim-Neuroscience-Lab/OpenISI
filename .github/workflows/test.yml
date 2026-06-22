@@ -43,9 +43,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Set CMake generator (Windows)
+      # The hdf5-metno-src static build runs cmake. The "Visual Studio 17 2022"
+      # generator fails on the runner ("could not find any instance of Visual
+      # Studio"). Use the MSVC dev environment (puts cl.exe on PATH) + the Ninja
+      # generator (installed by lukka/get-cmake) — the reliable pattern for cmake
+      # C builds on Windows CI; Ninja drives cl.exe directly, no VS-instance lookup.
+      - name: Set up MSVC developer environment (Windows)
         if: runner.os == 'Windows'
-        run: echo "CMAKE_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Use Ninja for cmake (Windows)
+        if: runner.os == 'Windows'
+        run: echo "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
 
       # Default shell (PowerShell on Windows) so the native build env is unchanged.
       # Tests self-report failures as `::error::` lines on stdout, which GitHub
