@@ -57,6 +57,16 @@ so a clean machine / CI reproduces the same result.
   via Octave (the only open, scriptable runtime). Octave's IPT functions match
   MATLAB's to high precision but are not bit-identical — flagged per-method in the
   ledger (e.g. `bwdist` returns single → f32 comparison).
+- **Octave version: tolerance-based, not bit-pinned across versions.** The env is
+  version-pinned per host (dev: Octave **11.2.0**; CI: ubuntu-24.04 → Octave
+  **8.4.0**, recorded each run via `::notice`), but the two versions are NOT
+  bit-identical to each other. The genuine-oracle suite is GREEN on **both** — direct
+  evidence that the oracle gates are tolerance-based (device/version-independent
+  validity), not bit-exact. A future Octave that drifts the result past a per-method
+  tolerance would fail the gate loudly (the gate working), forcing a deliberate
+  re-pin — never a silent change. (A digest-locked `container:` Octave would pin the
+  exact patch version; ubuntu-24.04 fixes major/minor, which is what the tolerances
+  are grounded against.)
 - **Octave's `image` package lacks `roifilt2`** (`exist('roifilt2')==0` in 11.2.0),
   and the reference functions that call it — `smoothPatchesX.m`, `splitPatchesX.m`,
   `fusePatchesX.m`, and `Gprocesskret.m`'s *smoothing* branches — therefore **cannot
