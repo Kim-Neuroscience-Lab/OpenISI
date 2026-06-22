@@ -59,16 +59,23 @@ so a clean machine / CI reproduces the same result.
   `OPENISI_OCTAVE`). Octave's IPT functions match MATLAB's to high precision but are
   not bit-identical.
   **OPEN FINDING (objective 5 — surfaced by running genuine MATLAB R2025b, which the
-  Octave approximation had HIDDEN):** `imclose(strel('disk',10,0))` on a
-  border-touching object differs **MATLAB vs Octave by 180 px**; `imopen`,
-  `imdilate(disk)`, `imfill('holes')` are bit-identical between the two. Our
-  `binary_closing_disk` matches Octave but NOT genuine MATLAB here — almost certainly
-  an `imclose` image-border convention (close = dilate→erode; the erode-after-dilate
-  near the top-edge blob). **To resolve:** determine MATLAB's border rule and either
-  (a) match it in `binary_closing_disk` (MATLAB is the genuine reference) or (b) record
-  it as an irreducible MATLAB≈Octave border-convention gap. Until then the
-  `cortex_morphology_*` live test passes under Octave (CI) and is RED under MATLAB —
-  honestly, the gate working.
+  Octave approximation had HIDDEN):** `imclose(strel('disk',R,0))` on a
+  **border-touching** object differs **MATLAB vs Octave**; `imopen`, `imdilate(disk)`,
+  `imfill('holes')` are bit-identical between the two. **Exact rule, verified against
+  MATLAB R2025b:** MATLAB `imclose` = *pad the image with 0 by the SE radius → naive
+  `dilate→erode` → crop* (`imclose == imerode(imdilate(pad0(bw),se),se)` cropped,
+  diff 0; pad-with-1 is wrong). Octave's `imclose` (and our `binary_closing_disk`) do
+  the naive `dilate→erode` WITHOUT the border pad — so they agree with each other but
+  differ from genuine MATLAB **only within R px of the image edge**. Real cortex
+  segmentation (`SnlcGarrett2014ImBound`) operates on an interior `|VFS|` ROI that does
+  not touch the FOV border, so this never affects real results; the only exposure is
+  the *artificial* top-edge blob added to the `cortex_morphology` test for padding
+  coverage. **DECISION PENDING (resolve vs record):** (a) make `binary_closing_disk`
+  pad-0-crop to match the genuine MATLAB reference exactly — a *pipeline* change that
+  re-baselines and makes the Octave-on-CI comparison show the same border divergence
+  (Octave≠MATLAB there); or (b) record it as a stated, justified deviation (border-only;
+  real cortex is interior). Until decided, `cortex_morphology_*` is green under Octave
+  (CI) and red under MATLAB on the artificial border pixel — the gate working honestly.
 - **Octave version: tolerance-based, not bit-pinned across versions.** The env is
   version-pinned per host (dev: Octave **11.2.0**; CI: ubuntu-24.04 → Octave
   **8.4.0**, recorded each run via `::notice`), but the two versions are NOT
