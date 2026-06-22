@@ -162,8 +162,23 @@ pub(crate) fn binary_closing_disk(mask: &Array2<bool>, radius: i32) -> Array2<bo
     if radius <= 0 {
         return mask.clone();
     }
-    let dilated = binary_dilation_disk(mask, radius);
-    binary_erosion_disk(&dilated, radius)
+    // Genuine MATLAB `imclose` is NOT a naive `imerode(imdilate(.))`: it pads the
+    // image with 0 by the SE radius, composes dilate→erode, then crops. Verified
+    // bit-exact against MATLAB R2025b (`imclose == imerode(imdilate(pad0(bw))).crop`);
+    // the naive compose (what Octave does, and what we used to do) differs within
+    // R px of the image edge. Reproduce the genuine MATLAB rule so the cortex
+    // segmentation is faithful to the SNLC reference even for border-touching
+    // objects. (Interior results are unchanged — the divergence is border-only.)
+    let r = radius as usize;
+    let (h, w) = mask.dim();
+    let mut padded = Array2::<bool>::from_elem((h + 2 * r, w + 2 * r), false);
+    for i in 0..h {
+        for j in 0..w {
+            padded[[i + r, j + r]] = mask[[i, j]];
+        }
+    }
+    let eroded = binary_erosion_disk(&binary_dilation_disk(&padded, radius), radius);
+    Array2::from_shape_fn((h, w), |(i, j)| eroded[[i + r, j + r]])
 }
 
 // =============================================================================

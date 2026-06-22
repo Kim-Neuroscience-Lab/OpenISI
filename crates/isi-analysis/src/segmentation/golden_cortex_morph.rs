@@ -118,7 +118,13 @@ mod tests {
             ("imdilate_disk", 3.0, binary_dilation_disk(&mask, 3)),
             ("imfill_holes", 0.0, binary_fill_holes(&mask)),
         ];
-        let mut total = 0usize;
+        // `imclose` is the one genuine Octave≈MATLAB divergence: MATLAB `imclose`
+        // pads the image with 0 by the SE radius (verified bit-exact vs R2025b), so
+        // our `binary_closing_disk` now matches genuine MATLAB; Octave does the naive
+        // `dilate→erode`, differing ONLY within `radius` px of the image edge. So
+        // against genuine MATLAB the match is exact; against the Octave approximation
+        // the divergence is confined to the border (a real INTERIOR bug still fails).
+        let on_matlab = std::env::var("OPENISI_MATLAB").is_ok();
         for (fname, radius, ours) in &cases {
             let params: Vec<(&str, f64)> = if *fname == "imfill_holes" {
                 vec![]
@@ -126,18 +132,33 @@ mod tests {
                 vec![("radius", *radius)]
             };
             let genuine = oracle::snlc(fname, &[f.clone()], &params).remove(0);
-            let mut d = 0usize;
+            let rr = *radius as usize;
+            let (mut total, mut off_border) = (0usize, 0usize);
             for r in 0..N {
                 for c in 0..N {
                     if (ours[[r, c]] as i32) != genuine[[r, c]].round() as i32 {
-                        d += 1;
+                        total += 1;
+                        if r >= rr && r < N - rr && c >= rr && c < N - rr {
+                            off_border += 1;
+                        }
                     }
                 }
             }
-            eprintln!("  {fname:14} vs GENUINE Octave (live): differing px = {d}");
-            total += d;
+            if *fname == "imclose_disk" && !on_matlab {
+                eprintln!(
+                    "  imclose_disk  vs GENUINE Octave (live): {total} px differ \
+                     (off-border={off_border}; documented Octave≈MATLAB pad-0-crop gap)"
+                );
+                assert_eq!(
+                    off_border, 0,
+                    "imclose diverges from Octave OFF the border — a real interior bug, \
+                     not the pad-0-crop gap"
+                );
+            } else {
+                eprintln!("  {fname:14} vs GENUINE reference (live): differing px = {total}");
+                assert_eq!(total, 0, "{fname} diverges from the genuine reference");
+            }
         }
-        assert_eq!(total, 0, "cortex disk-strel morphology diverges from genuine Octave IPT");
     }
 
     /// **FROZEN orchestration regression-lock (objective-6 exception, honestly

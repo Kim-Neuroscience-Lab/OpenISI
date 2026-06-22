@@ -66,16 +66,18 @@ so a clean machine / CI reproduces the same result.
   `dilate→erode` → crop* (`imclose == imerode(imdilate(pad0(bw),se),se)` cropped,
   diff 0; pad-with-1 is wrong). Octave's `imclose` (and our `binary_closing_disk`) do
   the naive `dilate→erode` WITHOUT the border pad — so they agree with each other but
-  differ from genuine MATLAB **only within R px of the image edge**. Real cortex
-  segmentation (`SnlcGarrett2014ImBound`) operates on an interior `|VFS|` ROI that does
-  not touch the FOV border, so this never affects real results; the only exposure is
-  the *artificial* top-edge blob added to the `cortex_morphology` test for padding
-  coverage. **DECISION PENDING (resolve vs record):** (a) make `binary_closing_disk`
-  pad-0-crop to match the genuine MATLAB reference exactly — a *pipeline* change that
-  re-baselines and makes the Octave-on-CI comparison show the same border divergence
-  (Octave≠MATLAB there); or (b) record it as a stated, justified deviation (border-only;
-  real cortex is interior). Until decided, `cortex_morphology_*` is green under Octave
-  (CI) and red under MATLAB on the artificial border pixel — the gate working honestly.
+  differ from genuine MATLAB **only within R px of the image edge**.
+  **RESOLVED — fixed to match the genuine MATLAB reference.** `binary_closing_disk` now
+  pads with 0 by the SE radius → dilate→erode → crop, bit-exact to MATLAB R2025b's
+  `imclose`. The change is border-only, so it moves NO real result: the cortex_full
+  orchestration golden, the R43 equivalence baseline, and the synthetic baseline are all
+  unchanged (their cortex ROI is interior — verified, the suites stay green). The
+  `cortex_morphology` live test now passes under genuine MATLAB **exactly**; under the
+  Octave fallback it asserts the divergence is **confined to within R px of the edge**
+  (the documented Octave≈MATLAB `imclose` gap), so a real interior bug still fails.
+  OpenISI is now faithful to genuine MATLAB `imclose`, with Octave's border behaviour
+  honestly bounded — exactly the kind of divergence the genuine-MATLAB oracle exists to
+  catch (Octave alone had hidden it).
 - **Octave version: tolerance-based, not bit-pinned across versions.** The env is
   version-pinned per host (dev: Octave **11.2.0**; CI: ubuntu-24.04 → Octave
   **8.4.0**, recorded each run via `::notice`), but the two versions are NOT
