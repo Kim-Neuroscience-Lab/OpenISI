@@ -228,9 +228,20 @@ mod tests {
     /// for "anisotropy from given gradients" (this op's contract). So this pins the
     /// published formula on fixed gradients, labelled as a formula-pin (axis
     /// compared circularly, period 180°; distortion absolute). The genuine
-    /// `getMagFactors` end-to-end (maps→prefAxisMF) is a *different* op (full
-    /// smooth+grad+anisotropy) and a candidate future live test. Fixtures from
-    /// `gen_maganiso_golden.py`.
+    /// `getMagFactors` end-to-end (maps→prefAxisMF) is a *different* op: it bundles
+    /// an fft-gaussian smooth (σ=3, full-image) + `gradient` and returns only the
+    /// final maps, never its internal gradients — so there is no separable runnable
+    /// reference for "anisotropy from given gradients". A live *end-to-end* test is
+    /// also NOT faithful to this op: the bundled smoothing DOMINATES the result
+    /// (measured — raw-kmap gradients vs smoothed move interior distortion by ~0.8
+    /// and the axis by >110°), and OpenISI deliberately uses amplitude-weighted
+    /// *phasor* smoothing instead, so the genuine chain and OpenISI's pipeline
+    /// magnification diverge by design. Hence **irreducible** for the isolated op
+    /// (objective 8): the post-`gradient` block is reproduced verbatim and pinned on
+    /// fixed gradients; the smoothing/gradient stages OpenISI actually runs are
+    /// validated live elsewhere (`gaussian_smooth` vs scipy; gradients via the
+    /// determinant-map live test). See tests/oracle/README.md for the full ledger
+    /// entry. Fixtures from `gen_maganiso_golden.py`.
     #[test]
     fn magnification_anisotropy_matches_snlc_getmagfactors() {
         const M: usize = 48;
