@@ -113,8 +113,15 @@ jobs:
         with:
           release: R2025b
           products: Image_Processing_Toolbox
-      - name: Genuine-oracle suite (live, SNLC via genuine MATLAB)
-        env:
-          OPENISI_UV: uv
-          OPENISI_MATLAB: matlab-batch
-        run: cargo test -p isi-analysis --lib --features oracle_live
+      # The free public-repo licence is obtained by the matlab-actions run-* actions
+      # (via OIDC), NOT by the bare `matlab-batch` tool — a first attempt with plain
+      # `cargo test` + `id-token:write` still hit "Unable to find a license", proving
+      # the licence is action-scoped. So drive the cargo harness FROM INSIDE
+      # `run-command`: it sets up the licence, then MATLAB's `system(...)` runs cargo,
+      # whose `matlab-batch` subprocesses inherit the licensed environment.
+      - name: Genuine-oracle suite (real MATLAB via run-command licence context)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: |
+            status = system('OPENISI_UV=uv OPENISI_MATLAB=matlab-batch cargo test -p isi-analysis --lib --features oracle_live');
+            exit(status)
