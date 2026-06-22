@@ -31,7 +31,13 @@ on:
 
 jobs:
   oracle:
-    runs-on: ubuntu-latest
+    # Pinned Ubuntu (NOT ubuntu-latest) so the SNLC oracle's Octave version is
+    # fixed — Ubuntu does not bump Octave's major/minor within a release, so the
+    # env can't silently drift when the `-latest` alias advances. The exact version
+    # is logged each run (below) for an auditable record. (For a fully digest-locked
+    # Octave, a `container:` image would be the next step; ubuntu-24.04 + the version
+    # log is the practical lock and the suite reproduces green on it.)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -55,14 +61,18 @@ jobs:
         run: uv sync --project crates/isi-analysis/tests/oracle/nat --locked
 
       # --- SNLC oracle: Octave + the image package -------------------------------
-      # Octave is a system package (not lockfile-pinnable like uv); the apt version
-      # may differ from the documented 11.2. The Octave≈MATLAB gap is already an
-      # ε-tolerated, flagged approximation (see tests/oracle/snlc/README.md), so
-      # minor Octave-version variance is within the stated bound, not assumed away.
+      # Octave version is fixed by the pinned ubuntu-24.04 runner (above). It differs
+      # from the dev host's Octave 11.2.0, but the Octave≈MATLAB gap is an already-
+      # flagged, ε-tolerated approximation (see tests/oracle/snlc/README.md) and the
+      # version difference is a sub-case of it — the live suite reproduces GREEN here
+      # within those bounds (tolerance-based validity, not bit-identity). The exact
+      # version is recorded each run so any future drift is visible, not assumed away.
       - name: Install Octave + image package (SNLC oracle env)
         run: |
           sudo apt-get update
           sudo apt-get install -y octave octave-image
+          echo "::notice title=SNLC oracle Octave::$(octave-cli --version | head -1)"
+          octave-cli --version | head -1
 
       # --- the genuine-oracle suite, live ----------------------------------------
       - name: Genuine-oracle suite (live, against the real references)

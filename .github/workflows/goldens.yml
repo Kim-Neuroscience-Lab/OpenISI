@@ -31,7 +31,13 @@ on:
 
 jobs:
   goldens:
-    runs-on: ubuntu-latest
+    # Pinned Ubuntu (fixed Octave version) — see oracle.yml. NOTE: this freshness
+    # gate byte-compares REGENERATED fixtures, which is inherently same-toolchain;
+    # float fixtures regenerated on this runner's Octave/Python differ at the bit
+    # level from those committed on the dev host (Octave 11.2.0), so the byte check
+    # is being made tolerance-based (the device-independent freshness check) —
+    # tracked separately. Pinning the runner is the env half of that fix.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
