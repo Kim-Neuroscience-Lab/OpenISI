@@ -468,27 +468,31 @@ impl Dtype {
             // discrete difference, never rounding.
             Tol::exact()
         } else {
-            // Float fixtures: relative ε-tolerance with a same-magnitude floor.
-            // K is a PROVISIONAL ceiling, grounded in IEEE-754 ε (K·ε), to be
-            // tightened to the smallest power of two covering the cross-toolchain
-            // drift this gate measures and prints on CI — exactly how the
-            // equivalence `magnification_axis` bound was set from measured drift.
-            // Not magic absolutes: every bound here is K·ε of the right precision.
+            // Float fixtures: relative ε-tolerance with a same-magnitude floor,
+            // each precision grounded in IEEE-754 ε (K·ε). K is set from the
+            // cross-toolchain drift this gate itself measured on CI (logged each
+            // run) — exactly how the equivalence `magnification_axis` bound was set
+            // from measured drift. Not magic absolutes: every bound is K·ε.
             match self {
-                Dtype::F32 => Tol::rel(FloatTol::K_F32, Eps::F32, FloatTol::K_F32),
-                _ => Tol::rel(FloatTol::K_F64, Eps::F64, FloatTol::K_F64),
+                Dtype::F32 => Tol::rel(FloatTol::K, Eps::F32, FloatTol::K),
+                _ => Tol::rel(FloatTol::K, Eps::F64, FloatTol::K),
             }
         }
     }
 }
 
-/// The per-precision relative-tolerance factors `K` (the bound is `K·ε`).
+/// The ε-grounded relative-tolerance factor `K` for float fixtures (the bound is
+/// `K·ε`, applied at each precision's own ε via [`Eps`]).
 struct FloatTol;
 impl FloatTol {
-    /// f32 fixtures: `1024·ε_f32 ≈ 1.2e-4` relative. Provisional ceiling.
-    const K_F32: u32 = 1024;
-    /// f64 fixtures: `4096·ε_f64 ≈ 9.1e-13` relative. Provisional ceiling.
-    const K_F64: u32 = 4096;
+    /// `K = 64`, grounded in the cross-toolchain drift this gate measured on CI
+    /// (dev host Octave 11.2.0 → ubuntu-24.04 Octave 8.4.0 / Python 3.13): the
+    /// worst relative drift over every regenerated float fixture was `7.124e-15`
+    /// on `v1ecc_alt.bin`, i.e. `32.08·ε_f64`. 64 is the smallest power of two
+    /// that covers it. Every f32 fixture was bit-identical across the same pair
+    /// (drift 0 ≤ 64·ε_f32), so the same factor bounds both precisions. Tighten
+    /// only with new measured evidence; the gate logs the drift each run.
+    const K: u32 = 64;
 }
 
 /// Declared on-disk dtype of every committed fixture — the single source of
