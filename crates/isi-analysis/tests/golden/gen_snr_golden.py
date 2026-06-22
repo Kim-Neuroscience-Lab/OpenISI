@@ -33,9 +33,9 @@ Two cases:
           all_noise=[5..59] (55 bins) -> SUBSAMPLE branch (cap 20).
 
 Output (per case <C>):
-  fixtures/snr_<C>_dff.bin   (n*H*W f32, C-order [n,H,W])
-  fixtures/snr_<C>_ts.bin    (n f64 timestamps)
-  fixtures/snr_<C>_out.bin   (H*W f64 expected SNR map)
+  fixtures/snr_<C>_dff.npy   (n*H*W f32, C-order [n,H,W])
+  fixtures/snr_<C>_ts.npy    (n f64 timestamps)
+  fixtures/snr_<C>_out.npy   (H*W f64 expected SNR map)
 Run:  python gen_snr_golden.py
 """
 import os

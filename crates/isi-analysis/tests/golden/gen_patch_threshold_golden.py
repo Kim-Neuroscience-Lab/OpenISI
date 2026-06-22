@@ -9,7 +9,7 @@ MATLAB `std` defaults to N-1 (sample) — reference uses ddof=1 to match. (Our
 `std_of_finite_within` currently divides by N; this golden will reveal whether
 that deviates.) cortex_mask is all-true here, isolating the threshold itself.
 
-Output: fixtures/pthr_vfs.bin (f64), pthr_allen.bin, pthr_garrett.bin (u8), 96x96
+Output: fixtures/pthr_vfs.npy (f64), pthr_allen.npy, pthr_garrett.npy (u8), 96x96
 Run:  python gen_patch_threshold_golden.py
 """
 import os

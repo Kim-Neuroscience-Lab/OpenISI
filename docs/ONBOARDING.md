@@ -30,11 +30,11 @@ Trust it; never bypass it.
 
 If you touch an **oracle golden** (the reference fixtures in
 `crates/isi-analysis/tests/golden/`), regenerate and re-check it through the harness
-instead of editing a `.bin` by hand:
+instead of editing a `.npy` by hand:
 
 ```sh
 cargo xtask goldens --check    # regenerate every fixture from its oracle, diff vs committed
-cargo xtask goldens <name>     # regenerate just the matching generators (then commit the .bin)
+cargo xtask goldens <name>     # regenerate just the matching generators (then commit the .npy)
 ```
 
 One-time toolchain setup (Octave + a pinned Python env) is in

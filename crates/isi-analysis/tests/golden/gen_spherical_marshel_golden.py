@@ -26,9 +26,9 @@ double) because our Rust is f64 -- the math, not the float32 quantization, is th
 faithfulness claim. (float32 max-abs-diff vs f64 reported below for context.)
 
 Fixtures (all little-endian, C-order):
-  fixtures/sph_marshel_cm.bin   <f8 [N,2]  (y_cm, z_cm) input cm coords
-  fixtures/sph_marshel_deg.bin  <f8 [N,2]  (az_deg, el_deg) oracle (cm->deg)
-  fixtures/sph_marshel_meta.bin <f8 [4]    (DIS, W, H, Nrows)
+  fixtures/sph_marshel_cm.npy   <f8 [N,2]  (y_cm, z_cm) input cm coords
+  fixtures/sph_marshel_deg.npy  <f8 [N,2]  (az_deg, el_deg) oracle (cm->deg)
+  fixtures/sph_marshel_meta.npy <f8 [4]    (DIS, W, H, Nrows)
 Run:  python gen_spherical_marshel_golden.py
 """
 import os

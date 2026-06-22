@@ -35,10 +35,10 @@ Cases (each NxN, N=16, uint8 row-major):
                sanity that the non-tie path also matches.
 
 Output fixtures:
-  fixtures/largestcc_tie_input.bin    (uint8 mask)
-  fixtures/largestcc_tie_out.bin      (uint8, oracle-kept component)
-  fixtures/largestcc_clear_input.bin  (uint8 mask)
-  fixtures/largestcc_clear_out.bin    (uint8, oracle-kept component)
+  fixtures/largestcc_tie_input.npy    (uint8 mask)
+  fixtures/largestcc_tie_out.npy      (uint8, oracle-kept component)
+  fixtures/largestcc_clear_input.npy  (uint8 mask)
+  fixtures/largestcc_clear_out.npy    (uint8, oracle-kept component)
 Run:  python gen_largestcc_tie_golden.py
 """
 import os

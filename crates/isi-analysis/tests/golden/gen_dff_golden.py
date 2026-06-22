@@ -17,9 +17,9 @@ robustness deviation (bounds dark/vignette pixels), NOT part of Allen.
 Synthetic movie: every pixel has a nonzero DC baseline (so F0 > 0) plus a
 per-pixel F1 tone, stored as uint16 frames (the raw camera dtype our Rust reads).
 
-Output: fixtures/dff_frames.bin (u16 [n,H,W] row-major)
-        fixtures/dff_f0.bin     (f64 [H,W]  Allen averageImage)
-        fixtures/dff_dff.bin    (f32 [n,H,W] Allen dFoverF)
+Output: fixtures/dff_frames.npy (u16 [n,H,W] row-major)
+        fixtures/dff_f0.npy     (f64 [H,W]  Allen averageImage)
+        fixtures/dff_dff.npy    (f32 [n,H,W] Allen dFoverF)
 Run: python gen_dff_golden.py
 """
 import os

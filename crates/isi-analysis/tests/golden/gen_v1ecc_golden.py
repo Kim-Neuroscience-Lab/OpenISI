@@ -46,14 +46,14 @@ single-pixel sample and the patch mean genuinely disagree. area_labels has:
   - a small third area (label 3).
 
 Outputs (all 64x64 unless noted, C-order row-major, little-endian):
-  fixtures/v1ecc_alt.bin     altitude map, '<f8'
-  fixtures/v1ecc_azi.bin     azimuth map, '<f8'
-  fixtures/v1ecc_labels.bin  area_labels, '<i4' (0 background, 1..K areas)
-  fixtures/v1ecc_snlc_center.bin   [altC, aziC] SNLC choice, '<f8' (len 2)
-  fixtures/v1ecc_rust_center.bin   [altC, aziC] our-Rust mean choice, '<f8' (len 2)
-  fixtures/v1ecc_snlc_map.bin      SNLC eccentricity map (masked to labels>0,
+  fixtures/v1ecc_alt.npy     altitude map, '<f8'
+  fixtures/v1ecc_azi.npy     azimuth map, '<f8'
+  fixtures/v1ecc_labels.npy  area_labels, '<i4' (0 background, 1..K areas)
+  fixtures/v1ecc_snlc_center.npy   [altC, aziC] SNLC choice, '<f8' (len 2)
+  fixtures/v1ecc_rust_center.npy   [altC, aziC] our-Rust mean choice, '<f8' (len 2)
+  fixtures/v1ecc_snlc_map.npy      SNLC eccentricity map (masked to labels>0,
                                    0.0 outside), '<f8'
-  fixtures/v1ecc_rust_map.bin      eccentricity using our-Rust center + our-Rust
+  fixtures/v1ecc_rust_map.npy      eccentricity using our-Rust center + our-Rust
                                    formula (masked, 0.0 outside), '<f8'
 
 Run:  python gen_v1ecc_golden.py

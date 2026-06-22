@@ -15,7 +15,7 @@ deterministic and chosen non-degenerate: |vecH| >= 1 everywhere (dhdx = 2+sin),
 so the |vecH|+|vecV| denominator never vanishes, and the angles vary enough to
 exercise the [0,180) wrap.
 
-Output: fixtures/maganiso_{dhdx,dhdy,dvdx,dvdy,axis,distortion}.bin
+Output: fixtures/maganiso_{dhdx,dhdy,dvdx,dvdy,axis,distortion}.npy
         (float64 row-major 48x48)
 Run:  python gen_maganiso_golden.py   (via `cargo xtask goldens maganiso`)
 """

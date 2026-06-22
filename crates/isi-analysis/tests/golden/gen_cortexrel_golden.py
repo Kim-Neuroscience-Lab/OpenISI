@@ -33,10 +33,10 @@ finite-False in numpy too via our explicit is_finite guard; we mirror Rust's
 is_finite() rule in the oracle below.
 
 Outputs (all uint8 / float64, C-order row-major, little-endian), NxN:
-  cortexrel_azi_fwd.bin, cortexrel_azi_rev.bin,
-  cortexrel_alt_fwd.bin, cortexrel_alt_rev.bin   (float64 reliability inputs)
-  cortexrel_expected.bin                          (uint8 expected cortex mask)
-  cortexrel_tie_*.bin                             (a separate equal-size-tie case)
+  cortexrel_azi_fwd.npy, cortexrel_azi_rev.npy,
+  cortexrel_alt_fwd.npy, cortexrel_alt_rev.npy   (float64 reliability inputs)
+  cortexrel_expected.npy                          (uint8 expected cortex mask)
+  cortexrel_tie_*.npy                             (a separate equal-size-tie case)
 
 Run:  python gen_cortexrel_golden.py
 """

@@ -19,8 +19,8 @@ reliability), with varying amplitudes so the amplitude-weighting is exercised.
 Inputs stored as f32 (the device `Complex2` precision the Rust op consumes);
 expected reliability in f64. Compare with f32 tolerance.
 
-Output: fixtures/rel_z_re.bin, rel_z_im.bin  (f32 [K,H,W] row-major)
-        fixtures/rel_expected.bin             (f64 [H,W])
+Output: fixtures/rel_z_re.npy, rel_z_im.npy  (f32 [K,H,W] row-major)
+        fixtures/rel_expected.npy             (f64 [H,W])
 Run: python gen_reliability_golden.py
 """
 import os

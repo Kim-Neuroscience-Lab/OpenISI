@@ -19,8 +19,8 @@ a noise block (no F1), plus a graded-amplitude strip so the threshold boundary
 is exercised, plus broadband noise everywhere. `np.std` default ddof=0 — our
 Rust must use POPULATION std to match.
 
-Output: fixtures/powersnr_movie.bin (f32 [n,H,W] row-major),
-        fixtures/powersnr_mask.bin (u8 [H,W], 1 = kept/responsive)
+Output: fixtures/powersnr_movie.npy (f32 [n,H,W] row-major),
+        fixtures/powersnr_mask.npy (u8 [H,W], 1 = kept/responsive)
 Run: python gen_power_snr_golden.py
 """
 import os
