@@ -1,10 +1,13 @@
 //! **FORMULA-PIN** (honest label, NOT a live code oracle) of the spherical
 //! (Marshel et al. 2012) display correction. The reference is
-//! `MonitorSetup.Monitor.remap()` — `deg = (180/π)·atan(coord/dis)` — which exists
-//! ONLY in the deprecated **py2** `retinotopic_mapping` copy (NeuroAnalysisTools
-//! 3.1.0 has no `MonitorSetup`). **Irreducible gap:** that py2 module cannot be
-//! imported/executed in the locked py3 oracle env without a 2to3 shim, and shims
-//! are forbidden — so there is no runnable reference to call. This therefore pins
+//! `MonitorSetup.Monitor.remap()` — `deg = (180/π)·atan(coord/dis)` — which lives
+//! only in the **py2** `retinotopic_mapping` / `corticalmapping` copies
+//! (NeuroAnalysisTools 3.1.0 has no `MonitorSetup`). **Irreducible gap, empirically
+//! verified:** importing `retinotopic_mapping.MonitorSetup` in the locked py3.9
+//! oracle env raises `SyntaxError` — its import chain hits `tools/ImageAnalysis.py`
+//! line 14 `print e` (a py2 print statement), and `MonitorSetup.py` itself uses
+//! `xrange`. So the module cannot be imported/executed without a 2to3 shim, and
+//! shims are forbidden — there is no runnable reference to call. This therefore pins
 //! the *published Marshel-2012 arctan formula* (algebraically identical to our
 //! `uv_to_angle`), labelled as a formula-pin with the gap stated, NOT dressed as a
 //! live oracle. Backed by `gen_spherical_marshel_golden.py` (a formula generator).
