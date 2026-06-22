@@ -56,10 +56,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Octave (oracle .m generators)
+      # octave-image supplies the IPT functions the .m generators `pkg load image`
+      # (e.g. gen_cortex_full_golden's morphology) — same as oracle.yml. Without it
+      # those generators error before the freshness comparison runs.
+      - name: Install Octave + image package (oracle .m generators)
         run: |
           sudo apt-get update
-          sudo apt-get install -y octave
+          sudo apt-get install -y octave octave-image
 
       - name: Set up Python
         uses: actions/setup-python@v5
