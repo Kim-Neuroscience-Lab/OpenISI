@@ -299,21 +299,41 @@ pub(crate) mod oracle {
         let req_path = work.join("req.json");
         std::fs::write(&req_path, serde_json::to_vec(&req).unwrap()).expect("write request");
 
-        let out = Command::new(octave())
-            .args(["--norc", "-q"])
-            .arg(&bridge)
-            .arg(&req_path)
-            .output()
-            .expect("spawn octave-cli — put it on PATH or set OPENISI_OCTAVE");
-        assert!(
-            out.status.success(),
-            "SNLC oracle bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-        );
-
-        let resp: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("parse bridge stdout JSON");
+        // The SAME bridge.m runs under genuine MATLAB (OPENISI_MATLAB set — closes
+        // the Octave≈MATLAB gap) or Octave (the open fallback). MATLAB's `-batch`
+        // stdout can carry startup noise, so under MATLAB the bridge writes
+        // `response.json` and we read that; the Octave path reads stdout unchanged.
+        let resp: serde_json::Value = if let Ok(matlab_exe) = std::env::var("OPENISI_MATLAB") {
+            let out = Command::new(&matlab_exe)
+                .args(["-batch", "bridge"])
+                .current_dir(&snlc_dir)
+                .env("OPENISI_ORACLE_REQ", &req_path)
+                .output()
+                .expect("spawn matlab — set OPENISI_MATLAB to the matlab executable");
+            assert!(
+                out.status.success(),
+                "SNLC MATLAB bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+            let resp_bytes = std::fs::read(work.join("response.json"))
+                .expect("read MATLAB bridge response.json");
+            serde_json::from_slice(&resp_bytes).expect("parse MATLAB response.json")
+        } else {
+            let out = Command::new(octave())
+                .args(["--norc", "-q"])
+                .arg(&bridge)
+                .arg(&req_path)
+                .output()
+                .expect("spawn octave-cli — put it on PATH or set OPENISI_OCTAVE");
+            assert!(
+                out.status.success(),
+                "SNLC oracle bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+            serde_json::from_slice(&out.stdout).expect("parse bridge stdout JSON")
+        };
         // Octave's jsonencode emits a single struct as an object, an array of structs
         // as an array — normalise to a slice.
         let outs_val = &resp["outputs"];

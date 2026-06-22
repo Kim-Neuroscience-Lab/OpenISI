@@ -53,10 +53,22 @@ so a clean machine / CI reproduces the same result.
   the code's hard constraints (`np.int` ⇒ numpy<1.24) + the 3.1.0 era — defensible
   and reproducible, but not provably the authors' exact toolchain (which is
   unknowable). Pins live in `nat/pyproject.toml` / `nat/uv.lock`.
-- **Octave ≈ MATLAB, not identical.** The SNLC reference is MATLAB; we execute it
-  via Octave (the only open, scriptable runtime). Octave's IPT functions match
-  MATLAB's to high precision but are not bit-identical — flagged per-method in the
-  ledger (e.g. `bwdist` returns single → f32 comparison).
+- **Octave ≈ MATLAB, not identical — now executable under BOTH.** The SNLC reference
+  is MATLAB; the bridge (`snlc/bridge.m`) is dual-runtime — it runs under genuine
+  **MATLAB** (set `OPENISI_MATLAB`) *and* Octave (the open fallback, set
+  `OPENISI_OCTAVE`). Octave's IPT functions match MATLAB's to high precision but are
+  not bit-identical.
+  **OPEN FINDING (objective 5 — surfaced by running genuine MATLAB R2025b, which the
+  Octave approximation had HIDDEN):** `imclose(strel('disk',10,0))` on a
+  border-touching object differs **MATLAB vs Octave by 180 px**; `imopen`,
+  `imdilate(disk)`, `imfill('holes')` are bit-identical between the two. Our
+  `binary_closing_disk` matches Octave but NOT genuine MATLAB here — almost certainly
+  an `imclose` image-border convention (close = dilate→erode; the erode-after-dilate
+  near the top-edge blob). **To resolve:** determine MATLAB's border rule and either
+  (a) match it in `binary_closing_disk` (MATLAB is the genuine reference) or (b) record
+  it as an irreducible MATLAB≈Octave border-convention gap. Until then the
+  `cortex_morphology_*` live test passes under Octave (CI) and is RED under MATLAB —
+  honestly, the gate working.
 - **Octave version: tolerance-based, not bit-pinned across versions.** The env is
   version-pinned per host (dev: Octave **11.2.0**; CI: ubuntu-24.04 → Octave
   **8.4.0**, recorded each run via `::notice`), but the two versions are NOT

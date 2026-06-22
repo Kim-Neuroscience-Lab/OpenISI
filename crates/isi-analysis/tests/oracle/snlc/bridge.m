@@ -12,8 +12,17 @@
 % Invoke:  octave-cli --norc -q bridge.m <request.json>
 % Protocol mirrors the NAT Python bridge (raw little-endian f64 + a JSON request).
 
-args = argv();
-reqpath = args{1};
+% Dual-runtime: this bridge runs under BOTH Octave (the open fallback) and the
+% genuine MATLAB (closes the Octave≈MATLAB gap). The dispatch arms below are pure
+% MATLAB/Octave-common calls of the reference; only the entry/env differs.
+is_octave = exist('OCTAVE_VERSION', 'builtin') ~= 0;
+
+if is_octave
+  args = argv();
+  reqpath = args{1};                 % Octave: `octave-cli bridge.m <req.json>`
+else
+  reqpath = getenv('OPENISI_ORACLE_REQ');  % MATLAB: `matlab -batch bridge` (no argv)
+end
 req = jsondecode(fileread(reqpath));
 
 here = fileparts(mfilename('fullpath'));
@@ -21,13 +30,15 @@ here = fileparts(mfilename('fullpath'));
 repo = fullfile(here, '..', '..', '..', '..', '..');
 % genpath so the genuine .m in subdirs (ISIAnGUI/F1 = Gprocesskret/adaptiveSmoother,
 % ISI_Processing = shadow, …) resolve too. The reference tree stays byte-pristine;
-% we only add it to Octave's search path.
+% we only add it to the search path.
 addpath(genpath(fullfile(repo, 'reference', 'ISI')));   % genuine SNLC .m, pristine
 
-% The SNLC reference uses MATLAB Image Processing Toolbox functions (bwlabel,
-% imopen/imclose/imfill/imdilate, fspecial, watershed, bwdist); in Octave these
-% live in the `image` package, which is part of this oracle's required env.
-pkg load image;
+% The SNLC reference uses Image Processing Toolbox functions (bwlabel, imopen/
+% imclose/imfill/imdilate, fspecial, watershed, bwdist). In Octave these live in
+% the `image` package (loaded here); MATLAB has the IPT built in (no pkg load).
+if is_octave
+  pkg load image;
+end
 
 % --- load inputs ---------------------------------------------------------------
 % Rust writes row-major (C-order) f64; Octave is column-major, so read the flat
@@ -140,4 +151,10 @@ for i = 1:numel(outs)
   fclose(fid);
   meta(i) = struct('file', fpath, 'dtype', '<f8', 'shape', [oh, ow]);
 end
-printf('%s', jsonencode(struct('outputs', meta)));
+resp = jsonencode(struct('outputs', meta));
+% stdout for the Octave path (read directly); response.json for the MATLAB path
+% (`matlab -batch` stdout can carry startup noise, so the harness reads the file).
+fprintf('%s', resp);   % fprintf, not printf — defined in both Octave and MATLAB
+rfid = fopen(fullfile(req.out_dir, 'response.json'), 'w');
+fprintf(rfid, '%s', resp);
+fclose(rfid);
