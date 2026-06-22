@@ -81,53 +81,36 @@ jobs:
           OPENISI_OCTAVE: octave-cli
         run: cargo test -p isi-analysis --lib --features oracle_live
 
-  # ── Genuine MATLAB oracle — closes the Octave≈MATLAB gap entirely ──────────────
-  # MATLAB is free on GitHub-hosted runners for PUBLIC repos, but the harness spawns
-  # MATLAB directly via `matlab-batch`, which licenses from a batch token. So this
-  # job runs the genuine-oracle suite against REAL MATLAB R2025b (matching the dev
-  # host) only once the free public-repo batch token is provided as the
-  # `MLM_LICENSE_TOKEN` secret (request it from MathWorks' batch-licensing pilot).
-  # Until then it is INACTIVE — a notice, NOT a failure; the Octave job above is the
-  # open, always-on off-machine reproduction. When active, SNLC runs under genuine
-  # MATLAB (no Octave≈MATLAB approximation) and the `imclose` border match is exact.
+  # ── Genuine MATLAB oracle — FREE on this PUBLIC repo (no licence token) ────────
+  # OpenISI is a PUBLIC repository, so MathWorks licenses MATLAB in GitHub Actions
+  # for free — the `MLM_LICENSE_TOKEN` / `matlab-batch` token is the *private*-repo
+  # path, which we previously (wrongly) required. `matlab-actions/setup-matlab`
+  # installs MATLAB R2025b + `matlab-batch`; on a public repo the licence is
+  # provided automatically. This runs the genuine-oracle suite under REAL MATLAB
+  # (matching the dev host) — SNLC with NO Octave≈MATLAB approximation, the
+  # `imclose` border exact, and the split/fuse composites runnable. The Octave job
+  # above remains the always-on open fallback. (Empirically validating that the
+  # harness's `matlab-batch` subprocess inherits the public-repo licence — if it
+  # needs the run-command wrapper instead, this job's failure tells us so.)
   oracle-matlab:
     runs-on: ubuntu-24.04
     steps:
-      - name: Gate on the MATLAB batch-licence token
-        id: gate
-        env:
-          TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "active=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=MATLAB oracle inactive::Set the MLM_LICENSE_TOKEN secret (free public-repo batch token) to run the genuine-oracle suite under real MATLAB R2025b on CI."
-          else
-            echo "active=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.gate.outputs.active == 'true'
-        uses: actions/checkout@v4
-      - if: steps.gate.outputs.active == 'true'
-        name: Materialise pinned oracle reference (byte-pristine)
+      - uses: actions/checkout@v4
+      - name: Materialise pinned oracle reference (byte-pristine)
         run: bash tools/oracle/fetch-reference.sh
-      - if: steps.gate.outputs.active == 'true'
-        name: Install Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - if: steps.gate.outputs.active == 'true'
-        name: Install uv (NAT oracle env manager)
+      - name: Install uv (NAT oracle env manager)
         uses: astral-sh/setup-uv@v5
-      - if: steps.gate.outputs.active == 'true'
-        name: Materialise the NAT env from the committed lock (exact, --locked)
+      - name: Materialise the NAT env from the committed lock (exact, --locked)
         run: uv sync --project crates/isi-analysis/tests/oracle/nat --locked
-      - if: steps.gate.outputs.active == 'true'
-        name: Set up genuine MATLAB R2025b + Image Processing Toolbox
+      - name: Set up genuine MATLAB R2025b + Image Processing Toolbox (free, public repo)
         uses: matlab-actions/setup-matlab@v2
         with:
           release: R2025b
           products: Image_Processing_Toolbox
-      - if: steps.gate.outputs.active == 'true'
-        name: Genuine-oracle suite (live, SNLC via genuine MATLAB)
+      - name: Genuine-oracle suite (live, SNLC via genuine MATLAB)
         env:
           OPENISI_UV: uv
           OPENISI_MATLAB: matlab-batch
-          MLM_LICENSE_TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}
         run: cargo test -p isi-analysis --lib --features oracle_live
