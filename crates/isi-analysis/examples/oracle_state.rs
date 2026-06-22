@@ -2,10 +2,16 @@
 //!
 //! Two datasets, each written to its own `target/oracle_state/<dataset>/`:
 //!
-//!   * **synthetic** — every method run on its committed per-op golden fixture
-//!     (`tests/golden/fixtures/*.bin`), compared against the verbatim reference
-//!     output (Allen/Zhuang Python, SNLC/Garrett MATLAB, or the canonical
-//!     numpy/scipy primitive). Column 1 is a true external **oracle**.
+//!   * **synthetic** — each method that has a committed per-op golden fixture
+//!     (`tests/golden/fixtures/*.npy`) run on that fixture and compared against
+//!     the committed reference output. These are the methods still validated by a
+//!     FROZEN fixture: the regression-locks and formula-pins (no runnable separable
+//!     reference) plus the library-primitive pins. Column 1 is that committed
+//!     reference. Methods whose per-op golden was retired into a *live* oracle test
+//!     (DFT, Gaussian, VFS, eccentricity, magnification determinant, Kalatsky
+//!     combine, amplitude, …) are NOT shown here — they have no committed fixture;
+//!     they are validated each run by the `oracle_live` suite against the genuine
+//!     reference executed live (see `tests/oracle/README.md`).
 //!
 //!   * **r43** — the full pipeline re-run on the real `R43_smoke.oisi`
 //!     recording, every `/results` leaf compared against the committed
@@ -37,12 +43,9 @@ use ndarray::{Array2, Array3};
 
 use isi_analysis::compute::responsiveness::reliability;
 use isi_analysis::compute::{
-    compute_magnification_jacobian, compute_vfs, delay_map, device, dft_projection_at_freq,
-    frames_u16_subset_to_dff_tensor, gaussian_smooth, magnification_anisotropy, phase_gradients,
-    position_amplitude, position_phasor_delay_subtracted, real_gradients, temporal_mean_baseline,
-    temporal_median_baseline, tensor_to_array2_f64, Backend, Complex2,
+    compute_vfs, device, frames_u16_subset_to_dff_tensor, magnification_anisotropy, phase_gradients,
+    temporal_mean_baseline, temporal_median_baseline, tensor_to_array2_f64, Backend, Complex2,
 };
-use isi_analysis::math::{cortical_magnification_factor, eccentricity_pixel_deg};
 use isi_analysis::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
 use isi_analysis::{self, SilentProgress};
 
@@ -62,28 +65,30 @@ fn out_root() -> PathBuf {
 }
 
 // ── golden-fixture decoding (synthetic path) ────────────────────────────────────
+//
+// Fixtures are self-describing `.npy` (dtype + shape in the header); `npyz`
+// decodes them and verifies the requested dtype on load (the same loaders the
+// in-crate goldens use). Flat, row-major.
 
-fn read_bytes(name: &str) -> Vec<u8> {
+fn fx_npy<T: npyz::Deserialize>(name: &str) -> Vec<T> {
     let p = fixtures_dir().join(name);
-    std::fs::read(&p).unwrap_or_else(|e| panic!("reading fixture {}: {e}", p.display()))
+    let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("reading fixture {}: {e}", p.display()));
+    npyz::NpyFile::new(std::io::Cursor::new(bytes))
+        .unwrap_or_else(|e| panic!("parse {} as .npy: {e}", p.display()))
+        .into_vec::<T>()
+        .unwrap_or_else(|e| panic!("read {} (dtype mismatch?): {e}", p.display()))
 }
 
 fn fx_f64(name: &str) -> Vec<f64> {
-    read_bytes(name)
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    fx_npy::<f64>(name)
 }
 
 fn fx_f32(name: &str) -> Vec<f32> {
-    read_bytes(name)
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    fx_npy::<f32>(name)
 }
 
 fn fx_u8(name: &str) -> Vec<u8> {
-    read_bytes(name)
+    fx_npy::<u8>(name)
 }
 
 fn write_f64(path: &Path, data: &[f64]) {
@@ -252,40 +257,23 @@ fn main() {
 fn dump_synthetic() {
     let mut g = Gallery::new(
         "synthetic",
-        "oracle",
-        "Oracle cross-validation — per-op vs verbatim reference output (Allen / SNLC / numpy / scipy)",
+        "reference",
+        "Committed-fixture cross-validation — each method on its per-op golden vs the \
+         committed reference. Methods whose per-op golden was retired into a live oracle \
+         test (DFT, Gaussian, VFS, eccentricity, magnification det, Kalatsky combine, \
+         amplitude) are NOT here — they are validated live each run (oracle_live suite). \
+         Honest labels: library-primitive (numpy/scipy IS the oracle), formula-pin \
+         (published formula, no separable runnable reference), or regression-lock \
+         (OpenISI's own behaviour, no external oracle).",
     );
 
-    // ── NumLib group: canonical numerical-library primitives ────────────────
-    // (numpy / scipy ARE the reference for these — full, correct coverage; they
-    // are simply not OpenISI-specific science methods, so they form their own
-    // reference group rather than the Allen/SNLC scientific-method groups.)
-    {
-        const NF: usize = 24;
-        const HW: usize = 16;
-        let movie: Vec<f32> = fx_f32("dft_movie.bin");
-        let m = Tensor::<Backend, 3>::from_data(TensorData::new(movie, [NF, HW, HW]), &device());
-        let f1 = dft_projection_at_freq(m, 1.0, 1.0 / NF as f64);
-        g.add("NumLib", 20, "dft_f1_re", "F1 DFT — real part",
-            "numpy.fft.fft(axis=0)[1].real", Kind::Diverging, HW, HW,
-            &fx_f64("dft_f1_re.bin"), &flat(f1.real()));
-        g.add("NumLib", 21, "dft_f1_im", "F1 DFT — imag part",
-            "numpy.fft.fft(axis=0)[1].imag", Kind::Diverging, HW, HW,
-            &fx_f64("dft_f1_im.bin"), &flat(f1.imag()));
-    }
-    {
-        const G: usize = 96;
-        let t = tensor2(fx_f64("gauss_input.bin").iter().map(|&v| v as f32).collect(), G, G);
-        g.add("NumLib", 30, "gaussian", "Gaussian smooth (σ=4)",
-            "scipy.ndimage.gaussian_filter", Kind::Sequential, G, G,
-            &fx_f64("gauss_sigma4.bin"), &flat(gaussian_smooth(t, 4.0)));
-    }
+    // ── Library-primitive pins: numpy/scipy IS the reference ────────────────
     {
         const K: usize = 5;
         const H: usize = 8;
         const W: usize = 8;
-        let re = fx_f32("rel_z_re.bin");
-        let im = fx_f32("rel_z_im.bin");
+        let re = fx_f32("rel_z_re.npy");
+        let im = fx_f32("rel_z_im.npy");
         let cycles: Vec<Complex2> = (0..K)
             .map(|k| {
                 let r = re[k * H * W..(k + 1) * H * W].to_vec();
@@ -293,60 +281,60 @@ fn dump_synthetic() {
                 Complex2::new(tensor2(r, H, W), tensor2(i, H, W))
             })
             .collect();
-        g.add("NumLib", 46, "reliability", "Reliability |ΣZ|/Σ|Z|",
-            "Engel/Zhuang coherence (numpy)", Kind::Sequential, H, W,
-            &fx_f64("rel_expected.bin"), &flat(reliability(&cycles)));
+        g.add("LibPrimitive", 46, "reliability", "Reliability |ΣZ|/Σ|Z|",
+            "Engel 1994 / Zhuang 2017 coherence — formula-pin (numpy sum/abs)", Kind::Sequential, H, W,
+            &fx_f64("rel_expected.npy"), &flat(reliability(&cycles)));
     }
     {
         const N: usize = 20;
         const H: usize = 16;
         const W: usize = 16;
         let frames = dff_frames::<N, H, W>();
-        g.add("NumLib", 11, "median_baseline", "Median baseline F0",
-            "numpy.median(movie, axis=0)", Kind::Sequential, H, W,
-            &fx_f64("dff_f0_median.bin"),
+        g.add("LibPrimitive", 11, "median_baseline", "Median baseline F0",
+            "numpy.median(movie, axis=0) — library primitive", Kind::Sequential, H, W,
+            &fx_f64("dff_f0_median.npy"),
             &temporal_median_baseline(&frames).into_iter().collect::<Vec<f64>>());
     }
 
-    // ── Allen / Zhuang / Garrett group ──────────────────────────────────────
+    // ── ΔF/F: numpy.mean baseline + the standard ΔF/F formula (NOT Allen
+    //    `normalizeMovie`, which does not exist in NeuroAnalysisTools 3.1.0) ──
     {
         const N: usize = 20;
         const H: usize = 16;
         const W: usize = 16;
         let frames = dff_frames::<N, H, W>();
         let baseline = temporal_mean_baseline(&frames);
-        g.add("Allen", 9, "f0_mean", "Baseline F0 (mean)",
-            "Allen ImageAnalysis.normalizeMovie (mean)", Kind::Sequential, H, W,
-            &fx_f64("dff_f0.bin"), &baseline.iter().copied().collect::<Vec<f64>>());
+        g.add("DeltaF", 9, "f0_mean", "Baseline F0 (mean)",
+            "numpy.mean(movie, axis=0) — library primitive", Kind::Sequential, H, W,
+            &fx_f64("dff_f0.npy"), &baseline.iter().copied().collect::<Vec<f64>>());
 
         let idx: Vec<usize> = (0..N).collect();
         let dff = frames_u16_subset_to_dff_tensor(&frames, &idx, &baseline, 0.0, true);
         let dff_v: Vec<f32> = dff.into_data().to_vec::<f32>().expect("dff vec");
         let ours0: Vec<f64> = dff_v[0..H * W].iter().map(|&v| f64::from(v)).collect();
         let oracle0: Vec<f64> =
-            fx_f32("dff_dff.bin")[0..H * W].iter().map(|&v| f64::from(v)).collect();
-        g.add("Allen", 10, "dff_frame0", "ΔF/F (frame 0)",
-            "Allen normalizeMovie (F−F0)/F0", Kind::Diverging, H, W, &oracle0, &ours0);
+            fx_f32("dff_dff.npy")[0..H * W].iter().map(|&v| f64::from(v)).collect();
+        g.add("DeltaF", 10, "dff_frame0", "ΔF/F (frame 0)",
+            "ΔF/F = (F−F0)/F0 — formula-pin (F0 = np.mean)", Kind::Diverging, H, W, &oracle0, &ours0);
     }
+
+    // ── VFS wrap-stability: genuine Allen visualSignMap on the unwrapped truth ─
     {
         const N: usize = 64;
-        let vfs_of = |p1: &str, p2: &str| {
-            let z_azi = Complex2::from_phase(phase_tensor(&fx_f64(p1), N, N));
-            let z_alt = Complex2::from_phase(phase_tensor(&fx_f64(p2), N, N));
-            let (axx, axy) = phase_gradients(&z_azi);
-            let (alx, aly) = phase_gradients(&z_alt);
-            flat(compute_vfs(axx, axy, alx, aly))
-        };
-        g.add("Allen", 50, "vfs_smooth", "Visual field sign (smooth)",
-            "Allen visualSignMap (RetinotopicMapping.py:446)", Kind::Diverging, N, N,
-            &fx_f64("vfs_smooth_allen.bin"), &vfs_of("vfs_smooth_phi1.bin", "vfs_smooth_phi2.bin"));
+        let z_azi = Complex2::from_phase(phase_tensor(&fx_f64("vfs_wrap_phi1.npy"), N, N));
+        let z_alt = Complex2::from_phase(phase_tensor(&fx_f64("vfs_wrap_phi2.npy"), N, N));
+        let (axx, axy) = phase_gradients(&z_azi);
+        let (alx, aly) = phase_gradients(&z_alt);
+        let ours = flat(compute_vfs(axx, axy, alx, aly));
         g.add("Allen", 51, "vfs_wrap", "Visual field sign (across phase wraps)",
-            "Allen visualSignMap on unwrapped truth", Kind::Diverging, N, N,
-            &fx_f64("vfs_wrap_allen_true.bin"), &vfs_of("vfs_wrap_phi1.bin", "vfs_wrap_phi2.bin"));
+            "Allen visualSignMap on the unwrapped truth (genuine NAT)", Kind::Diverging, N, N,
+            &fx_f64("vfs_wrap_allen_true.npy"), &ours);
     }
+
+    // ── Patch-threshold rules (regression-locks: OpenISI's threshold choice) ─
     {
         const N: usize = 64;
-        let vfs_flat = fx_f64("pthr_vfs.bin");
+        let vfs_flat = fx_f64("pthr_vfs.npy");
         let vfs = Array2::from_shape_fn((N, N), |(r, c)| vfs_flat[r * N + c]);
         let all_cortex = Array2::from_elem((N, N), true);
         let bool_to_f64 = |m: &Array2<bool>| m.iter().map(|&b| b as u8 as f64).collect::<Vec<f64>>();
@@ -354,82 +342,29 @@ fn dump_synthetic() {
         let allen = PatchThresholdMethod::AllenZhuang2017FixedSignMapThr { value: 0.35 }
             .apply(&vfs, &all_cortex).imseg;
         g.add("Allen", 60, "pthr_allen", "Patch threshold (Allen/Zhuang |VFS|≥0.35)",
-            "Allen/Zhuang 2017 fixed sign-map threshold", Kind::Mask, N, N,
-            &u8_to_f64(&fx_u8("pthr_allen.bin")), &bool_to_f64(&allen));
+            "Allen/Zhuang 2017 fixed sign-map threshold — regression-lock", Kind::Mask, N, N,
+            &u8_to_f64(&fx_u8("pthr_allen.npy")), &bool_to_f64(&allen));
         let garrett = PatchThresholdMethod::Garrett2014SigmaScaled { k: 1.5 }
             .apply(&vfs, &all_cortex).imseg;
         g.add("Allen", 61, "pthr_garrett", "Patch threshold (Garrett k·σ/2)",
-            "Garrett 2014 σ-scaled threshold (getMouseAreasX.m)", Kind::Mask, N, N,
-            &u8_to_f64(&fx_u8("pthr_garrett.bin")), &bool_to_f64(&garrett));
-    }
-    {
-        const N: usize = 64;
-        let alt = fx_f64("ecc_alt.bin");
-        let azi = fx_f64("ecc_azi.bin");
-        const ALT_C: f64 = 5.0;
-        const AZI_C: f64 = 10.0;
-        let ours: Vec<f64> = (0..N * N)
-            .map(|i| eccentricity_pixel_deg(alt[i], azi[i], ALT_C, AZI_C))
-            .collect();
-        g.add("Allen", 70, "eccentricity", "Eccentricity (deg)",
-            "Allen eccentricityMap (RetinotopicMapping.py:729)", Kind::Sequential, N, N,
-            &fx_f64("ecc_golden.bin"), &ours);
-    }
-    {
-        const MG: usize = 48;
-        let alt_t = tensor2(fx_f64("mag_alt.bin").iter().map(|&v| v as f32).collect(), MG, MG);
-        let azi_t = tensor2(fx_f64("mag_azi.bin").iter().map(|&v| v as f32).collect(), MG, MG);
-        let (d_alt_dx, d_alt_dy) = real_gradients(alt_t);
-        let (d_azi_dx, d_azi_dy) = real_gradients(azi_t);
-        let mag = compute_magnification_jacobian(d_azi_dx, d_azi_dy, d_alt_dx, d_alt_dy, 1.0, 1.0);
-        let det = tensor_to_array2_f64(mag).unwrap();
-        g.add("Allen", 80, "mag_det", "Magnification |det J|",
-            "Allen _getDeterminantMap (RetinotopicMapping.py:1184)", Kind::Sequential, MG, MG,
-            &fx_f64("mag_det.bin"), &det.iter().copied().collect::<Vec<f64>>());
-        let labels = Array2::from_elem((MG, MG), 1i32);
-        let cmf = cortical_magnification_factor(&det, &labels);
-        g.add("Allen", 81, "mag_cmf", "Magnification factor 1/|det J|",
-            "Allen reciprocal CMF", Kind::Sequential, MG, MG,
-            &fx_f64("mag_cmf.bin"), &cmf.iter().copied().collect::<Vec<f64>>());
+            "Garrett 2014 σ-scaled threshold — regression-lock", Kind::Mask, N, N,
+            &u8_to_f64(&fx_u8("pthr_garrett.npy")), &bool_to_f64(&garrett));
     }
 
-    // ── SNLC / Garrett MATLAB group ─────────────────────────────────────────
-    {
-        const N: usize = 64;
-        let fwd = Complex2::from_phase(phase_tensor(&fx_f64("combine_ang0.bin"), N, N));
-        let rev = Complex2::from_phase(phase_tensor(&fx_f64("combine_ang2.bin"), N, N));
-        let result = position_phasor_delay_subtracted(&fwd, &rev);
-        g.add("SNLC", 40, "kalatsky_combine", "Kalatsky combine — position phase",
-            "SNLC Gprocesskret.m kmap (88-99)",
-            Kind::Periodic { period: std::f64::consts::TAU, vmin: -std::f64::consts::PI, vmax: std::f64::consts::PI },
-            N, N, &fx_f64("combine_kmap.bin"), &flat(result.angle()));
-        let delay = delay_map(&fwd, &rev);
-        g.add("SNLC", 85, "delay_map", "Hemodynamic delay (0,π]",
-            "SNLC Gprocesskret.m delay (88-96)", Kind::Sequential, N, N,
-            &fx_f64("combine_delay.bin"), &flat(delay));
-    }
-    {
-        const H: usize = 16;
-        const W: usize = 16;
-        let fwd = Complex2::new(tensor2(fx_f32("amp_fwd_re.bin"), H, W), tensor2(fx_f32("amp_fwd_im.bin"), H, W));
-        let rev = Complex2::new(tensor2(fx_f32("amp_rev_re.bin"), H, W), tensor2(fx_f32("amp_rev_im.bin"), H, W));
-        g.add("SNLC", 45, "amplitude", "F1 amplitude ½(|fwd|+|rev|)",
-            "SNLC Gprocesskret.m magS", Kind::Sequential, H, W,
-            &fx_f64("amp_expected.bin"), &flat(position_amplitude(&fwd, &rev)));
-    }
+    // ── Magnification anisotropy (Garrett getMagFactors post-gradient block) ──
     {
         const M: usize = 48;
         let t = |n: &str| tensor2(fx_f64(n).iter().map(|&v| v as f32).collect(), M, M);
         let (axis, dist) = magnification_anisotropy(
-            t("maganiso_dhdx.bin"), t("maganiso_dhdy.bin"),
-            t("maganiso_dvdx.bin"), t("maganiso_dvdy.bin"));
+            t("maganiso_dhdx.npy"), t("maganiso_dhdy.npy"),
+            t("maganiso_dvdx.npy"), t("maganiso_dvdy.npy"));
         g.add("SNLC", 86, "maganiso_axis", "Anisotropy axis [0,180)°",
-            "SNLC getMagFactors.m prefAxisMF",
+            "Garrett getMagFactors.m prefAxisMF — formula-pin (no separable ref)",
             Kind::Periodic { period: 180.0, vmin: 0.0, vmax: 180.0 }, M, M,
-            &fx_f64("maganiso_axis.bin"), &flat(axis));
+            &fx_f64("maganiso_axis.npy"), &flat(axis));
         g.add("SNLC", 87, "maganiso_distortion", "Anisotropy distortion |Res|",
-            "SNLC getMagFactors.m Distrtion", Kind::Sequential, M, M,
-            &fx_f64("maganiso_distortion.bin"), &flat(dist));
+            "Garrett getMagFactors.m Distrtion — formula-pin", Kind::Sequential, M, M,
+            &fx_f64("maganiso_distortion.npy"), &flat(dist));
     }
 
     g.finish();
@@ -437,11 +372,7 @@ fn dump_synthetic() {
 
 /// Decode the shared ΔF/F frame fixture as an `Array3<u16>`.
 fn dff_frames<const N: usize, const H: usize, const W: usize>() -> Array3<u16> {
-    let bytes = read_bytes("dff_frames.bin");
-    let frames_u16: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-        .collect();
+    let frames_u16 = fx_npy::<u16>("dff_frames.npy");
     Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c])
 }
 
