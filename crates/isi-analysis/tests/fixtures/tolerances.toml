@@ -1,100 +1,117 @@
 # Per-dataset cross-implementation / cross-backend agreement bounds.
 #
-# The comparator (tests/equivalence.rs) applies the standard relative form
-#     |candidate − baseline| ≤ rtol·max(|c|,|b|) + atol
-# at EVERY finite pixel (worst-ratio ≤ 1 to pass). Floating-point error is
-# *relative*, so `rtol` is the primary bound; `atol` only floors it where a
-# signed/bounded quantity passes through zero.
+# The comparator (tests/equivalence.rs) routes EVERY dataset through the project's
+# single ε-grounded comparator, `agreement::Tol` — the same one the in-crate
+# goldens use. There is no hand-rolled comparison loop and no raw float bound here.
 #
-# GROUNDING — no magic numbers. Every `rtol` is a multiple of the IEEE-754
-# single-precision machine epsilon, ε_f32 = 2⁻²³ ≈ 1.1921e-7:
+# GROUNDING — no magic numbers, and now TYPE-ENFORCED. Each entry stores an integer
+# factor `k` (and, for relative bounds, a floor factor `k_floor`); the comparator
+# builds the bound as `k · ε_f32` via `Tol`, where ε_f32 = 2⁻²³ ≈ 1.1921e-7. A raw
+# float threshold is therefore not even expressible in this file — the `# K·ε`
+# grounding is the value, not a comment that can drift from it.
 #
-#     rtol = K · ε_f32
+# `k` is the error-propagation factor for that stage's operation count, ×2 for a
+# cross-backend compare (two independent f32 implementations of the same op). It is
+# the smallest power-of-two that bounds the OBSERVED cross-backend (Burn ndarray-CPU
+# vs CUDA) / cross-device drift on the R43 fixture with margin. Any future change
+# that pushes a dataset past its `k` is investigated, not absorbed by raising `k`.
 #
-# K is the error-propagation factor for that stage's operation count, ×2 for a
-# cross-backend compare (two independent f32 implementations of the same op).
-# K is recorded inline with its justification and is the smallest power-of-two
-# that bounds the OBSERVED cross-backend (Burn ndarray-CPU vs CUDA) drift on the
-# R43 fixture with margin. Any future change that pushes a dataset past its K is
-# investigated, not absorbed by raising K.
+# `kind` selects the grounded `Tol` constructor:
+#   - "exact"  → Tol::exact()                  discrete masks/labels/contours/signs
+#   - "abs"    → Tol::abs(k, F32)              signed / zero-crossing / bounded (rtol=0)
+#   - "rel"    → Tol::rel(k, F32, k_floor)     positive magnitude (relative + floor)
+#   - "wrap"   → Tol::wrap(2π, k, F32, 1)      angular (radians), wrap-aware absolute
 #
-# `bit_exact = true` (discrete masks/labels/contours) forces full-array equality.
-#
-# K reference: 256·ε≈3.05e-5  ·  512·ε≈6.10e-5  ·  1024·ε≈1.22e-4  ·  8192·ε≈9.77e-4
+# k reference: 256·ε≈3.05e-5 · 512·ε≈6.10e-5 · 1024·ε≈1.22e-4 · 131072·ε≈1.56e-2
 
 # ── Stage 0: DFT / phase extraction (complex maps, re/im — cross zero) ──
-# K=256: DFT is a length-T reduction; the f32 reduction-order difference is the
-# dominant term. atol floors re/im near zero.
+# k=256: DFT is a length-T reduction; the f32 reduction-order difference is the
+# dominant term. The k_floor floors re/im near zero.
 [complex_maps.alt_fwd]
-rtol = 3.05e-5   # 256·ε
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 [complex_maps.alt_rev]
-rtol = 3.05e-5
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 [complex_maps.azi_fwd]
-rtol = 3.05e-5
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 [complex_maps.azi_rev]
-rtol = 3.05e-5
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 
 # ── Stages 1–3: phase (radians), phase-degrees, amplitude ──────────────
-# Phase is angular → absolute radians bound (rtol=0, atol). Observed ≤ 6e-6 rad.
+# Phase is angular → wrap-aware absolute radians bound (k·ε). Observed ≤ 6e-6 rad.
 [results.azi_phase]
-atol = 6.10e-5   # 512·ε rad
+kind = "wrap"
+k = 512   # 512·ε rad
 [results.alt_phase]
-atol = 6.10e-5
+kind = "wrap"
+k = 512
 # Phase-in-degrees is large-valued → relative. Observed ≤ 1e-4 abs over ~tens of
-# degrees ⇒ ~2e-6 relative; K=256 with an atol floor for near-zero offsets.
+# degrees ⇒ ~2e-6 relative; k=256 with a floor for near-zero offsets.
 [results.azi_phase_degrees]
-rtol = 3.05e-5   # 256·ε
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 [results.alt_phase_degrees]
-rtol = 3.05e-5
-atol = 3.05e-5
-# Amplitude is a positive magnitude → relative. K=1024 covers small-amplitude px.
+kind = "rel"
+k = 256
+k_floor = 256
+# Amplitude is a positive magnitude → relative. k=1024 covers small-amplitude px.
 [results.azi_amplitude]
-rtol = 1.22e-4   # 1024·ε
-atol = 3.05e-5
+kind = "rel"
+k = 1024
+k_floor = 256
 [results.alt_amplitude]
-rtol = 1.22e-4
-atol = 3.05e-5
+kind = "rel"
+k = 1024
+k_floor = 256
 
 # ── VFS (bounded [-1,1], crosses zero → absolute) ──────────────────────
-# K_eff=1024 as an absolute floor; the chain-rule gradient is more conditioned
+# k_eff=1024 as an absolute floor; the chain-rule gradient is more conditioned
 # than the smoothed maps. Observed ≤ 9.3e-5.
 [results.vfs]
-atol = 1.22e-4   # 1024·ε
+kind = "abs"
+k = 1024
 [results.vfs_smoothed]
-atol = 3.05e-5   # 256·ε; observed ≤ 1.7e-6
+kind = "abs"
+k = 256   # observed ≤ 1.7e-6
 [results.vfs_smoothed_thresholded]
-atol = 3.05e-5   # NaN outside cortex; comparator is NaN-position-aware
+kind = "abs"
+k = 256   # NaN outside cortex; comparator is NaN-position-aware
 
 # ── Segmentation: discrete decisions, must not drift ───────────────────
 [results.cortex_mask]
-bit_exact = true
+kind = "exact"
 [results.area_labels]
-bit_exact = true
+kind = "exact"
 [results.area_signs]
-bit_exact = true
+kind = "exact"
 [results.area_borders]
-bit_exact = true
+kind = "exact"
 [results.contours_azi]
-bit_exact = true
+kind = "exact"
 [results.contours_alt]
-bit_exact = true
+kind = "exact"
 
 # ── Eccentricity (degrees, positive magnitude → relative) ──────────────
 [results.eccentricity]
-rtol = 3.05e-5   # 256·ε; observed ≤ 7.9e-6
-atol = 3.05e-5
+kind = "rel"
+k = 256   # observed ≤ 7.9e-6
+k_floor = 256
 
 # ── Polar angle (degrees, atan2 about V1 center → crosses zero, ±180) ───
-# Angular like eccentricity but signed and zero-crossing, so an atol floor
-# carries the near-zero pixels; same K=256 propagation as eccentricity.
+# Angular like eccentricity but signed and zero-crossing, so the floor carries
+# the near-zero pixels; same k=256 propagation as eccentricity.
 [results.polar_angle]
-rtol = 3.05e-5   # 256·ε
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 
 # ── Magnification = 1/|det J| — ill-conditioned reciprocal ─────────────
 # `det J` is a catastrophic-cancellation difference; at near-singular pixels its
@@ -105,62 +122,67 @@ atol = 3.05e-5
 # reaches ≈ 3.99e5 px²/deg² (not ~1e7) at ~0.1% of ROI pixels. Worst cross-backend
 # drift (CUDA vs ndarray) = max_rel ≈ 1.019e-2 at that most near-singular pixel,
 # where κ ≈ 85 000 arises from the cancellation in `det` itself (NOT from the floor).
-# rtol = κ_max·2·ε with κ_max ≈ 85 000 ⇒ K ≈ 131072 ⇒ rtol ≈ 1.56e-2.
+# k = κ_max·2 with κ_max ≈ 85 000 ⇒ k ≈ 131072 ⇒ rtol ≈ 1.56e-2.
 # NOTE: this looseness is inherent ill-conditioning at a handful of numerically
 # degenerate pixels — the values are mathematically correct (1/det), and the
 # renderer's 2–98 percentile scaling already ignores the tail. NO cap is applied,
 # on oracle grounds: Allen `_getDeterminantMap` outputs |det J| (our
 # `magnification_raw`) and NEVER inverts — the 1/det leaf is OpenISI's display
-# transform, so the tail is an inversion artifact, not an oracle quantity. Capping
-# would diverge from the oracle to patch our own transform; a physical cap would
-# need V1's extent, itself a literature magic-number. See math.rs
-# `cortical_magnification_factor`.
+# transform, so the tail is an inversion artifact, not an oracle quantity. See
+# math.rs `cortical_magnification_factor`.
 [results.magnification]
-rtol = 1.56e-2   # 131072·ε = κ_max·2·ε, κ_max ≈ 85 000 (cancellation in det)
-atol = 3.05e-5
+kind = "rel"
+k = 131072   # κ_max·2, κ_max ≈ 85 000 (cancellation in det)
+k_floor = 256
 
 # ── Magnification anisotropy (SNLC getMagFactors prefAxisMF + Distrtion) ──
 # magnification_axis = ∠Res/2 (deg, wraps at 180°). arg(z) has condition number
 # κ = 1/|Res| = 1/distortion, so it is ILL-CONDITIONED where distortion → 0.
-# The prior bound (atol=1024·ε_f32) assumed the equivalence run was SAME-backend on
-# the baseline host (drift ~0). But validity must hold on ANY CPU/GPU/OS — a
-# bit-exact-on-one-machine pin is not a device-independent gate. MEASURED cross-CPU
-# drift (ubuntu/macos runners vs the baseline host, same ndarray backend) is
-# max_abs 4.64e-3° / max_rel 1.36e-3 (empirical κ ≈ 5700, i.e. ≈ 5700·2·ε_f32) at
-# the most near-isotropic pixels; by analogy to the sibling 1/det `magnification`
-# leaf (cross-backend CUDA ≈ 7.5× the cross-CPU drift) a GPU backend reaches ≈1e-2°.
-# atol = 131072·ε_f32 deg covers both, matching magnification's κ-bound K, while
-# staying far tighter than any real regression (>0.016° shift) on the dev host.
-# (A wrap-180 distance is not yet needed — no observed pixel sits near the 0/180
-# seam; add it like azi/alt_phase if a future fixture does.)
+# Validity must hold on ANY CPU/GPU/OS — a bit-exact-on-one-machine pin is not a
+# device-independent gate. MEASURED cross-CPU drift (ubuntu/macos runners vs the
+# baseline host, same ndarray backend) is max_abs 4.64e-3° / max_rel 1.36e-3
+# (empirical κ ≈ 5700) at the most near-isotropic pixels; by analogy to the sibling
+# 1/det `magnification` leaf (cross-backend CUDA ≈ 7.5× the cross-CPU drift) a GPU
+# backend reaches ≈1e-2°. k = 131072 (abs deg) covers both, matching magnification's
+# κ-bound k, while staying far tighter than any real regression (>0.016° shift) on
+# the dev host. (A wrap-180 distance is not yet needed — no observed pixel sits near
+# the 0/180 seam; switch kind to "wrap" with period 180 if a future fixture does.)
 [results.magnification_axis]
-atol = 1.56e-2   # 131072·ε_f32 deg — κ=1/distortion ill-conditioning, device-independent
+kind = "abs"
+k = 131072   # 131072·ε_f32 deg — κ=1/distortion ill-conditioning, device-independent
 # magnification_distortion = |Res| is a well-conditioned bounded [0,1] magnitude.
 [results.magnification_distortion]
-rtol = 3.05e-5   # 256·ε
-atol = 3.05e-5
+kind = "rel"
+k = 256
+k_floor = 256
 
 # ── Delay maps (degrees, (0,180], present under delay-subtraction) ──────
-# Angular magnitude → relative, like eccentricity; atol floors the near-zero
-# (flip-region) pixels. Same K=512 propagation as the phase maps the delay is
+# Angular magnitude → relative, like eccentricity; the floor carries the near-zero
+# (flip-region) pixels. Same k=512 propagation as the phase maps the delay is
 # derived from (atan2 + sign correction). Absent for unweighted-average combine.
 [results.azi_delay]
-rtol = 6.10e-5   # 512·ε
-atol = 6.10e-5
+kind = "rel"
+k = 512
+k_floor = 512
 [results.alt_delay]
-rtol = 6.10e-5
-atol = 6.10e-5
+kind = "rel"
+k = 512
+k_floor = 512
 
 # ── Optional responsiveness / reliability (raw-acquisition inputs only) ─
 [results.spectral_snr_azi]
-rtol = 1.22e-4   # 1024·ε
-atol = 1.22e-4
+kind = "rel"
+k = 1024
+k_floor = 1024
 [results.spectral_snr_alt]
-rtol = 1.22e-4
-atol = 1.22e-4
+kind = "rel"
+k = 1024
+k_floor = 1024
 [results.allen_power_snr_azi]
-rtol = 1.22e-4
-atol = 1.22e-4
+kind = "rel"
+k = 1024
+k_floor = 1024
 [results.allen_power_snr_alt]
-rtol = 1.22e-4
-atol = 1.22e-4
+kind = "rel"
+k = 1024
+k_floor = 1024

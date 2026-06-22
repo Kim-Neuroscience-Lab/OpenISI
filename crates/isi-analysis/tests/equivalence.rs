@@ -21,10 +21,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-// The per-element tolerance comparison is `approx` (the project's standard tool,
-// already a dependency); only the domain wrapper around it — the NaN-position
-// gate, the wrap-aware phase distance, and the array-level aggregation — is local.
-use approx::{abs_diff_eq, relative_eq};
+// The numerical-agreement comparison goes through the project's single ε-grounded
+// comparator, the `agreement` crate (the same `Tol`/`Drift` the in-crate goldens
+// use) — NOT a local re-implementation. This harness used to carry its own copy of
+// the drift loop, the wrap distance, and the rtol/atol grounding; that duplication
+// is gone. `agreement` owns the NaN-position gate, the wrap-aware distance, the
+// aggregation, and the ε-grounding (a raw float bound is not expressible).
+use agreement::{Drift, Eps, Tol};
+use hdf5::types::{FloatSize, IntSize, TypeDescriptor};
 use isi_analysis::{self, SilentProgress};
 use ndarray::ArrayD;
 use openisi_params::config::AnalysisConfig;
@@ -49,32 +53,40 @@ struct ToleranceTree {
     results: HashMap<String, Tolerance>,
 }
 
-/// Per-dataset numerical agreement bound, grounded in IEEE-754 f32 precision.
-///
-/// The check is the standard relative form `|c − b| ≤ rtol·max(|c|,|b|) + atol`:
-/// floating-point error is *relative*, so `rtol` is the primary bound and `atol`
-/// only floors it where values pass through zero.
-///
-/// **`rtol` is grounded, not measured-and-pasted:** `rtol = K · EPS_F32`, where
-/// `EPS_F32 = 2⁻²³` is the f32 machine epsilon and `K` is the error-propagation
-/// factor for that stage's operation count, doubled for a cross-backend compare
-/// (two independent f32 implementations). `K` is recorded per entry in
-/// `tolerances.toml` with its justification.
+/// Per-dataset agreement bound, parsed from `tolerances.toml` and mapped to a
+/// grounded [`agreement::Tol`]. The file stores an integer factor `k` (+ a floor
+/// `k_floor` for relative bounds) and a `kind`; the bound is `k · ε_f32`, built via
+/// `Tol` — so the IEEE-754 grounding is **type-enforced**, not a comment that can
+/// drift from a pasted float. (Cross-backend f32 implementations are compared, so
+/// the ε is always `Eps::F32` here; the toml `k` carries the per-stage propagation
+/// factor.)
 #[derive(Debug, Deserialize, Default, Clone)]
 struct Tolerance {
+    /// `exact` | `abs` | `rel` | `wrap` — selects the `Tol` constructor.
+    kind: String,
+    /// Factor for the primary bound (`k·ε`): rtol for `rel`, atol for `abs`/`wrap`.
     #[serde(default)]
-    bit_exact: bool,
-    /// Relative tolerance = `K · EPS_F32`.
+    k: u32,
+    /// Floor factor for `rel` (`atol = k_floor·ε`); ignored by other kinds.
     #[serde(default)]
-    rtol: Option<f64>,
-    /// Absolute floor (a few ULP of the map's representative scale).
-    #[serde(default)]
-    atol: Option<f64>,
+    k_floor: u32,
 }
 
-/// IEEE-754 single-precision machine epsilon, `2⁻²³`. Every `rtol` is a multiple
-/// of this — the one constant the relative bounds are grounded in.
-const EPS_F32: f64 = f32::EPSILON as f64;
+impl Tolerance {
+    /// Map this spec to the grounded comparator. Phase wrap uses period `2π`
+    /// (radians) with scale 1 (the toml `k` already in ε units).
+    fn to_tol(&self) -> Tol {
+        match self.kind.as_str() {
+            "exact" => Tol::exact(),
+            "abs" => Tol::abs(self.k, Eps::F32),
+            "rel" => Tol::rel(self.k, Eps::F32, self.k_floor),
+            "wrap" => Tol::wrap(std::f64::consts::TAU, self.k, Eps::F32, 1.0),
+            other => panic!(
+                "tolerances.toml: unknown kind {other:?} (expected exact|abs|rel|wrap)"
+            ),
+        }
+    }
+}
 
 fn load_tolerances() -> ToleranceTree {
     let p = manifest_path().join("tests/fixtures/tolerances.toml");
@@ -121,219 +133,104 @@ fn run_analyze_into(input: &Path, output: &Path) {
     isi_analysis::analyze(output, &params, None, &progress, &cancel).expect("isi_analysis::analyze");
 }
 
-// ─── Per-dataset comparators ─────────────────────────────────────────
+// ─── Per-dataset comparison (through `agreement::Tol`) ───────────────
 
-#[derive(Debug, Default)]
-struct DriftStats {
-    /// Worst absolute `|c − b|` over finite pairs (reporting only).
-    max_abs: f64,
-    /// Worst relative `|c − b| / max(|c|,|b|)` over finite pairs (reporting only).
-    max_rel: f64,
-    /// Number of finite pairs that FAILED the `approx` tolerance check
-    /// (`relative_eq!` / `abs_diff_eq!` at the dataset's `rtol`/`atol`). `0` ⇔ pass.
-    n_fail: usize,
-    /// Number of finite element pairs compared.
-    n_finite: usize,
-    /// Positions where exactly one of (candidate, baseline) is NaN/Inf —
-    /// a structural mismatch (the maps disagree on *where* data exists),
-    /// always a failure regardless of tolerance.
-    n_nan_mismatch: usize,
-}
-
-/// NaN/Inf-aware drift. Several maps are deliberately NaN outside a mask
-/// (e.g. `vfs_smoothed_thresholded` is NaN outside the cortex). A naive
-/// `(c-b).abs()` makes both `max_abs` and `mean_abs` NaN there, and
-/// `NaN > thr` is `false` — so a fully-NaN dataset would pass *silently*.
-/// This comparator instead:
-///   - requires NaN positions to MATCH (both NaN, or both finite); a
-///     position where they differ is counted as `n_nan_mismatch` (always
-///     a failure),
-///   - computes drift only over positions where both are finite.
-fn compute_drift(candidate: &[f64], baseline: &[f64], rtol: f64, atol: f64) -> DriftStats {
-    drift_with(
-        candidate,
-        baseline,
-        |c, b| (c - b).abs(),
-        // Tool: `approx`'s relative comparison, `|c−b| ≤ max(atol, rtol·max(|c|,|b|))`.
-        |c, b| relative_eq!(c, b, max_relative = rtol, epsilon = atol),
-    )
-}
-
-/// Wrap-aware drift on phase values (radians). Phase is an angular quantity, so
-/// the bound is absolute (radians): the wrap distance must be within `atol`.
-fn compute_phase_drift(candidate: &[f64], baseline: &[f64], _rtol: f64, atol: f64) -> DriftStats {
-    drift_with(
-        candidate,
-        baseline,
-        phase_wrap_distance,
-        // Tool: `approx`'s absolute comparison on the (domain) wrap distance.
-        move |c, b| abs_diff_eq!(phase_wrap_distance(c, b), 0.0, epsilon = atol),
-    )
-}
-
-/// Wrapped circle distance between two phases (radians), in `[0, π]`.
-fn phase_wrap_distance(c: f64, b: f64) -> f64 {
-    let two_pi = std::f64::consts::TAU;
-    let pi = std::f64::consts::PI;
-    let mut d = (c - b).rem_euclid(two_pi);
-    if d > pi {
-        d = two_pi - d;
-    }
-    d
-}
-
-/// Shared NaN/Inf-aware accumulator. `dist` reports the per-element drift (abs or
-/// wrap distance) for diagnostics; `pass` is the `approx` tolerance check for that
-/// element. The loop owns only the domain discipline — NaN-position matching and
-/// array-level aggregation — not the tolerance comparison itself.
-fn drift_with(
+/// Compare one dataset's flat values against the baseline through the grounded
+/// comparator, print the per-dataset drift line, and push any failure. ALL kinds
+/// (discrete `exact`, `abs`, `rel`, wrap-aware phase) go through the same path —
+/// `agreement` owns the NaN-position gate, the wrap distance, and the bound.
+fn compare_dataset(
+    label: &str,
     candidate: &[f64],
     baseline: &[f64],
-    dist: impl Fn(f64, f64) -> f64,
-    pass: impl Fn(f64, f64) -> bool,
-) -> DriftStats {
-    assert_eq!(candidate.len(), baseline.len(), "element count mismatch");
-    let mut max_abs = 0.0_f64;
-    let mut max_rel = 0.0_f64;
-    let mut n_fail = 0usize;
-    let mut n_finite = 0usize;
-    let mut n_nan_mismatch = 0usize;
-    for (&c, &b) in candidate.iter().zip(baseline.iter()) {
-        match (c.is_finite(), b.is_finite()) {
-            (true, true) => {
-                let d = dist(c, b);
-                max_abs = max_abs.max(d);
-                let scale = c.abs().max(b.abs());
-                if scale > 0.0 {
-                    max_rel = max_rel.max(d / scale);
-                }
-                if !pass(c, b) {
-                    n_fail += 1;
-                }
-                n_finite += 1;
-            }
-            (false, false) => {
-                // Both non-finite at this position — matched (e.g. both
-                // NaN outside the mask). No drift contribution.
-            }
-            _ => {
-                // Exactly one non-finite — the maps disagree on where data
-                // exists. Structural mismatch, always a failure.
-                n_nan_mismatch += 1;
-            }
-        }
-    }
-    DriftStats {
-        max_abs,
-        max_rel,
-        n_fail,
-        n_finite,
-        n_nan_mismatch,
-    }
-}
-
-/// Compare floats with `max_abs` and `mean_abs` budgets plus the NaN-
-/// position gate. Reports stats; pushes a failure for any breached gate.
-fn assert_float_within(
-    name: &str,
-    stats: &DriftStats,
     tol: &Tolerance,
     failures: &mut Vec<String>,
 ) {
-    let rtol = tol.rtol.unwrap_or(0.0);
-    let atol = tol.atol.unwrap_or(0.0);
+    let drift: Drift = tol.to_tol().check(candidate, baseline);
     println!(
-        "  {:<40} max_abs={:.3e} max_rel={:.3e} n_fail={}  (rtol={:.1e}={:.0}ε atol={:.1e})  n={} nan_mm={}",
-        name, stats.max_abs, stats.max_rel, stats.n_fail,
-        rtol, rtol / EPS_F32, atol, stats.n_finite, stats.n_nan_mismatch,
+        "  {:<40} {:<5} max_abs={:.3e} max_rel={:.3e} n_fail={}  (k={}{}) n={} nan_mm={}",
+        label,
+        tol.kind,
+        drift.max_abs,
+        drift.max_rel,
+        drift.n_fail,
+        tol.k,
+        if tol.kind == "rel" {
+            format!(" k_floor={}", tol.k_floor)
+        } else {
+            String::new()
+        },
+        drift.n_finite,
+        drift.n_nan_mismatch,
     );
-    // A NaN-position disagreement is always a failure — it means the two
-    // implementations produced data at different pixels.
-    if stats.n_nan_mismatch > 0 {
+    // A NON-empty dataset with no finite pairs (all NaN/Inf on both sides) passes
+    // is_agreement() vacuously — reject it. An empty dataset (e.g. area_signs when
+    // no areas were segmented) is a valid agreement: equal shape, nothing to
+    // compare. (The shape check above already verified both sides are empty.)
+    if !candidate.is_empty() && drift.is_vacuous() {
         failures.push(format!(
-            "{}: {} position(s) where exactly one of candidate/baseline is NaN/Inf",
-            name, stats.n_nan_mismatch,
-        ));
-    }
-    // Guard against a dataset that is entirely non-finite (n_finite == 0
-    // would otherwise pass vacuously).
-    if stats.n_finite == 0 {
-        failures.push(format!(
-            "{}: no finite element pairs to compare (entirely NaN/Inf)",
-            name,
-        ));
-    }
-    // The grounded bound, applied per element by `approx`: every finite pair
-    // must pass `relative_eq!` / `abs_diff_eq!` at this dataset's rtol/atol.
-    if stats.n_fail > 0 {
-        failures.push(format!(
-            "{}: {} of {} finite px exceed rtol={:.2e} (={:.0}·ε_f32) + atol={:.2e}  (max_abs={:.3e}, max_rel={:.3e})",
-            name, stats.n_fail, stats.n_finite, rtol, rtol / EPS_F32, atol, stats.max_abs, stats.max_rel,
-        ));
-    }
-}
-
-fn assert_bit_exact_bytes(
-    name: &str,
-    candidate: &[u8],
-    baseline: &[u8],
-    failures: &mut Vec<String>,
-) {
-    if candidate == baseline {
-        println!("  {:<40} bit_exact  n={}", name, candidate.len());
-    } else {
-        let diffs: usize = candidate
-            .iter()
-            .zip(baseline.iter())
-            .filter(|(a, b)| a != b)
-            .count();
-        println!(
-            "  {:<40} bit_exact FAIL  n={}  diffs={}",
-            name,
-            candidate.len(),
-            diffs
-        );
-        failures.push(format!(
-            "{}: bit_exact required, {}/{} elements differ",
-            name,
-            diffs,
+            "{label}: vacuous — {} elements but none finite on both sides (all NaN/Inf)",
             candidate.len(),
         ));
+        return;
+    }
+    if !drift.is_agreement() {
+        failures.push(format!(
+            "{label}: {} of {} finite px exceed the k={}·ε_f32 ({}) bound + {} NaN-position \
+             mismatch(es)  (max_abs={:.3e}, max_rel={:.3e})",
+            drift.n_fail,
+            drift.n_finite,
+            tol.k,
+            tol.kind,
+            drift.n_nan_mismatch,
+            drift.max_abs,
+            drift.max_rel,
+        ));
     }
 }
 
-// ─── HDF5 dataset readers (one per dtype we use) ─────────────────────
+// ─── HDF5 dataset reader (dtype read from the file, widened to f64) ──
+//
+// One reader for every dataset: the `.oisi` is self-describing (HDF5 carries each
+// dataset's dtype), so the storage type is read FROM THE FILE and widened to f64
+// rather than tracked in a hand-maintained name→dtype table. Discrete datasets
+// (u8 masks, i32 labels, i8 signs) widen exactly (every value is representable in
+// f64), and the `exact` tolerance kind compares them bit-for-bit after widening —
+// so masks/labels go through the same `agreement::Tol` path as the float maps.
 
-fn read_f64(path: &Path, ds_path: &str) -> ArrayD<f64> {
+/// Read a dataset's values as a flat `Vec<f64>` plus its shape, decoding whatever
+/// numeric dtype it is stored as (the `.oisi` schema's choice, read from the file).
+fn read_as_f64(path: &Path, ds_path: &str) -> (Vec<f64>, Vec<usize>) {
     let file = hdf5::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     let ds = file
         .dataset(ds_path)
-        .unwrap_or_else(|e| panic!("dataset {}: {e}", ds_path));
-    ds.read_dyn::<f64>().expect("read f64 dataset")
-}
-
-fn read_u8(path: &Path, ds_path: &str) -> ArrayD<u8> {
-    let file = hdf5::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    let ds = file
-        .dataset(ds_path)
-        .unwrap_or_else(|e| panic!("dataset {}: {e}", ds_path));
-    ds.read_dyn::<u8>().expect("read u8 dataset")
-}
-
-fn read_i32(path: &Path, ds_path: &str) -> ArrayD<i32> {
-    let file = hdf5::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    let ds = file
-        .dataset(ds_path)
-        .unwrap_or_else(|e| panic!("dataset {}: {e}", ds_path));
-    ds.read_dyn::<i32>().expect("read i32 dataset")
-}
-
-fn read_i8(path: &Path, ds_path: &str) -> ArrayD<i8> {
-    let file = hdf5::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    let ds = file
-        .dataset(ds_path)
-        .unwrap_or_else(|e| panic!("dataset {}: {e}", ds_path));
-    ds.read_dyn::<i8>().expect("read i8 dataset")
+        .unwrap_or_else(|e| panic!("dataset {ds_path}: {e}"));
+    let shape = ds.shape();
+    let descr = ds
+        .dtype()
+        .and_then(|d| d.to_descriptor())
+        .unwrap_or_else(|e| panic!("dtype of {ds_path}: {e}"));
+    let flat: Vec<f64> = match descr {
+        TypeDescriptor::Float(FloatSize::U8) => into_vec(ds.read_dyn::<f64>().expect("read f64")),
+        TypeDescriptor::Float(FloatSize::U4) => into_vec(ds.read_dyn::<f32>().expect("read f32"))
+            .into_iter()
+            .map(f64::from)
+            .collect(),
+        TypeDescriptor::Integer(IntSize::U4) => into_vec(ds.read_dyn::<i32>().expect("read i32"))
+            .into_iter()
+            .map(f64::from)
+            .collect(),
+        TypeDescriptor::Integer(IntSize::U1) => into_vec(ds.read_dyn::<i8>().expect("read i8"))
+            .into_iter()
+            .map(f64::from)
+            .collect(),
+        TypeDescriptor::Unsigned(IntSize::U1) => into_vec(ds.read_dyn::<u8>().expect("read u8"))
+            .into_iter()
+            .map(f64::from)
+            .collect(),
+        other => panic!("{ds_path}: unsupported stored dtype {other:?} for equivalence compare"),
+    };
+    (flat, shape)
 }
 
 fn dataset_exists(path: &Path, ds_path: &str) -> bool {
@@ -342,25 +239,6 @@ fn dataset_exists(path: &Path, ds_path: &str) -> bool {
     };
     file.dataset(ds_path).is_ok()
 }
-
-// ─── Per-dataset categorization ──────────────────────────────────────
-
-/// Datasets that store wrap-aware phase values (radians).
-const PHASE_DATASETS: &[&str] = &["azi_phase", "alt_phase"];
-
-/// Datasets that are conceptually boolean masks (HDF5 dtype u8).
-const BOOL_MASK_DATASETS: &[&str] = &[
-    "cortex_mask",
-    "area_borders",
-    "contours_azi",
-    "contours_alt",
-];
-
-/// Datasets stored as i32 labels.
-const I32_LABEL_DATASETS: &[&str] = &["area_labels"];
-
-/// Datasets stored as i8 per-area signs.
-const I8_DATASETS: &[&str] = &["area_signs"];
 
 // ─── Main equivalence test ───────────────────────────────────────────
 
@@ -433,33 +311,17 @@ fn run_equivalence(tag: &str, fixture: &Path, baseline: &Path) {
     for (name, tol) in &tols.complex_maps {
         let ds = format!("complex_maps/{name}");
         let label = format!("/{ds}");
-        let c = read_f64(&candidate, &ds);
-        let b = read_f64(baseline, &ds);
-        assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
-        let c_flat = into_vec(c);
-        let b_flat = into_vec(b);
-        if tol.bit_exact {
-            if c_flat == b_flat {
-                println!("  {:<40} bit_exact  n={}", label, c_flat.len());
-            } else {
-                let diffs: usize = c_flat
-                    .iter()
-                    .zip(b_flat.iter())
-                    .filter(|(a, b)| a != b)
-                    .count();
-                println!("  {:<40} bit_exact FAIL  diffs={}", label, diffs);
-                failures.push(format!(
-                    "{label}: bit_exact required, {diffs} elements differ"
-                ));
-            }
-        } else {
-            let (rtol, atol) = (tol.rtol.unwrap_or(0.0), tol.atol.unwrap_or(0.0));
-            let stats = compute_drift(&c_flat, &b_flat, rtol, atol);
-            assert_float_within(&label, &stats, tol, &mut failures);
-        }
+        let (c_flat, c_shape) = read_as_f64(&candidate, &ds);
+        let (b_flat, b_shape) = read_as_f64(baseline, &ds);
+        assert_eq!(c_shape, b_shape, "{label}: shape mismatch");
+        compare_dataset(&label, &c_flat, &b_flat, tol, &mut failures);
     }
 
     // --- /results/<name> --------------------------------------------------
+    // Every dataset — discrete masks/labels/signs (kind = "exact") and float maps
+    // alike — reads its stored dtype from the file, widens to f64, and compares
+    // through the one grounded comparator. The shape is read from the file and
+    // checked too, so a transpose that preserves element count cannot pass.
     for (name, tol) in &tols.results {
         let ds = format!("results/{name}");
         let label = format!("/{ds}");
@@ -478,46 +340,10 @@ fn run_equivalence(tag: &str, fixture: &Path, baseline: &Path) {
             "{label}: missing from baseline"
         );
 
-        if I32_LABEL_DATASETS.contains(&name.as_str()) {
-            let c = read_i32(&candidate, &ds);
-            let b = read_i32(baseline, &ds);
-            assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
-            let c_bytes: Vec<u8> = into_vec(c)
-                .iter()
-                .flat_map(|v| v.to_le_bytes().to_vec())
-                .collect();
-            let b_bytes: Vec<u8> = into_vec(b)
-                .iter()
-                .flat_map(|v| v.to_le_bytes().to_vec())
-                .collect();
-            assert_bit_exact_bytes(&label, &c_bytes, &b_bytes, &mut failures);
-        } else if I8_DATASETS.contains(&name.as_str()) {
-            let c = read_i8(&candidate, &ds);
-            let b = read_i8(baseline, &ds);
-            assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
-            let c_bytes: Vec<u8> = into_vec(c).iter().map(|&v| v as u8).collect();
-            let b_bytes: Vec<u8> = into_vec(b).iter().map(|&v| v as u8).collect();
-            assert_bit_exact_bytes(&label, &c_bytes, &b_bytes, &mut failures);
-        } else if BOOL_MASK_DATASETS.contains(&name.as_str()) {
-            let c = read_u8(&candidate, &ds);
-            let b = read_u8(baseline, &ds);
-            assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
-            assert_bit_exact_bytes(&label, &into_vec(c), &into_vec(b), &mut failures);
-        } else {
-            // Float dataset.
-            let c = read_f64(&candidate, &ds);
-            let b = read_f64(baseline, &ds);
-            assert_eq!(c.shape(), b.shape(), "{label}: shape mismatch");
-            let c_flat = into_vec(c);
-            let b_flat = into_vec(b);
-            let (rtol, atol) = (tol.rtol.unwrap_or(0.0), tol.atol.unwrap_or(0.0));
-            let stats = if PHASE_DATASETS.contains(&name.as_str()) {
-                compute_phase_drift(&c_flat, &b_flat, rtol, atol)
-            } else {
-                compute_drift(&c_flat, &b_flat, rtol, atol)
-            };
-            assert_float_within(&label, &stats, tol, &mut failures);
-        }
+        let (c_flat, c_shape) = read_as_f64(&candidate, &ds);
+        let (b_flat, b_shape) = read_as_f64(baseline, &ds);
+        assert_eq!(c_shape, b_shape, "{label}: shape mismatch");
+        compare_dataset(&label, &c_flat, &b_flat, tol, &mut failures);
     }
 
     println!();

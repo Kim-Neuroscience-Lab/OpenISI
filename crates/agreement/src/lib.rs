@@ -181,6 +181,18 @@ impl Tol {
     /// entry point for goldens — replaces hand-rolled `assert!(max < magic)`.
     pub fn assert(&self, label: &str, computed: &[f64], reference: &[f64]) {
         let d = self.check(computed, reference);
+        // A NON-empty comparison with no finite pairs (e.g. an all-NaN map on both
+        // sides) passes `is_agreement()` vacuously — reject it, that is a silent
+        // "no valid data where there should be" pass. An EMPTY comparison (zero
+        // elements on both sides, e.g. a legitimately-empty discrete result) is a
+        // valid agreement: there is genuinely nothing to compare, and equal length
+        // is the meaningful check the caller already made.
+        assert!(
+            computed.is_empty() || !d.is_vacuous(),
+            "{label}: vacuous comparison — {} elements but none finite on both sides \
+             (all NaN/Inf). No valid data where data is expected cannot count as agreement.",
+            computed.len(),
+        );
         assert!(
             d.is_agreement(),
             "{label}: {} px exceed tolerance + {} NaN-position mismatches \
@@ -214,9 +226,20 @@ pub struct Drift {
 
 impl Drift {
     /// True iff every finite pair is within tolerance and the NaN/Inf masks
-    /// match.
+    /// match. Note: a *vacuous* comparison (no finite pairs at all) is NOT
+    /// agreement — see [`Drift::is_vacuous`]; callers should reject it
+    /// explicitly (the [`Tol::assert`] entry point does).
     pub fn is_agreement(&self) -> bool {
         self.n_fail == 0 && self.n_nan_mismatch == 0
+    }
+
+    /// True iff nothing was actually compared — both slices empty, or every
+    /// position was non-finite-on-both-sides (e.g. two all-NaN maps). Such a
+    /// comparison passes `is_agreement()` vacuously (`n_fail == 0`), so it must
+    /// be rejected separately or a degenerate/empty fixture would "agree"
+    /// silently — exactly the kind of hidden pass the validation goal forbids.
+    pub fn is_vacuous(&self) -> bool {
+        self.n_finite == 0 && self.n_nan_mismatch == 0
     }
 }
 
@@ -315,6 +338,33 @@ mod tests {
         let base = Tol::abs(2, Eps::F32).atol();
         let scaled = Tol::abs(2, Eps::F32).with_kappa(12.0).atol();
         assert_eq!(scaled, base * 12.0);
+    }
+
+    #[test]
+    fn vacuous_comparisons_are_not_agreement() {
+        let tol = Tol::abs(256, Eps::F32);
+        // Empty slices: nothing compared → vacuous, not agreement.
+        let d = tol.check(&[], &[]);
+        assert!(d.is_vacuous());
+        // All-NaN on both sides at matching positions: passes is_agreement()
+        // vacuously, but is_vacuous() flags it.
+        let d = tol.check(&[f64::NAN, f64::NAN], &[f64::NAN, f64::NAN]);
+        assert!(d.is_agreement(), "no failures recorded");
+        assert!(d.is_vacuous(), "but nothing finite was compared");
+    }
+
+    #[test]
+    #[should_panic(expected = "vacuous comparison")]
+    fn assert_rejects_a_nonempty_all_nan_comparison() {
+        // Non-empty but no finite pairs → a silent "no valid data" pass; rejected.
+        Tol::abs(256, Eps::F32).assert("all-nan", &[f64::NAN, f64::NAN], &[f64::NAN, f64::NAN]);
+    }
+
+    #[test]
+    fn assert_accepts_an_empty_comparison() {
+        // Two empty (e.g. legitimately-empty discrete) arrays trivially agree —
+        // emptiness is verified by equal length, not flagged as vacuous.
+        Tol::exact().assert("empty", &[], &[]);
     }
 
     #[test]
