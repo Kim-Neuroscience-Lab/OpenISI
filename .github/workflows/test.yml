@@ -3,8 +3,21 @@ name: Test
 on:
   push:
     branches: ["*"]
+    # The 3-OS build/test matrix is expensive; skip it for commits that can't affect
+    # the build — docs and the OTHER workflows' YAML. (Changes to this file, source,
+    # Cargo.*, etc. still fire it.)
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/workflows/oracle.yml"
+      - ".github/workflows/goldens.yml"
   pull_request:
     branches: ["*"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/workflows/oracle.yml"
+      - ".github/workflows/goldens.yml"
 
 jobs:
   test:

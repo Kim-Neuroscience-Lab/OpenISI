@@ -1,13 +1,20 @@
 name: Genuine-oracle validation
 
-# Runs the genuine-oracle suite on a CLEAN runner: each oracle's locked, isolated
-# environment is materialised ONLY from its committed lockfile, and the field's
-# real reference code is executed live — no transcription, no frozen fixtures, no
-# shim. This is the "reproducible on a second machine from the committed lockfiles
-# alone" gate of the validation-foundation goal (condition 7): every green result
-# here is independent proof of faithfulness reproduced off the dev host.
+# Runs the live oracle suite on a CLEAN runner from committed lockfiles alone — the
+# "reproduces on a second machine" gate (objective 7). TWO jobs with different
+# fidelity, labelled honestly:
 #
-# Kept separate from the hermetic `Test` workflow; only this job provisions the
+#   * `oracle` (hosted, always-on) — the NAT/Allen Python oracle is GENUINE here
+#     (CPython, uv-locked, the real reference interpreter). The SNLC side runs the
+#     real `.m` under **Octave**, which is a re-implementation of the MATLAB
+#     *language* — so for SNLC this is an OPEN CROSS-CHECK, not the genuine MATLAB
+#     oracle (Octave ≠ MATLAB; see the imclose-border + split/fuse divergences).
+#   * `oracle-matlab` (self-hosted, MATLAB machine) — SNLC under GENUINE MATLAB, the
+#     authoritative oracle. Free hosted MATLAB-in-Actions can't reach our cargo-
+#     spawned matlab-batch (action-scoped licence, see that job), so this needs a
+#     self-hosted runner; it also runs locally on the dev host.
+#
+# Kept separate from the hermetic `Test` workflow; only this workflow provisions the
 # oracle toolchains, and only when oracle / harness / reference files change.
 
 on:
@@ -81,23 +88,33 @@ jobs:
           OPENISI_OCTAVE: octave-cli
         run: cargo test -p isi-analysis --lib --features oracle_live
 
-  # ── Genuine MATLAB oracle — FREE on this PUBLIC repo (no licence token) ────────
-  # OpenISI is a PUBLIC repository, so MathWorks licenses MATLAB in GitHub Actions
-  # for free. The `MLM_LICENSE_TOKEN` / `matlab-batch` token is the *private*-repo
-  # path, which we previously (wrongly) required. For public repos, `matlab-batch`
-  # self-licenses via a **GitHub OIDC token**, which requires `permissions:
-  # id-token: write` on the job — without it (our first attempt) matlab-batch finds
-  # no token, falls through to a license-FILE search, and fails "Unable to find a
-  # license". With the OIDC permission granted, the harness's `matlab-batch`
-  # subprocess (spawned by `cargo test`) obtains the free licence itself. This runs
-  # the genuine-oracle suite under REAL MATLAB R2025b — SNLC with NO Octave≈MATLAB
-  # approximation, the `imclose` border exact, the split/fuse composites runnable.
-  # The Octave job above remains the always-on open fallback.
+  # ── Genuine MATLAB SNLC oracle — SELF-HOSTED runner (the lab's licensed MATLAB) ──
+  # SNLC is MATLAB code, so genuine MATLAB is the ONLY faithful oracle for it: Octave
+  # is a re-implementation of the MATLAB *language*, so running the `.m` under Octave
+  # validates against Octave's interpretation, NOT the reference the field used (the
+  # imclose-border + split/fuse divergences are direct proof). The `oracle` job above
+  # is therefore an OPEN CROSS-CHECK (genuine NAT/Python + Octave-SNLC), not the
+  # genuine MATLAB-SNLC gate.
+  #
+  # Free MATLAB-in-Actions for public repos is real, but its licence is ACTION-SCOPED:
+  # it licenses only the matlab the matlab-actions run-* actions launch, and does NOT
+  # reach the `matlab-batch` our `cargo` harness spawns per oracle call. Empirically
+  # confirmed over three attempts (setup-matlab + bare matlab-batch; +id-token:write;
+  # run-command wrapping cargo) — all fail "Unable to find a license" (Error -1.2),
+  # the nested matlab-batch falling through to a license-FILE search. So genuine-MATLAB
+  # CI needs a SELF-HOSTED runner on a MATLAB-licensed machine (the lab workstation has
+  # R2025b). It runs the SAME suite as the Octave job but with SNLC under genuine
+  # MATLAB — the authoritative oracle (imclose border exact, split/fuse runnable) and
+  # a faithful objective-7 "second machine".
+  #
+  # SKIPPED (not failed) until the lab registers a runner labelled `self-hosted,matlab`
+  # (with MATLAB R2025b + IPT on its PATH) and sets repo variable
+  # `SELF_HOSTED_MATLAB=true`. Genuine MATLAB also runs LOCALLY on the dev host
+  # (`OPENISI_MATLAB=<matlab path>` + `cargo test -p isi-analysis --lib --features
+  # oracle_live`) — the always-available authoritative path.
   oracle-matlab:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read    # checkout
-      id-token: write   # GitHub OIDC → free public-repo MATLAB licence for matlab-batch
+    if: ${{ vars.SELF_HOSTED_MATLAB == 'true' }}
+    runs-on: [self-hosted, matlab]
     steps:
       - uses: actions/checkout@v4
       - name: Materialise pinned oracle reference (byte-pristine)
@@ -108,20 +125,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Materialise the NAT env from the committed lock (exact, --locked)
         run: uv sync --project crates/isi-analysis/tests/oracle/nat --locked
-      - name: Set up genuine MATLAB R2025b + Image Processing Toolbox (free, public repo)
-        uses: matlab-actions/setup-matlab@v2
-        with:
-          release: R2025b
-          products: Image_Processing_Toolbox
-      # The free public-repo licence is obtained by the matlab-actions run-* actions
-      # (via OIDC), NOT by the bare `matlab-batch` tool — a first attempt with plain
-      # `cargo test` + `id-token:write` still hit "Unable to find a license", proving
-      # the licence is action-scoped. So drive the cargo harness FROM INSIDE
-      # `run-command`: it sets up the licence, then MATLAB's `system(...)` runs cargo,
-      # whose `matlab-batch` subprocesses inherit the licensed environment.
-      - name: Genuine-oracle suite (real MATLAB via run-command licence context)
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            status = system('OPENISI_UV=uv OPENISI_MATLAB=matlab-batch cargo test -p isi-analysis --lib --features oracle_live');
-            exit(status)
+      - name: Genuine-oracle suite (SNLC via the runner's licensed MATLAB)
+        env:
+          OPENISI_UV: uv
+          # The runner's own MATLAB install is fully licensed → `matlab -batch` works
+          # directly (no token). Override if the binary is not named `matlab` on PATH.
+          OPENISI_MATLAB: matlab
+        run: cargo test -p isi-analysis --lib --features oracle_live
