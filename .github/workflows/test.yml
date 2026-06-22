@@ -32,7 +32,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          # Include the workflow file in the key so a build-config change (e.g. the
+          # cmake generator) invalidates the cache — otherwise a stale CMakeCache.txt
+          # from a prior generator (Visual Studio vs Ninja) conflicts with the new one.
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock', '.github/workflows/test.yml') }}
 
       - name: Install CMake
         uses: lukka/get-cmake@latest
