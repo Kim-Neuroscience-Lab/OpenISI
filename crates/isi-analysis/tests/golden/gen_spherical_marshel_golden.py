@@ -88,9 +88,9 @@ def main():
     deg = np.asarray(deg, dtype="<f8")
     meta = np.asarray([DIS, W, H, float(cm.shape[0])], dtype="<f8")
 
-    np.ascontiguousarray(cm).tofile(os.path.join(FIX, "sph_marshel_cm.bin"))
-    np.ascontiguousarray(deg).tofile(os.path.join(FIX, "sph_marshel_deg.bin"))
-    np.ascontiguousarray(meta).tofile(os.path.join(FIX, "sph_marshel_meta.bin"))
+    np.save(os.path.join(FIX, "sph_marshel_cm.npy"), np.ascontiguousarray(cm))
+    np.save(os.path.join(FIX, "sph_marshel_deg.npy"), np.ascontiguousarray(deg))
+    np.save(os.path.join(FIX, "sph_marshel_meta.npy"), np.ascontiguousarray(meta))
 
     print(f"  DIS={DIS} W={W} H={H}  N={cm.shape[0]} cm->deg samples")
     print(f"  az range  [{deg[:,0].min():.4f}, {deg[:,0].max():.4f}] deg")

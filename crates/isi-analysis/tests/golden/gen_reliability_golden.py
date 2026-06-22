@@ -56,9 +56,9 @@ def main():
     # --- end ---
 
     z32 = z.astype(np.complex64)
-    np.ascontiguousarray(z32.real, dtype="<f4").tofile(os.path.join(FIX, "rel_z_re.bin"))
-    np.ascontiguousarray(z32.imag, dtype="<f4").tofile(os.path.join(FIX, "rel_z_im.bin"))
-    np.ascontiguousarray(rel, dtype="<f8").tofile(os.path.join(FIX, "rel_expected.bin"))
+    np.save(os.path.join(FIX, "rel_z_re.npy"), np.ascontiguousarray(z32.real, dtype="<f4"))
+    np.save(os.path.join(FIX, "rel_z_im.npy"), np.ascontiguousarray(z32.imag, dtype="<f4"))
+    np.save(os.path.join(FIX, "rel_expected.npy"), np.ascontiguousarray(rel, dtype="<f8"))
 
     print(f"  K={K} H={H} W={W}")
     print(f"  coherent region (c<4) reliability range  [{rel[:,:4].min():.4f}, {rel[:,:4].max():.4f}]")

@@ -33,9 +33,9 @@ std_n = np.std(vfs, ddof=0)    # population (N) — what our Rust uses now
 thr = K * std_n1 * 0.5
 garrett = np.abs(vfs) > thr
 
-np.ascontiguousarray(vfs, dtype="<f8").tofile(os.path.join(FIX, "pthr_vfs.bin"))
-allen.astype(np.uint8).tofile(os.path.join(FIX, "pthr_allen.bin"))
-garrett.astype(np.uint8).tofile(os.path.join(FIX, "pthr_garrett.bin"))
+np.save(os.path.join(FIX, "pthr_vfs.npy"), np.ascontiguousarray(vfs, dtype="<f8"))
+np.save(os.path.join(FIX, "pthr_allen.npy"), allen.astype(np.uint8))
+np.save(os.path.join(FIX, "pthr_garrett.npy"), garrett.astype(np.uint8))
 
 print(f"  vfs range [{vfs.min():.4f}, {vfs.max():.4f}]")
 print(f"  allen(|vfs|>=0.35) sum={int(allen.sum())}")

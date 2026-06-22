@@ -53,7 +53,7 @@ for name, arr in [
     ("maganiso_axis", axis),
     ("maganiso_distortion", distortion),
 ]:
-    arr.astype("<f8").tofile(os.path.join(FIX, name + ".bin"))
+    np.save(os.path.join(FIX, name + ".npy"), arr.astype("<f8"))
 
 print(
     f"  maganiso: axis range [{axis.min():.2f}, {axis.max():.2f}] deg  "

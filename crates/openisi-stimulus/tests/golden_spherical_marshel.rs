@@ -28,23 +28,25 @@
 use agreement::{Eps, Tol};
 use openisi_stimulus::geometry::{DisplayGeometry, ProjectionType};
 
+/// Load an `f64` `.npy` fixture (self-describing dtype + shape) as a flat `Vec`.
+/// The dtype is verified on load.
 fn load_f64(bytes: &[u8]) -> Vec<f64> {
-    bytes
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    npyz::NpyFile::new(std::io::Cursor::new(bytes))
+        .expect("parse .npy fixture")
+        .into_vec::<f64>()
+        .expect("read .npy fixture as f64 (dtype mismatch?)")
 }
 
 #[test]
 fn spherical_matches_allen_marshel_remap() {
     let cm = load_f64(include_bytes!(
-        "../../isi-analysis/tests/golden/fixtures/sph_marshel_cm.bin"
+        "../../isi-analysis/tests/golden/fixtures/sph_marshel_cm.npy"
     ));
     let deg = load_f64(include_bytes!(
-        "../../isi-analysis/tests/golden/fixtures/sph_marshel_deg.bin"
+        "../../isi-analysis/tests/golden/fixtures/sph_marshel_deg.npy"
     ));
     let meta = load_f64(include_bytes!(
-        "../../isi-analysis/tests/golden/fixtures/sph_marshel_meta.bin"
+        "../../isi-analysis/tests/golden/fixtures/sph_marshel_meta.npy"
     ));
     let (dis, w_cm, h_cm, n) = (meta[0], meta[1], meta[2], meta[3] as usize);
 

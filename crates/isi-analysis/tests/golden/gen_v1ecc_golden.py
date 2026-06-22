@@ -184,15 +184,13 @@ def main():
     rust_map = np.where(mask, rust_full, 0.0)
 
     # ---- write fixtures ----
-    alt.astype('<f8').tofile(os.path.join(FIX, "v1ecc_alt.bin"))
-    azi.astype('<f8').tofile(os.path.join(FIX, "v1ecc_azi.bin"))
-    labels.astype('<i4').tofile(os.path.join(FIX, "v1ecc_labels.bin"))
-    np.array([rust_alt_c, rust_azi_c], dtype='<f8').tofile(
-        os.path.join(FIX, "v1ecc_rust_center.bin"))
-    np.array([vcent_alt, vcent_azi], dtype='<f8').tofile(
-        os.path.join(FIX, "v1ecc_snlc_center.bin"))
-    snlc_map.astype('<f8').tofile(os.path.join(FIX, "v1ecc_snlc_map.bin"))
-    rust_map.astype('<f8').tofile(os.path.join(FIX, "v1ecc_rust_map.bin"))
+    np.save(os.path.join(FIX, "v1ecc_alt.npy"), alt.astype('<f8'))
+    np.save(os.path.join(FIX, "v1ecc_azi.npy"), azi.astype('<f8'))
+    np.save(os.path.join(FIX, "v1ecc_labels.npy"), labels.astype('<i4'))
+    np.save(os.path.join(FIX, "v1ecc_rust_center.npy"), np.array([rust_alt_c, rust_azi_c], dtype='<f8'))
+    np.save(os.path.join(FIX, "v1ecc_snlc_center.npy"), np.array([vcent_alt, vcent_azi], dtype='<f8'))
+    np.save(os.path.join(FIX, "v1ecc_snlc_map.npy"), snlc_map.astype('<f8'))
+    np.save(os.path.join(FIX, "v1ecc_rust_map.npy"), rust_map.astype('<f8'))
 
     # ---- stats ----
     print(f"  N={N}  labels: 1={rust_counts.get(1)} 2={rust_counts.get(2)} 3={rust_counts.get(3)}")

@@ -78,11 +78,11 @@ def cortex_from_reliability_oracle(azi_fwd, azi_rev, alt_fwd, alt_rev, threshold
 
 
 def save_f64(arr, name):
-    np.ascontiguousarray(arr.astype("<f8")).tofile(os.path.join(FIX, name))
+    np.save(os.path.join(FIX, name), np.ascontiguousarray(arr.astype("<f8")))
 
 
 def save_u8(arr, name):
-    np.ascontiguousarray(arr.astype(np.uint8)).tofile(os.path.join(FIX, name))
+    np.save(os.path.join(FIX, name), np.ascontiguousarray(arr.astype(np.uint8)))
 
 
 def build_primary():
@@ -147,21 +147,21 @@ def main():
     # ---- primary case ----
     a, b, c, d = build_primary()
     raw, expected = cortex_from_reliability_oracle(a, b, c, d, THRESHOLD)
-    save_f64(a, "cortexrel_azi_fwd.bin")
-    save_f64(b, "cortexrel_azi_rev.bin")
-    save_f64(c, "cortexrel_alt_fwd.bin")
-    save_f64(d, "cortexrel_alt_rev.bin")
-    save_u8(raw, "cortexrel_raw.bin")
-    save_u8(expected, "cortexrel_expected.bin")
+    save_f64(a, "cortexrel_azi_fwd.npy")
+    save_f64(b, "cortexrel_azi_rev.npy")
+    save_f64(c, "cortexrel_alt_fwd.npy")
+    save_f64(d, "cortexrel_alt_rev.npy")
+    save_u8(raw, "cortexrel_raw.npy")
+    save_u8(expected, "cortexrel_expected.npy")
 
     # ---- tie case ----
     ta, tb, tc, td = build_tie()
     traw, texp = cortex_from_reliability_oracle(ta, tb, tc, td, THRESHOLD)
-    save_f64(ta, "cortexrel_tie_azi_fwd.bin")
-    save_f64(tb, "cortexrel_tie_azi_rev.bin")
-    save_f64(tc, "cortexrel_tie_alt_fwd.bin")
-    save_f64(td, "cortexrel_tie_alt_rev.bin")
-    save_u8(texp, "cortexrel_tie_expected.bin")
+    save_f64(ta, "cortexrel_tie_azi_fwd.npy")
+    save_f64(tb, "cortexrel_tie_azi_rev.npy")
+    save_f64(tc, "cortexrel_tie_alt_fwd.npy")
+    save_f64(td, "cortexrel_tie_alt_rev.npy")
+    save_u8(texp, "cortexrel_tie_expected.npy")
 
     # ---- stats ----
     _, n_raw = ni.label(raw)

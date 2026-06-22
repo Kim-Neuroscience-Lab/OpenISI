@@ -243,6 +243,7 @@ mod golden {
     use agreement::{Eps, Tol};
     use crate::compute::backend::device;
     use crate::compute::conversions::tensor_to_array2_f64;
+    use crate::test_support::{load_f32, load_f64, load_u8};
     use std::f64::consts::PI;
 
     fn injected_phase(p: usize, n_px: usize) -> f64 {
@@ -297,18 +298,9 @@ mod golden {
         const H: usize = 6;
         const W: usize = 8;
         fn run(name: &str, n: usize, dff_b: &[u8], ts_b: &[u8], out_b: &[u8]) {
-            let dff_f32: Vec<f32> = dff_b
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-            let ts: Vec<f64> = ts_b
-                .chunks_exact(8)
-                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-            let exp: Vec<f64> = out_b
-                .chunks_exact(8)
-                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                .collect();
+            let dff_f32 = load_f32(dff_b);
+            let ts = load_f64(ts_b);
+            let exp = load_f64(out_b);
             let dev = device();
             let dff = Tensor::<Backend, 3>::from_data(TensorData::new(dff_f32, [n, H, W]), &dev);
             let got = tensor_to_array2_f64(spectral_snr(dff, &ts)).expect("snr to array");
@@ -323,16 +315,16 @@ mod golden {
         run(
             "small",
             30,
-            include_bytes!("../../tests/golden/fixtures/snr_small_dff.bin"),
-            include_bytes!("../../tests/golden/fixtures/snr_small_ts.bin"),
-            include_bytes!("../../tests/golden/fixtures/snr_small_out.bin"),
+            include_bytes!("../../tests/golden/fixtures/snr_small_dff.npy"),
+            include_bytes!("../../tests/golden/fixtures/snr_small_ts.npy"),
+            include_bytes!("../../tests/golden/fixtures/snr_small_out.npy"),
         );
         run(
             "large",
             120,
-            include_bytes!("../../tests/golden/fixtures/snr_large_dff.bin"),
-            include_bytes!("../../tests/golden/fixtures/snr_large_ts.bin"),
-            include_bytes!("../../tests/golden/fixtures/snr_large_out.bin"),
+            include_bytes!("../../tests/golden/fixtures/snr_large_dff.npy"),
+            include_bytes!("../../tests/golden/fixtures/snr_large_ts.npy"),
+            include_bytes!("../../tests/golden/fixtures/snr_large_out.npy"),
         );
     }
 
@@ -351,12 +343,8 @@ mod golden {
         const N: usize = 24;
         const H: usize = 16;
         const W: usize = 16;
-        let mv: &[u8] = include_bytes!("../../tests/golden/fixtures/powersnr_movie.bin");
-        let movie_f32: Vec<f32> = mv
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let exp: &[u8] = include_bytes!("../../tests/golden/fixtures/powersnr_mask.bin");
+        let movie_f32 = load_f32(include_bytes!("../../tests/golden/fixtures/powersnr_movie.npy"));
+        let exp = load_u8(include_bytes!("../../tests/golden/fixtures/powersnr_mask.npy"));
         let movie =
             Array3::from_shape_fn((N, H, W), |(t, r, c)| movie_f32[t * H * W + r * W + c] as f64);
         let mask = allen_spectral_power_snr_mask(&movie, 4, 1.0);
@@ -382,11 +370,7 @@ mod golden {
         const N: usize = 24;
         const H: usize = 16;
         const W: usize = 16;
-        let mv: &[u8] = include_bytes!("../../tests/golden/fixtures/powersnr_movie.bin");
-        let movie_f32: Vec<f32> = mv
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let movie_f32 = load_f32(include_bytes!("../../tests/golden/fixtures/powersnr_movie.npy"));
         let movie =
             Array3::from_shape_fn((N, H, W), |(t, r, c)| movie_f32[t * H * W + r * W + c] as f64);
         let z = allen_power_snr(&movie, 4);
@@ -403,11 +387,7 @@ mod golden {
         const N: usize = 24;
         const H: usize = 16;
         const W: usize = 16;
-        let mv: &[u8] = include_bytes!("../../tests/golden/fixtures/powersnr_movie.bin");
-        let movie_f32: Vec<f32> = mv
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let movie_f32 = load_f32(include_bytes!("../../tests/golden/fixtures/powersnr_movie.npy"));
         let movie =
             Array3::from_shape_fn((N, H, W), |(t, r, c)| movie_f32[t * H * W + r * W + c] as f64);
         let host = allen_power_snr(&movie, 4);

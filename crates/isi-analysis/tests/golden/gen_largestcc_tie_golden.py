@@ -81,8 +81,8 @@ def emit(name, mask):
         f"{name}: scipy-argmax and MATLAB-transcription disagree"
     )
     sizes = [int((lab == i).sum()) for i in range(1, n + 1)]
-    np.ascontiguousarray(mask).tofile(os.path.join(FIX, f"largestcc_{name}_input.bin"))
-    np.ascontiguousarray(out_scipy).tofile(os.path.join(FIX, f"largestcc_{name}_out.bin"))
+    np.save(os.path.join(FIX, f"largestcc_{name}_input.npy"), np.ascontiguousarray(mask))
+    np.save(os.path.join(FIX, f"largestcc_{name}_out.npy"), np.ascontiguousarray(out_scipy))
     print(f"  [{name}] N={N} ncomp={n} sizes={sizes} "
           f"winner_label={winner} (scipy) / {winner_mat} (matlab) "
           f"in_sum={int(mask.sum())} out_sum={int(out_scipy.sum())}")

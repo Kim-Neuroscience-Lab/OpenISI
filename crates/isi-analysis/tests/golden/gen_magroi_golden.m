@@ -10,10 +10,10 @@
 % Synthetic magf: two Gaussian bumps + a faint ramp, all positive, so the
 % normalized threshold carves a non-trivial multi-region ROI.
 %
-% Outputs (fixtures/, row-major):
-%   magroi_in.bin   (H x W) f64 input magnitude `magf`
-%   magroi_out.bin  (H x W) uint8 boolean ROI mask (oracle)
-%   magroi_meta.bin (f64) [H, W, exponent, thresh]
+% Outputs (fixtures/):
+%   magroi_in.npy   (H x W) f64 input magnitude `magf`
+%   magroi_out.npy  (H x W) uint8 boolean ROI mask (oracle)
+%   magroi_meta.npy (f64) [H, W, exponent, thresh]
 % Run:  via `cargo xtask goldens magroi`
 
 H = 40; W = 48; exponent = 1.1; thresh = 0.12;
@@ -28,10 +28,12 @@ mag = mag - min(mag(:));
 mag = mag / max(mag(:));
 magROI = double(mag >= thresh);
 
-fixdir = fullfile(fileparts(mfilename('fullpath')), 'fixtures');
-fid = fopen(fullfile(fixdir, 'magroi_in.bin'),  'w'); fwrite(fid, magf',   'double'); fclose(fid);
-fid = fopen(fullfile(fixdir, 'magroi_out.bin'), 'w'); fwrite(fid, magROI', 'uint8');  fclose(fid);
-fid = fopen(fullfile(fixdir, 'magroi_meta.bin'),'w'); fwrite(fid, [H; W; exponent; thresh], 'double'); fclose(fid);
+scriptdir = fileparts(mfilename('fullpath'));
+addpath(scriptdir);  % for save_npy
+fixdir = fullfile(scriptdir, 'fixtures');
+save_npy(fullfile(fixdir, 'magroi_in.npy'),   magf,                       '<f8');
+save_npy(fullfile(fixdir, 'magroi_out.npy'),  uint8(magROI),              '|u1');
+save_npy(fullfile(fixdir, 'magroi_meta.npy'), [H; W; exponent; thresh],   '<f8');
 
 printf('  magroi: %dx%d exp=%.2f thr=%.2f -> %d/%d px in ROI\n', ...
        H, W, exponent, thresh, sum(magROI(:)), H*W);

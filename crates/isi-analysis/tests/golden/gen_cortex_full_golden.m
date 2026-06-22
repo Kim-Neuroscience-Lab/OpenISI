@@ -9,12 +9,13 @@
 % below) cannot flip any pixel — this test isolates threshold+morphology, not
 % the std estimator.
 %
-% Output: fixtures/cortex_full_vfs.bin (float64 row-major 96x96),
-%         fixtures/cortex_full_golden.bin (uint8 row-major 96x96)
+% Output: fixtures/cortex_full_vfs.npy (float64 96x96),
+%         fixtures/cortex_full_golden.npy (uint8 96x96)
 %
 % Run:  octave-cli --norc gen_cortex_full_golden.m
 
 pkg load image;
+addpath(fileparts(mfilename('fullpath')));  % for save_npy
 
 N = 96;
 [X, Y] = meshgrid(1:N, 1:N);
@@ -48,10 +49,8 @@ for i = 1:nlab; counts(i) = sum(lbl(:) == i); end
 cortex = (lbl == big);
 
 fixdir = fullfile(fileparts(mfilename('fullpath')), 'fixtures');
-fid = fopen(fullfile(fixdir, 'cortex_full_vfs.bin'), 'w');
-fwrite(fid, VFS', 'double'); fclose(fid);
-fid = fopen(fullfile(fixdir, 'cortex_full_golden.bin'), 'w');
-fwrite(fid, uint8(cortex)', 'uint8'); fclose(fid);
+save_npy(fullfile(fixdir, 'cortex_full_vfs.npy'),    VFS,           '<f8');
+save_npy(fullfile(fixdir, 'cortex_full_golden.npy'), uint8(cortex), '|u1');
 
 printf('  std N-1=%.6f  N=%.6f  (ratio %.6f)\n', s_n1, s_n, s_n1 / s_n);
 printf('  thr(N-1)=%.6f  thr(N)=%.6f  cortex_sum=%d\n', thr, k * s_n * 0.5, sum(cortex(:)));

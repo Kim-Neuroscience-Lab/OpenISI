@@ -52,10 +52,10 @@ def main():
     # Allen baselineType='median' (np.median, axis=0; N even → avg of two middle).
     f0_median = np.median(fr, axis=0)
 
-    np.ascontiguousarray(frames.astype(np.uint16)).tofile(os.path.join(FIX, "dff_frames.bin"))
-    np.ascontiguousarray(f0, dtype="<f8").tofile(os.path.join(FIX, "dff_f0.bin"))
-    np.ascontiguousarray(f0_median, dtype="<f8").tofile(os.path.join(FIX, "dff_f0_median.bin"))
-    np.ascontiguousarray(dff.astype(np.float32), dtype="<f4").tofile(os.path.join(FIX, "dff_dff.bin"))
+    np.save(os.path.join(FIX, "dff_frames.npy"), np.ascontiguousarray(frames.astype(np.uint16)))
+    np.save(os.path.join(FIX, "dff_f0.npy"), np.ascontiguousarray(f0, dtype="<f8"))
+    np.save(os.path.join(FIX, "dff_f0_median.npy"), np.ascontiguousarray(f0_median, dtype="<f8"))
+    np.save(os.path.join(FIX, "dff_dff.npy"), np.ascontiguousarray(dff.astype(np.float32), dtype="<f4"))
 
     print(f"  N={N} H={H} W={W}  (N {'even' if N % 2 == 0 else 'odd'})")
     print(f"  F0 mean   range [{f0.min():.2f}, {f0.max():.2f}]")

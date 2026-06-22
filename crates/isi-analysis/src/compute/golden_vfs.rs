@@ -30,7 +30,7 @@ mod tests {
         position_phasor_delay_subtracted, real_gradients,
     };
     use crate::methods::patch_threshold::{PatchThresholdExt, PatchThresholdMethod};
-    use crate::test_support::{count_differing, load_f32, load_f64};
+    use crate::test_support::{count_differing, load_f32, load_f64, load_u8, load_u16};
     use agreement::{Eps, Tol};
     use burn_tensor::{Tensor, TensorData};
     use ndarray::Array2;
@@ -126,12 +126,12 @@ mod tests {
     /// (b) diverge from Allen-on-the-wrapped-input at the wrap columns.
     #[test]
     fn vfs_stable_across_phase_wraps_where_allen_gradient_spikes() {
-        let phi1 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_phi1.bin"));
-        let phi2 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_phi2.bin"));
+        let phi1 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_phi1.npy"));
+        let phi2 = load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_phi2.npy"));
         let allen_true =
-            load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_allen_true.bin"));
+            load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_allen_true.npy"));
         let allen_wrapped =
-            load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_allen_wrapped.bin"));
+            load_f64(include_bytes!("../../tests/golden/fixtures/vfs_wrap_allen_wrapped.npy"));
 
         let z_azi = Complex2::from_phase(phase_tensor(&phi1));
         let z_alt = Complex2::from_phase(phase_tensor(&phi2));
@@ -246,13 +246,13 @@ mod tests {
     fn magnification_anisotropy_matches_snlc_getmagfactors() {
         const M: usize = 48;
         let g = |b: &[u8]| tensor2(load_f64(b).iter().map(|&v| v as f32).collect(), M, M);
-        let dhdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdx.bin"));
-        let dhdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdy.bin"));
-        let dvdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdx.bin"));
-        let dvdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdy.bin"));
-        let axis_gold = load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_axis.bin"));
+        let dhdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdx.npy"));
+        let dhdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dhdy.npy"));
+        let dvdx = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdx.npy"));
+        let dvdy = g(include_bytes!("../../tests/golden/fixtures/maganiso_dvdy.npy"));
+        let axis_gold = load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_axis.npy"));
         let dist_gold =
-            load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_distortion.bin"));
+            load_f64(include_bytes!("../../tests/golden/fixtures/maganiso_distortion.npy"));
 
         let (axis_t, dist_t) = magnification_anisotropy(dhdx, dhdy, dvdx, dvdy);
         let axis = tensor_to_array2_f64(axis_t).unwrap();
@@ -375,9 +375,9 @@ mod tests {
     /// Fixtures from `gen_patch_threshold_golden.py`.
     #[test]
     fn patch_threshold_matches_reference() {
-        let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/pthr_vfs.bin"));
-        let g_allen: &[u8] = include_bytes!("../../tests/golden/fixtures/pthr_allen.bin");
-        let g_garrett: &[u8] = include_bytes!("../../tests/golden/fixtures/pthr_garrett.bin");
+        let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/pthr_vfs.npy"));
+        let g_allen = load_u8(include_bytes!("../../tests/golden/fixtures/pthr_allen.npy"));
+        let g_garrett = load_u8(include_bytes!("../../tests/golden/fixtures/pthr_garrett.npy"));
         let vfs = Array2::from_shape_fn((N, N), |(r, c)| vfs_flat[r * N + c]);
         let all_cortex = Array2::from_elem((N, N), true);
 
@@ -388,8 +388,8 @@ mod tests {
             .apply(&vfs, &all_cortex)
             .imseg;
 
-        let d_allen = count_differing(&allen, g_allen);
-        let d_garrett = count_differing(&garrett, g_garrett);
+        let d_allen = count_differing(&allen, &g_allen);
+        let d_garrett = count_differing(&garrett, &g_garrett);
         eprintln!("patch_threshold: allen diff={d_allen}  garrett diff={d_garrett}");
         assert_eq!(d_allen, 0, "Allen fixed threshold diverges from reference");
         assert_eq!(d_garrett, 0, "Garrett sigma-scaled threshold diverges from reference");
@@ -495,9 +495,9 @@ mod tests {
         const K: usize = 5;
         const H: usize = 8;
         const W: usize = 8;
-        let re = load_f32(include_bytes!("../../tests/golden/fixtures/rel_z_re.bin"));
-        let im = load_f32(include_bytes!("../../tests/golden/fixtures/rel_z_im.bin"));
-        let exp = load_f64(include_bytes!("../../tests/golden/fixtures/rel_expected.bin"));
+        let re = load_f32(include_bytes!("../../tests/golden/fixtures/rel_z_re.npy"));
+        let im = load_f32(include_bytes!("../../tests/golden/fixtures/rel_z_im.npy"));
+        let exp = load_f64(include_bytes!("../../tests/golden/fixtures/rel_expected.npy"));
 
         let cycles: Vec<Complex2> = (0..K)
             .map(|k| {
@@ -571,13 +571,9 @@ mod tests {
         const N: usize = 20;
         const H: usize = 16;
         const W: usize = 16;
-        let fb: &[u8] = include_bytes!("../../tests/golden/fixtures/dff_frames.bin");
-        let frames_u16: Vec<u16> = fb
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let f0_exp = load_f64(include_bytes!("../../tests/golden/fixtures/dff_f0.bin"));
-        let dff_exp = load_f32(include_bytes!("../../tests/golden/fixtures/dff_dff.bin"));
+        let frames_u16 = load_u16(include_bytes!("../../tests/golden/fixtures/dff_frames.npy"));
+        let f0_exp = load_f64(include_bytes!("../../tests/golden/fixtures/dff_f0.npy"));
+        let dff_exp = load_f32(include_bytes!("../../tests/golden/fixtures/dff_dff.npy"));
         let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
 
         // (1) Baseline F0 = Allen np.mean(movie, axis=0). Positive magnitude,
@@ -670,11 +666,7 @@ mod tests {
         const N: usize = 20;
         const H: usize = 16;
         const W: usize = 16;
-        let fb: &[u8] = include_bytes!("../../tests/golden/fixtures/dff_frames.bin");
-        let frames_u16: Vec<u16> = fb
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let frames_u16 = load_u16(include_bytes!("../../tests/golden/fixtures/dff_frames.npy"));
         let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
         let baseline = temporal_mean_baseline(&frames);
         let idx: Vec<usize> = (0..N).collect();
@@ -717,12 +709,8 @@ mod tests {
         const N: usize = 20;
         const H: usize = 16;
         const W: usize = 16;
-        let fb: &[u8] = include_bytes!("../../tests/golden/fixtures/dff_frames.bin");
-        let frames_u16: Vec<u16> = fb
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        let exp = load_f64(include_bytes!("../../tests/golden/fixtures/dff_f0_median.bin"));
+        let frames_u16 = load_u16(include_bytes!("../../tests/golden/fixtures/dff_frames.npy"));
+        let exp = load_f64(include_bytes!("../../tests/golden/fixtures/dff_f0_median.npy"));
         let frames = Array3::from_shape_fn((N, H, W), |(t, r, c)| frames_u16[t * H * W + r * W + c]);
 
         // Median is a selection + (even N) average of two middles — essentially

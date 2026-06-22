@@ -1,35 +1,50 @@
-//! Shared helpers for the in-crate golden tests. Golden fixtures are raw
-//! little-endian binary blobs (`*.bin`); this is the ONE place that decodes
-//! them and the one comparison helper, so the byte layout and the
-//! disagreement-count logic aren't re-derived in every `mod golden`.
+//! Shared helpers for the in-crate golden tests. Golden fixtures are
+//! self-describing NumPy `.npy` arrays (dtype + shape in the header); this is
+//! the ONE place that decodes them, so the byte layout isn't re-derived in every
+//! `mod golden`, and the dtype is VERIFIED on load (a fixture whose stored dtype
+//! doesn't match the requested type errors loudly instead of silently decoding
+//! garbage — the headerless `.bin` format could not catch that). Each loader
+//! returns the array flat in C (row-major) order; the generators write C-order.
 //!
 //! Gated `#[cfg(test)]` at the `mod` declaration in `lib.rs`, so none of this
 //! ships in a release build.
 
 use ndarray::Array2;
+use std::io::Cursor;
 
-/// Decode a little-endian `f64` blob (row-major) into a flat `Vec`.
+/// Decode a `.npy` array of the requested element type into a flat row-major
+/// `Vec`. Panics if the file isn't a valid `.npy` or its stored dtype doesn't
+/// match `T` (the dtype check the old raw-`.bin` decoders could not do).
+fn read_npy<T: npyz::Deserialize>(bytes: &[u8], ty: &str) -> Vec<T> {
+    let npy = npyz::NpyFile::new(Cursor::new(bytes))
+        .unwrap_or_else(|e| panic!("parse .npy fixture: {e}"));
+    npy.into_vec::<T>()
+        .unwrap_or_else(|e| panic!("read .npy fixture as {ty} (dtype mismatch?): {e}"))
+}
+
+/// Load an `f64` `.npy` fixture (row-major) as a flat `Vec`.
 pub(crate) fn load_f64(bytes: &[u8]) -> Vec<f64> {
-    bytes
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    read_npy(bytes, "f64")
 }
 
-/// Decode a little-endian `f32` blob (row-major) into a flat `Vec`.
+/// Load an `f32` `.npy` fixture (row-major) as a flat `Vec`.
 pub(crate) fn load_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    read_npy(bytes, "f32")
 }
 
-/// Decode a little-endian `i32` blob (row-major) into a flat `Vec`.
+/// Load an `i32` `.npy` fixture (row-major) as a flat `Vec`.
 pub(crate) fn load_i32(bytes: &[u8]) -> Vec<i32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    read_npy(bytes, "i32")
+}
+
+/// Load a `u16` `.npy` fixture (row-major) as a flat `Vec` (raw camera frames).
+pub(crate) fn load_u16(bytes: &[u8]) -> Vec<u16> {
+    read_npy(bytes, "u16")
+}
+
+/// Load a `u8` `.npy` fixture (row-major) as a flat `Vec` (boolean/label masks).
+pub(crate) fn load_u8(bytes: &[u8]) -> Vec<u8> {
+    read_npy(bytes, "u8")
 }
 
 /// Count pixels where a bool result array disagrees with a `u8` golden mask

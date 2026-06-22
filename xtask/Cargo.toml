@@ -15,3 +15,4 @@ description = "Dev-only task runner for OpenISI (oracle golden-fixture regenerat
 # the whole validation surface. The release build still never compiles xtask.
 [dependencies]
 agreement = { path = "../crates/agreement" }
+npyz = "0.9.1"

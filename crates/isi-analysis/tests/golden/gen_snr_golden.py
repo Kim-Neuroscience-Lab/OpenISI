@@ -141,9 +141,9 @@ def emit(case, n, dt, seed):
     dt_mean = period / (n - 1)
     noise_bins, max_bin = select_noise_bins(n, dt_mean, freq_stim)
 
-    np.ascontiguousarray(dff.astype('<f4')).tofile(os.path.join(FIX, f"snr_{case}_dff.bin"))
-    np.ascontiguousarray(ts.astype('<f8')).tofile(os.path.join(FIX, f"snr_{case}_ts.bin"))
-    np.ascontiguousarray(out.astype('<f8')).tofile(os.path.join(FIX, f"snr_{case}_out.bin"))
+    np.save(os.path.join(FIX, f"snr_{case}_dff.npy"), np.ascontiguousarray(dff.astype('<f4')))
+    np.save(os.path.join(FIX, f"snr_{case}_ts.npy"), np.ascontiguousarray(ts.astype('<f8')))
+    np.save(os.path.join(FIX, f"snr_{case}_out.npy"), np.ascontiguousarray(out.astype('<f8')))
 
     branch = "use-all" if len(list(range(5, max_bin + 1))) <= 20 else "subsample"
     print(f"[{case}] n={n} dt={dt} H={H} W={W}")

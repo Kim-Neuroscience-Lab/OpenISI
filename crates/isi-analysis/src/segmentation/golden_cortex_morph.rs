@@ -26,7 +26,7 @@ mod tests {
     use crate::segmentation::connectivity::dilation_patches2_allen;
     #[cfg(feature = "oracle_live")]
     use crate::segmentation::morphology::gaussian_smooth_f64;
-    use crate::test_support::{count_differing, load_f64, load_i32};
+    use crate::test_support::{count_differing, load_f64, load_i32, load_u8};
     use ndarray::Array2;
 
     const N: usize = 96;
@@ -38,14 +38,14 @@ mod tests {
     #[test]
     fn snlc_mag_threshold_roi_matches_overlaymaps() {
         use crate::methods::cortex_source::snlc_mag_threshold_roi;
-        let meta = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_meta.bin"));
+        let meta = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_meta.npy"));
         let (h, w) = (meta[0] as usize, meta[1] as usize);
         let (exponent, threshold) = (meta[2], meta[3]);
-        let inp = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_in.bin"));
+        let inp = load_f64(include_bytes!("../../tests/golden/fixtures/magroi_in.npy"));
         let magf = Array2::from_shape_fn((h, w), |(r, c)| inp[r * w + c]);
-        let expected: &[u8] = include_bytes!("../../tests/golden/fixtures/magroi_out.bin");
+        let expected = load_u8(include_bytes!("../../tests/golden/fixtures/magroi_out.npy"));
         let roi = snlc_mag_threshold_roi(&magf, exponent, threshold);
-        let d = count_differing(&roi, expected);
+        let d = count_differing(&roi, &expected);
         eprintln!("snlc_mag_threshold_roi vs overlaymaps.m: differing px = {d}");
         assert_eq!(d, 0, "mag-threshold ROI diverged from overlaymaps.m");
     }
@@ -174,10 +174,10 @@ mod tests {
     /// convention cannot flip a pixel — this pins the orchestration.
     #[test]
     fn snlc_cortex_endtoend_matches_octave() {
-        let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/cortex_full_vfs.bin"));
+        let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/cortex_full_vfs.npy"));
         assert_eq!(vfs_flat.len(), N * N);
         let vfs = Array2::from_shape_fn((N, N), |(r, c)| vfs_flat[r * N + c]);
-        let golden: &[u8] = include_bytes!("../../tests/golden/fixtures/cortex_full_golden.bin");
+        let golden = load_u8(include_bytes!("../../tests/golden/fixtures/cortex_full_golden.npy"));
 
         let ctx = CortexResolveContext {
             shape: (N, N),
@@ -192,7 +192,7 @@ mod tests {
         };
         let cortex = method.apply(&ctx).expect("resolve cortex");
 
-        let d = count_differing(&cortex, golden);
+        let d = count_differing(&cortex, &golden);
         eprintln!("  SNLC cortex end-to-end: differing px = {d}");
         assert_eq!(d, 0, "SNLC cortex orchestration diverges from Octave");
     }
@@ -407,10 +407,11 @@ mod tests {
         tol.assert("gaussian_smooth vs scipy.gaussian_filter", &of, &gf);
     }
 
-    /// Load a square uint8 fixture of explicit side `n` as a bool mask.
+    /// Load a square uint8 `.npy` fixture of explicit side `n` as a bool mask.
     fn load_mask_n(bytes: &[u8], n: usize) -> Array2<bool> {
-        assert_eq!(bytes.len(), n * n, "fixture size mismatch");
-        Array2::from_shape_fn((n, n), |(r, c)| bytes[r * n + c] != 0)
+        let v = load_u8(bytes);
+        assert_eq!(v.len(), n * n, "fixture size mismatch");
+        Array2::from_shape_fn((n, n), |(r, c)| v[r * n + c] != 0)
     }
 
     // (Cutover, objective 1) The frozen `skeletonize_matches_skimage` golden +
@@ -672,19 +673,20 @@ mod tests {
         let cases: [(&str, &[u8], &[u8]); 2] = [
             (
                 "tie",
-                include_bytes!("../../tests/golden/fixtures/largestcc_tie_input.bin"),
-                include_bytes!("../../tests/golden/fixtures/largestcc_tie_out.bin"),
+                include_bytes!("../../tests/golden/fixtures/largestcc_tie_input.npy"),
+                include_bytes!("../../tests/golden/fixtures/largestcc_tie_out.npy"),
             ),
             (
                 "clear",
-                include_bytes!("../../tests/golden/fixtures/largestcc_clear_input.bin"),
-                include_bytes!("../../tests/golden/fixtures/largestcc_clear_out.bin"),
+                include_bytes!("../../tests/golden/fixtures/largestcc_clear_input.npy"),
+                include_bytes!("../../tests/golden/fixtures/largestcc_clear_out.npy"),
             ),
         ];
         let mut total = 0usize;
         for (name, inp, golden) in &cases {
             let ours = keep_largest_component(&load_mask_n(inp, M));
-            let d = count_differing(&ours, golden);
+            let golden = load_u8(golden);
+            let d = count_differing(&ours, &golden);
             eprintln!("  keep_largest_component {name:6} differing px = {d}");
             total += d;
         }
@@ -747,14 +749,14 @@ mod tests {
             let v = load_f64(b);
             Array2::from_shape_fn((M, M), |(r, c)| v[r * M + c])
         };
-        let af = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_azi_fwd.bin"));
-        let ar = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_azi_rev.bin"));
-        let lf = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_alt_fwd.bin"));
-        let lr = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_alt_rev.bin"));
-        let exp: &[u8] = include_bytes!("../../tests/golden/fixtures/cortexrel_expected.bin");
+        let af = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_azi_fwd.npy"));
+        let ar = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_azi_rev.npy"));
+        let lf = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_alt_fwd.npy"));
+        let lr = ld(include_bytes!("../../tests/golden/fixtures/cortexrel_alt_rev.npy"));
+        let exp = load_u8(include_bytes!("../../tests/golden/fixtures/cortexrel_expected.npy"));
 
         let got = crate::segmentation::cortex_from_reliability(&af, &ar, &lf, &lr, 0.5);
-        let d = count_differing(&got, exp);
+        let d = count_differing(&got, &exp);
         eprintln!("cortex_from_reliability (regression-lock, `>=` rule): differing px = {d}");
         assert_eq!(
             d, 0,
@@ -773,10 +775,10 @@ mod tests {
     #[test]
     fn compute_eccentricity_v1_center_pins_current_allen_convention() {
         const M: usize = 64;
-        let av = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_azi.bin"));
-        let lv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_alt.bin"));
-        let labv = load_i32(include_bytes!("../../tests/golden/fixtures/v1ecc_labels.bin"));
-        let mapv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_rust_map.bin"));
+        let av = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_azi.npy"));
+        let lv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_alt.npy"));
+        let labv = load_i32(include_bytes!("../../tests/golden/fixtures/v1ecc_labels.npy"));
+        let mapv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_rust_map.npy"));
 
         let azi = Array2::from_shape_fn((M, M), |(r, c)| av[r * M + c]);
         let alt = Array2::from_shape_fn((M, M), |(r, c)| lv[r * M + c]);
@@ -815,11 +817,11 @@ mod tests {
     #[test]
     fn compute_eccentricity_snlc_matches_get_area_borders() {
         const M: usize = 64;
-        let av = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_azi.bin"));
-        let lv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_alt.bin"));
-        let labv = load_i32(include_bytes!("../../tests/golden/fixtures/v1ecc_labels.bin"));
-        let mapv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_snlc_map.bin"));
-        let cen = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_snlc_center.bin"));
+        let av = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_azi.npy"));
+        let lv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_alt.npy"));
+        let labv = load_i32(include_bytes!("../../tests/golden/fixtures/v1ecc_labels.npy"));
+        let mapv = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_snlc_map.npy"));
+        let cen = load_f64(include_bytes!("../../tests/golden/fixtures/v1ecc_snlc_center.npy"));
 
         let azi = Array2::from_shape_fn((M, M), |(r, c)| av[r * M + c]);
         let alt = Array2::from_shape_fn((M, M), |(r, c)| lv[r * M + c]);

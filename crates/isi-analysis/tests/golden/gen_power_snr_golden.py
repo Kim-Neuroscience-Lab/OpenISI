@@ -69,8 +69,8 @@ def main():
     movie = movie.astype(np.float32)
     keep = allen_power_mask(movie.astype(np.float64), CYCLES, SIGMA)
 
-    np.ascontiguousarray(movie, dtype="<f4").tofile(os.path.join(FIX, "powersnr_movie.bin"))
-    np.ascontiguousarray(keep.astype(np.uint8)).tofile(os.path.join(FIX, "powersnr_mask.bin"))
+    np.save(os.path.join(FIX, "powersnr_movie.npy"), np.ascontiguousarray(movie, dtype="<f4"))
+    np.save(os.path.join(FIX, "powersnr_mask.npy"), np.ascontiguousarray(keep.astype(np.uint8)))
 
     print(f"  N={N} H={H} W={W} cycles={CYCLES} sigma={SIGMA}")
     print(f"  kept pixels = {int(keep.sum())}/{H*W}")
