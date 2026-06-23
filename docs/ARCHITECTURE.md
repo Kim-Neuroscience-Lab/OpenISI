@@ -25,7 +25,9 @@ is reached by *exporting to* it. (Full rationale: `PRINCIPLES.md` → Architectu
 ```
 src-tauri  (the application: Tauri shell, IPC commands, acquisition orchestration,
             the camera/stimulus/analysis threads, the headless CLI)
-  ├── isi-analysis      the analysis pipeline + the .oisi working format (read/write)
+  ├── isi-analysis      the analysis pipeline; analysis-semantic .oisi read/write
+  │     │                  (re-exports the `oisi` crate, the app's path to the format)
+  │     ├── oisi             the .oisi working format: schema SSoT + HDF5 I/O + types + import
   │     └── openisi-params   typed config (ConfigStore) — shared with the app
   │           └── openisi-stimulus   stimulus design enums + display geometry
   ├── openisi-params    (also used directly by the app for the live ConfigStore)
@@ -60,10 +62,13 @@ DXGI vsync + QPC. A frozen `ConfigSnapshot` + the accumulated frames + the reali
 sweep schedule are written by `write_oisi` into the `.oisi` file (atomic temp-write +
 rename).
 
-**The `.oisi` working format** (HDF5, owned by `isi-analysis`) is the canonical store
-between stages: raw frames, stimulus schedule, multi-clock timing forensics,
-per-direction complex maps, results, and the provenance (typed config + software
-version). Its contract is [`oisi.schema.json`](oisi.schema.json) (the format SSoT).
+**The `.oisi` working format** (HDF5, owned by the dedicated light `oisi` crate —
+schema + I/O + types + import — which `isi-analysis` composes for analysis-semantic
+read/write) is the canonical store between stages: raw frames, stimulus schedule,
+multi-clock timing forensics, per-direction complex maps, results, and the provenance
+(typed config + software version). Its schema is declared once in the `oisi` crate
+and the contract [`oisi.schema.json`](oisi.schema.json) (the format SSoT) is generated
+from it.
 
 **Analysis** (`isi-analysis`): a demand-driven DAG over the pipeline stages
 (`ΔF/F → per-cycle DFT → cycle combine → phase smoothing → VFS → sign-map smoothing →

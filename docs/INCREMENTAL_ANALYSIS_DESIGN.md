@@ -86,7 +86,7 @@ intermediates. The cache writes back into the same file the results live in.
 
 ## The cut: restore the deepest matching tail, recompute the rest
 
-On each analysis the I/O boundary:
+On each analysis the restore cut (`incremental::restore`):
 
 1. Computes the wanted fingerprint for every stage, in topological order.
 2. Reads the stored `/analysis_state` fingerprints.
@@ -129,8 +129,11 @@ proper stage."
 - `crates/isi-analysis/src/pipeline/stages.rs` — the stage table; `graph.rs` derives
   the topological order.
 - `crates/isi-analysis/src/pipeline/fingerprint.rs` — the Merkle key over inputs.
-- `crates/isi-analysis/src/pipeline/orchestrator.rs` — the walk that skips restored
-  and seeded stages.
+- `crates/isi-analysis/src/incremental.rs` — `restore`: computes the per-stage
+  execute-vs-restore cut from the wanted vs. stored fingerprints and seeds the
+  blackboard with the restored stages' outputs (called by `analyze` in `lib.rs`).
+- `crates/isi-analysis/src/pipeline/orchestrator.rs` — `run`: the walk that skips
+  restored and seeded stages.
 - `crates/isi-analysis/src/io.rs` — `read_stage_fingerprint` /
   `write_stage_fingerprint` / `read_all_stage_fingerprints` over `/analysis_state`,
   and the `/cache` intermediate reads and writes.

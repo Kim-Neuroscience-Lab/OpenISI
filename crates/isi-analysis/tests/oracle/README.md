@@ -20,10 +20,11 @@ foundation*.
     `skimage.morphology.watershed` still exists (the reference's `Patch.split2`
     calls it; it was removed in skimage 0.19), so the vendored reference runs
     **natively — no shim**. See `nat/pyproject.toml` for the full pin derivation.
-  - `snlc/` — SNLC/Garrett MATLAB (`reference/ISI/*.m`), executed via **Octave
-    11.2.0** + the `image` package (`OPENISI_OCTAVE` → `octave-cli`; CI installs
-    `octave octave-image`). Live arms: getPatchSign, getPatchCoM, and the IPT
-    builtins watershed/bwdist/imimposemin.
+  - `snlc/` — SNLC/Garrett MATLAB (`reference/ISI/*.m`), executed via **genuine
+    MATLAB** + its Image Processing Toolbox (`OPENISI_MATLAB` → `matlab`; the bridge
+    `snlc/bridge.m` is invoked as `matlab -batch bridge`). Live arms: getPatchSign,
+    getPatchCoM, the IPT builtins watershed/bwdist/imimposemin, and the
+    `splitPatchesX`/`fusePatchesX` composites (MATLAB has `roifilt2` built in).
 - **The reference code is byte-pristine.** Nothing here modifies
   `reference/…`; the env is shaped to fit the reference, not the reverse.
 - **Live, not frozen.** `bridge.py` (per oracle) is a pure caller — it marshals
@@ -53,62 +54,45 @@ so a clean machine / CI reproduces the same result.
   the code's hard constraints (`np.int` ⇒ numpy<1.24) + the 3.1.0 era — defensible
   and reproducible, but not provably the authors' exact toolchain (which is
   unknowable). Pins live in `nat/pyproject.toml` / `nat/uv.lock`.
-- **Octave ≈ MATLAB, not identical — now executable under BOTH.** The SNLC reference
-  is MATLAB; the bridge (`snlc/bridge.m`) is dual-runtime — it runs under genuine
-  **MATLAB** (set `OPENISI_MATLAB`) *and* Octave (the open fallback, set
-  `OPENISI_OCTAVE`). Octave's IPT functions match MATLAB's to high precision but are
-  not bit-identical.
-  **OPEN FINDING (objective 5 — surfaced by running genuine MATLAB R2025b, which the
-  Octave approximation had HIDDEN):** `imclose(strel('disk',R,0))` on a
-  **border-touching** object differs **MATLAB vs Octave**; `imopen`, `imdilate(disk)`,
-  `imfill('holes')` are bit-identical between the two. **Exact rule, verified against
-  MATLAB R2025b:** MATLAB `imclose` = *pad the image with 0 by the SE radius → naive
-  `dilate→erode` → crop* (`imclose == imerode(imdilate(pad0(bw),se),se)` cropped,
-  diff 0; pad-with-1 is wrong). Octave's `imclose` (and our `binary_closing_disk`) do
-  the naive `dilate→erode` WITHOUT the border pad — so they agree with each other but
-  differ from genuine MATLAB **only within R px of the image edge**.
-  **RESOLVED — fixed to match the genuine MATLAB reference.** `binary_closing_disk` now
-  pads with 0 by the SE radius → dilate→erode → crop, bit-exact to MATLAB R2025b's
+- **`imclose` border — EXACT against genuine MATLAB (objective 5, RESOLVED).** The SNLC
+  reference is MATLAB; the bridge (`snlc/bridge.m`) runs under genuine **MATLAB** (set
+  `OPENISI_MATLAB`). `imclose(strel('disk',R,0))` on a **border-touching** object has a
+  border-pad subtlety the genuine reference defines exactly; `imopen`, `imdilate(disk)`,
+  `imfill('holes')` were never affected. **Exact rule, verified against MATLAB R2025b:**
+  MATLAB `imclose` = *pad the image with 0 by the SE radius → naive `dilate→erode` →
+  crop* (`imclose == imerode(imdilate(pad0(bw),se),se)` cropped, diff 0; pad-with-1 is
+  wrong). **RESOLVED — fixed to match the genuine MATLAB reference.** `binary_closing_disk`
+  now pads with 0 by the SE radius → dilate→erode → crop, bit-exact to MATLAB R2025b's
   `imclose`. The change is border-only, so it moves NO real result: the cortex_full
   orchestration golden, the R43 equivalence baseline, and the synthetic baseline are all
   unchanged (their cortex ROI is interior — verified, the suites stay green). The
-  `cortex_morphology` live test now passes under genuine MATLAB **exactly**; under the
-  Octave fallback it asserts the divergence is **confined to within R px of the edge**
-  (the documented Octave≈MATLAB `imclose` gap), so a real interior bug still fails.
-  OpenISI is now faithful to genuine MATLAB `imclose`, with Octave's border behaviour
-  honestly bounded — exactly the kind of divergence the genuine-MATLAB oracle exists to
-  catch (Octave alone had hidden it).
-- **Octave version: tolerance-based, not bit-pinned across versions.** The env is
-  version-pinned per host (dev: Octave **11.2.0**; CI: ubuntu-24.04 → Octave
-  **8.4.0**, recorded each run via `::notice`), but the two versions are NOT
-  bit-identical to each other. The genuine-oracle suite is GREEN on **both** — direct
-  evidence that the oracle gates are tolerance-based (device/version-independent
-  validity), not bit-exact. A future Octave that drifts the result past a per-method
-  tolerance would fail the gate loudly (the gate working), forcing a deliberate
-  re-pin — never a silent change. (A digest-locked `container:` Octave would pin the
-  exact patch version; ubuntu-24.04 fixes major/minor, which is what the tolerances
-  are grounded against.)
+  `cortex_morphology_matches_genuine_reference_live` test now passes under genuine MATLAB
+  **exactly**. OpenISI is faithful to genuine MATLAB `imclose` — exactly the kind of
+  border divergence the genuine-MATLAB oracle exists to catch.
+- **MATLAB version: tolerance-based, not bit-pinned.** The genuine MATLAB env is
+  version-pinned per host (dev: MATLAB **R2025b**, recorded each run via `::notice`).
+  The genuine-oracle suite is GREEN — and the gates are tolerance-based
+  (device/version-independent validity), not bit-exact. A future MATLAB that drifts the
+  result past a per-method tolerance would fail the gate loudly (the gate working),
+  forcing a deliberate re-pin — never a silent change.
 - **`splitPatchesX`/`fusePatchesX` — validated LIVE under genuine MATLAB (gap CLOSED
   2026-06-22).** These bundle `smoothPatchesX`, which calls `roifilt2` — a MATLAB
-  Image Processing Toolbox function ABSENT from Octave's `image` package
-  (`exist('roifilt2')==0`). That made them un-runnable *in Octave only*; it was never
-  a true irreducible gap, just an Octave limit. Genuine MATLAB (R2025b) HAS `roifilt2`,
-  and the `.m` gate their plotting on `figTag=0` (headless-safe), so they run live. The
-  test `split_fuse_match_genuine_snlc_matlab_live` runs genuine `splitPatchesX.m` then
+  Image Processing Toolbox function genuine MATLAB (R2025b) HAS built in. The `.m` gate
+  their plotting on `figTag=0` (headless-safe), so they run live. The test
+  `split_fuse_match_genuine_snlc_matlab_live` runs genuine `splitPatchesX.m` then
   `fusePatchesX.m` on a synthetic retinotopy scene (a patch reaching past the R=30°
   eccentricity limit so the split pass acts) and compares to our `split_patches_x` /
-  `fuse_patches_x`: **EXACT, 0 differing px for both.** MATLAB-only — the test skips
-  cleanly under Octave (`OPENISI_MATLAB` guard). The earlier `smpatch_*`/`spx_*`/`fpx_*`
-  frozen goldens (generated via a self-authored `roifilt2` SHIM — shim-contaminated)
-  stay DELETED, with `no_generator_uses_a_roifilt2_shim` guarding their return; the live
-  genuine-MATLAB test supersedes them. (`getMouseAreasX.m` remains the full GUI pipeline,
-  not headless-runnable; its end-to-end orchestration stays a regression-lock — but its
-  split/fuse building blocks are now live.) Gprocesskret's **no-smoothing** branch
-  (combine, delay, magS) needs no `roifilt2` and is live under both runtimes.
+  `fuse_patches_x`: **EXACT, 0 differing px for both.** The test skips cleanly when
+  `OPENISI_MATLAB` is unset (`oracle::snlc_skip` guard). The earlier `smpatch_*`/`spx_*`/
+  `fpx_*` frozen goldens (generated via a self-authored `roifilt2` SHIM —
+  shim-contaminated) stay DELETED, with `no_generator_uses_a_roifilt2_shim` guarding
+  their return; the live genuine-MATLAB test supersedes them. (`getMouseAreasX.m` remains
+  the full GUI pipeline, not headless-runnable; its end-to-end orchestration stays a
+  regression-lock — but its split/fuse building blocks are now live.) Gprocesskret's
+  **no-smoothing** branch (combine, delay, magS) needs no `roifilt2` and is live too.
 
-  This is the central lesson: Octave's limits are not the reference's limits. SNLC is
-  MATLAB code, so genuine MATLAB is the authoritative oracle; Octave is at most a
-  portable open cross-check (and can't run these composites at all).
+  SNLC is MATLAB code, so genuine MATLAB is the authoritative oracle: MATLAB R2025b
+  passes the full SNLC oracle suite locally.
 
 ## Divergence ledger
 
@@ -128,17 +112,17 @@ skipped cases.
 | `getSigmaArea` | NAT `Patch.getSigmaArea` | bit-identical incl. NaN cases | The audit *suspected* a NaN-handling divergence; the live oracle **disproved** it — ours propagates `0·NaN = NaN` (NaN outside the mask) exactly like genuine numpy. No divergence. |
 | `getVisualSpace` | NAT `Patch.getVisualSpace` | bit-identical (0 px) | Driven as the genuine class method; `VisualGrid` built to NAT's hardcoded ranges (alt [-40,60), azi [-20,120)) since our `derive_visual_grid` is a regression-lock OpenISI choice, not the oracle. |
 | `split_patch_from_ecc` | NAT `Patch.split2` (watershed branch) | patch count + order-free union identical | Driven as the genuine class method (variable-count patch dict). **Forced the env re-pin** that surfaced the skimage-0.19.3 anachronism (`sm.watershed` removed in 0.19) → re-pinned to skimage 0.18.3 / Python 3.9, skeletonize verified bit-identical so no existing result moved. |
-| `position_phasor_delay_subtracted` + `delay_map` | **SNLC** `Gprocesskret.m` (Octave) | combine phasor agree (4·ε_f32), delay agree (512·ε_f32) | Driven as the genuine function. **The live run exposed a transcription artifact:** the frozen golden generator fed `Gprocesskret`'s formula the *post-negation* angles directly, hiding its internal `ang = angle(-ang_input)` step. To drive the genuine `.m` faithfully we feed `-exp(i·θ)` so its internal negation recovers θ — then the genuine kmap/delay match. Combine compared as a phasor (wrap-safe); delay single-valued in (0,π]. |
-| `position_amplitude` | **SNLC** `Gprocesskret.m` `magS.hor` (Octave) | agree to f32 (rel 4·ε_f32) | `magS` is taken before the phase negation, so full complex fwd/rev fed directly. No-smoothing branch (no `roifilt2`). |
-| `interp2_spline` | Octave `interp2(...,'spline')` | agree to f64 (rel 64·ε_f64) | Library-primitive not-a-knot tensor-product cubic spline. |
-| `patch_com` | **SNLC** `getPatchCoM.m` (Octave) | centroid set identical (Tol abs 128·ε_f64) | Driven as the genuine `.m`; MATLAB `bwlabel` column-major vs our row-major → compared order-independently. Snap-correction path covered by the frozen fixture. |
-| `watershed_octave{4,8}` | Octave IPT `watershed(A,conn)` | bit-identical i32 labels | Library-primitive — Octave's own watershed; our wrapper mirrors it. |
-| `bwdist` | Octave IPT `bwdist` | identical to f32 (Octave returns single) | Library-primitive Euclidean DT. |
-| `imimposemin` | Octave IPT `imimposemin` | agree to f64 (64·ε_f64) | Library-primitive morphological reconstruction. |
-| `binary_{opening,closing,dilation}_disk`, `binary_fill_holes` | Octave IPT `imopen`/`imclose`/`imdilate`(`strel('disk',R,0)`)/`imfill('holes')` | bit-identical | Library-primitive cortex morphology; `strel('disk',R,0)` = exact Euclidean disk. |
-| `getPatchSign` (signs) | **SNLC** `getPatchSign` (Octave) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
+| `position_phasor_delay_subtracted` + `delay_map` | **SNLC** `Gprocesskret.m` (genuine MATLAB) | combine phasor agree (4·ε_f32), delay agree (512·ε_f32) | Driven as the genuine function. **The live run exposed a transcription artifact:** the frozen golden generator fed `Gprocesskret`'s formula the *post-negation* angles directly, hiding its internal `ang = angle(-ang_input)` step. To drive the genuine `.m` faithfully we feed `-exp(i·θ)` so its internal negation recovers θ — then the genuine kmap/delay match. Combine compared as a phasor (wrap-safe); delay single-valued in (0,π]. |
+| `position_amplitude` | **SNLC** `Gprocesskret.m` `magS.hor` (genuine MATLAB) | agree to f32 (rel 4·ε_f32) | `magS` is taken before the phase negation, so full complex fwd/rev fed directly. No-smoothing branch (no `roifilt2`). |
+| `interp2_spline` | MATLAB `interp2(...,'spline')` | agree to f64 (rel 64·ε_f64) | Library-primitive not-a-knot tensor-product cubic spline. |
+| `patch_com` | **SNLC** `getPatchCoM.m` (genuine MATLAB) | centroid set identical (Tol abs 128·ε_f64) | Driven as the genuine `.m`; MATLAB `bwlabel` column-major vs our row-major → compared order-independently. Snap-correction path covered by the frozen fixture. |
+| `watershed_meyer{4,8}` | MATLAB IPT `watershed(A,conn)` | bit-identical i32 labels | Library-primitive — MATLAB's own watershed; our wrapper mirrors it. |
+| `bwdist` | MATLAB IPT `bwdist` | identical to f32 (MATLAB returns single) | Library-primitive Euclidean DT. |
+| `imimposemin` | MATLAB IPT `imimposemin` | agree to f64 (64·ε_f64) | Library-primitive morphological reconstruction. |
+| `binary_{opening,closing,dilation}_disk`, `binary_fill_holes` | MATLAB IPT `imopen`/`imclose`/`imdilate`(`strel('disk',R,0)`)/`imfill('holes')` | bit-identical | Library-primitive cortex morphology; `strel('disk',R,0)` = exact Euclidean disk. |
+| `getPatchSign` (signs) | **SNLC** `getPatchSign` (genuine MATLAB) | region-wise identical (non-zero-mean) | **Documented deviation, zero-mean only:** MATLAB `sign(mean)=0` gives an *undefined* patch sign at exactly zero mean; ours takes a deterministic `+1` tie-break. Justified (a patch must get a sign). Separately: our `label_4conn` is row-major, MATLAB `bwlabel` column-major — different label *order*, identical signs; compared label-invariantly (per-pixel), so not a divergence. |
 | `watershed_from_markers` | `skimage.segmentation.watershed` (`connectivity=ones(3,3)`, `watershed_line=False`) | **smooth fields: bit-identical labels;** tie-heavy fields: completeness + label-set identical, per-pixel assignment diverges | **Documented irreducible difference (two valid watersheds).** On smooth elevation fields (the realistic `split2` input) ours = skimage exactly (`..._matches_genuine_skimage_live`). On an adversarial flat/tied scene ours diverges ~21 px (basin interiors included) — different flooding order (skimage = priority-queue age; ours = ascending-elevation + first-labelled neighbour). The `..._stress_..._live` test pins only the sound invariants (no spurious watershed-line 0s; unchanged label set). `Patch.split2`'s count+union check is insensitive to internal boundary placement, so `split_patch_from_ecc` still agrees. **Finding:** the retired frozen `ws_out.bin` golden matched ours but NOT the locked skimage 0.18.3 — a wrong-era fixture (generator referenced skimage 0.25); deleted, replaced by the live test. |
-| `SnlcAdaptiveSmoother` | **SNLC** `adaptiveSmoother.m` (Octave, `h = fspecial('gaussian',15,σ)`) | agree to f64 (rel 64·ε_f64) on re + im | Driven as the genuine `.m` live (no `roifilt2`, runs shim-free); drift = 225-tap `filter2` sum order + the local-variance division across runtimes. Migrated from a frozen genuine-run fixture to live (objective 6). |
+| `SnlcAdaptiveSmoother` | **SNLC** `adaptiveSmoother.m` (genuine MATLAB, `h = fspecial('gaussian',15,σ)`) | agree to f64 (rel 64·ε_f64) on re + im | Driven as the genuine `.m` live; drift = 225-tap `filter2` sum order + the local-variance division. Migrated from a frozen genuine-run fixture to live (objective 6). |
 
 *(Updated as each method migrates.)*
 
@@ -164,8 +148,8 @@ relabelled honestly, not claimed as live code oracles):
 | `snlc_mag_threshold_roi` (`…matches_overlaymaps`) | **Formula-pin** (`mag^1.1` → rescale [0,1] → `≥0.12`) | `overlaymaps.m`'s ROI block (lines 205-215) is **entirely commented-out dead code** inside a 56-plot GUI script that loads data by animal name — not executable. The formula is elementary arithmetic, grounded in the (dead) reference, not a runnable oracle. |
 | `keep_largest_component` (`…matches_snlc_argmax`) | **Regression-lock**; tie-break grounded in `max` first-index | `getMouseAreasX.m` is the full `figure`/`imagesc`/`contour` GUI pipeline (won't run headless); the largest-CC tie-break is MATLAB `max` returning the first index — a language guarantee, not a callable oracle. |
 | `polar_angle` (`…matches_snlc_atan2…`) | **Formula-pin** (`atan2(Δalt,Δazi)·180/π` about V1 centre) | `atan2` is a primitive; the label-scoped V1-centre logic is OpenISI's. No reference `.m`. |
-| `snlc_cortex_endtoend` | **Regression-lock** at the orchestration level | The full threshold→open→close→fill→dilate→largest-CC sequence is OpenISI's composition; **each primitive is validated live** (Octave IPT), but no single reference `.m` defines the end-to-end chain. |
-| `magnification_anisotropy_matches_snlc_getmagfactors` | **Formula-pin** on fixed gradients (`getMagFactors.m` post-`gradient` block, reproduced verbatim) | `getMagFactors.m` **does run shim-free in Octave** — but it bundles `kmaps → fft-gaussian-smooth (σ=3, full-image) → gradient → anisotropy/jacobian` as one inseparable call that returns only the final maps, never its internal gradients. The op under test (`magnification_anisotropy`) takes *gradients*; there is no separable reference for "anisotropy from given gradients". A live **end-to-end** comparison is also not faithful to OpenISI's op: the bundled smoothing **dominates** the result (measured on varied synthetic kmaps: feeding the raw-kmap gradients instead of the smoothed ones moves interior distortion by up to **0.83** on a [0,0.94] range and the axis by **>110°**), and OpenISI deliberately replaces getMagFactors' kmap-smoothing with amplitude-weighted **phasor** smoothing (wrap-stable) — so the genuine end-to-end and OpenISI's pipeline magnification are *different ops by design*. **Irreducible for the isolated op** (objective 8); the post-gradient block is reproduced verbatim and pinned on fixed gradients, while the smoothing/gradient stages OpenISI *does* use are validated live separately (`gaussian_smooth` vs `scipy.gaussian_filter`; gradients via the determinant-map live test). A genuine live oracle is only reachable by adding a *non-pipeline* getMagFactors-faithful variant (fft-smooth + plain gradient) and validating that end-to-end — recorded as a scoped option, not built, since it validates a path OpenISI doesn't run. |
+| `snlc_cortex_endtoend` | **Regression-lock** at the orchestration level | The full threshold→open→close→fill→dilate→largest-CC sequence is OpenISI's composition; **each primitive is validated live** (genuine MATLAB IPT), but no single reference `.m` defines the end-to-end chain. |
+| `magnification_anisotropy_matches_snlc_getmagfactors` | **Formula-pin** on fixed gradients (`getMagFactors.m` post-`gradient` block, reproduced verbatim) | `getMagFactors.m` **does run under genuine MATLAB** — but it bundles `kmaps → fft-gaussian-smooth (σ=3, full-image) → gradient → anisotropy/jacobian` as one inseparable call that returns only the final maps, never its internal gradients. The op under test (`magnification_anisotropy`) takes *gradients*; there is no separable reference for "anisotropy from given gradients". A live **end-to-end** comparison is also not faithful to OpenISI's op: the bundled smoothing **dominates** the result (measured on varied synthetic kmaps: feeding the raw-kmap gradients instead of the smoothed ones moves interior distortion by up to **0.83** on a [0,0.94] range and the axis by **>110°**), and OpenISI deliberately replaces getMagFactors' kmap-smoothing with amplitude-weighted **phasor** smoothing (wrap-stable) — so the genuine end-to-end and OpenISI's pipeline magnification are *different ops by design*. **Irreducible for the isolated op** (objective 8); the post-gradient block is reproduced verbatim and pinned on fixed gradients, while the smoothing/gradient stages OpenISI *does* use are validated live separately (`gaussian_smooth` vs `scipy.gaussian_filter`; gradients via the determinant-map live test). A genuine live oracle is only reachable by adding a *non-pipeline* getMagFactors-faithful variant (fft-smooth + plain gradient) and validating that end-to-end — recorded as a scoped option, not built, since it validates a path OpenISI doesn't run. |
 
 The cross-cycle `reliability` coherence is the Engel 1994 / Zhuang 2017 **published
 formula** computed via numpy primitives (`sum`/`abs`) — a formula pin, labelled as
@@ -213,7 +197,7 @@ library, which they should compute *live* (condition 6), not the named reference
     - `keep_largest_component` (largest-CC tie-break) — the genuine reference is
       **SNLC `getMouseAreasX.m`** `[~,id]=max(S)` (first-max), a composition
       (label → component sizes → argmax → select), not one library call. It belongs
-      to the **SNLC/Octave live batch** (executed against the real `.m` via the
+      to the **SNLC/genuine-MATLAB live batch** (executed against the real `.m` via the
       `snlc/` bridge), not a numpy/scipy primitive.
 
 ## Reproducibility (condition 7)
@@ -224,8 +208,9 @@ the identical environment on any machine. The *execution* on a genuinely second
 machine is the CI workflow **`.github/workflows/oracle.yml`**, which on a clean
 GitHub runner installs `uv`, materialises the NAT env from the committed lock with
 `uv sync --locked` (fails if the lock is stale → proves "from the committed lock
-alone"), installs Octave + the image package, and runs the live suite
-(`cargo test --features oracle_live`). That workflow IS the second-machine
-reproducibility gate; it runs off the dev host on every change to the oracle/
-harness/reference files.
+alone") and runs the live NAT suite (`cargo test --features oracle_live`). The SNLC
+arm requires genuine MATLAB (`OPENISI_MATLAB`); where MATLAB is unavailable the SNLC
+tests skip cleanly (`oracle::snlc_skip`) and the genuine MATLAB R2025b run is the
+authoritative local gate. The NAT workflow IS the second-machine reproducibility
+gate; it runs off the dev host on every change to the oracle/harness/reference files.
 

@@ -24,12 +24,46 @@
 //! boundary, and a shared *dev-dependency* crate keeps the utility out of the
 //! shipping library.
 //!
-//! ## What this is NOT for
+//! ## Why a grounded tolerance is the scientific load-bearing piece
 //!
-//! *Domain* assertions — "VFS recovers to <5% and clearly diverges by >0.5",
-//! "threshold ∈ [0.1, 1.0]" — are claims about the science, not agreement
-//! tolerances. Keep those as plain asserts; forcing them through this crate
-//! would be false precision.
+//! This is not hygiene. The pipeline's job is to be an *instrument* — to separate
+//! a real effect from its own numerical noise (see `docs/PRINCIPLES.md` →
+//! Scientific motivation). That separating line **is** the tolerance: `K·ε` is the
+//! operational definition of "a real difference" — below it, two results are
+//! numerically identical; orders of magnitude above it, the difference is a
+//! genuine, attributable effect (a method fork, a bug, real biology). A loose
+//! eyeballed bound dissolves that line: a test that passes a value wrong by 10⁶×
+//! the floor validates nothing. Grounding is therefore a *correctness* property,
+//! and it makes tests strictly tighter — stronger, not more ceremonious.
+//!
+//! ## The one rule, and what it does NOT mean
+//!
+//! A tolerance is the maximum discrepancy consistent with *correct* code; every
+//! bound must name its error source and be **derived** from it, never eyeballed.
+//! There are exactly four sources, each with its grounding:
+//!
+//! 1. **Exact** — discrete/by-construction (masks, labels, counts). Bound `0`
+//!    ([`Tol::exact`]).
+//! 2. **Forward rounding** — a math-*exact* answer separated from the computed one
+//!    only by IEEE-754 roundoff (a normalization that should sum to 1; an algebraic
+//!    identity; a cos/sin round-trip). `K·ε`, `K` from the op count.
+//! 3. **Cross-implementation / device divergence** — two *correct* implementations
+//!    (ours vs scipy; CPU vs GPU; f32 backend vs f64 reference) disagreeing by
+//!    op-order / libm / reduction differences. `K·ε` at the relevant precision,
+//!    `K` **measured** from observed drift (e.g. the freshness gate's `K=64`).
+//! 4. **Algorithmic / statistical approximation** — a *genuinely approximate*
+//!    answer (an iterative tolerance, a discretization bias, a noisy estimator).
+//!    **Not** ε-grounded — forcing it through `Tol` would be false precision — but
+//!    **still not a bare literal**: its bound is *derived from the method or
+//!    measured over trials, with the derivation stated at the call site.*
+//!
+//! This crate mechanizes 1–3 (all `K·ε` or exact); they differ only in whether `K`
+//! is analytic (forward rounding) or measured (cross-impl). A *domain* claim like
+//! "VFS recovers to <5% and clearly diverges by >0.5" is the fourth kind: keep it a
+//! plain assert — but its number is a stated scientific bound, not a guess. The
+//! trap (which this doc previously invited) is mistaking a *forward-rounding* check
+//! — "the kernel sums to 1 up to roundoff", "this identity holds" — for a domain
+//! claim: that is float precision and belongs in `K·ε` here, not a loose literal.
 
 use approx::{abs_diff_eq, relative_eq};
 

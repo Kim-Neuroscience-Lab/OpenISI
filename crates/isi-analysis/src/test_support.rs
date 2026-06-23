@@ -271,16 +271,29 @@ pub(crate) mod oracle {
         nat_raw(func, inputs, params).iter().map(OracleOut::f64).collect()
     }
 
-    fn octave() -> String {
-        std::env::var("OPENISI_OCTAVE").unwrap_or_else(|_| "octave-cli".to_string())
+    /// Skip-guard for SNLC live oracle tests. Returns `true` (after emitting a
+    /// SKIP line) when `OPENISI_MATLAB` is unset, so a test can early-`return`.
+    /// SNLC is MATLAB code; genuine MATLAB is the only authoritative reference, so
+    /// these tests run only where MATLAB is available (the self-hosted CI runner /
+    /// a developer's licensed box). Use as: `if oracle::snlc_skip("name") { return; }`.
+    pub(crate) fn snlc_skip(test: &str) -> bool {
+        if std::env::var("OPENISI_MATLAB").is_err() {
+            eprintln!("SKIP {test}: needs genuine MATLAB (set OPENISI_MATLAB to the matlab executable)");
+            true
+        } else {
+            false
+        }
     }
 
     /// Call a genuine function in the **SNLC / Garrett** oracle env (`tests/oracle/
-    /// snlc/`), executed via Octave against the real `reference/ISI/*.m`. Returns
-    /// the reference's f64 outputs. (Octave≈MATLAB is the flagged irreducible gap.)
+    /// snlc/`), executed via **genuine MATLAB** against the real `reference/ISI/*.m`.
+    /// SNLC is MATLAB code, so genuine MATLAB is the authoritative reference — set
+    /// `OPENISI_MATLAB` to the matlab executable. Callers gate via [`snlc_skip`] and
+    /// skip when it is unset, so this is only reached with MATLAB available.
     pub(crate) fn snlc(func: &str, inputs: &[Array2<f64>], params: &[(&str, f64)]) -> Vec<Array2<f64>> {
+        let matlab_exe = std::env::var("OPENISI_MATLAB")
+            .expect("OPENISI_MATLAB must be set to run the SNLC oracle (genuine MATLAB)");
         let snlc_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/oracle/snlc");
-        let bridge = snlc_dir.join("bridge.m");
         let work = std::env::temp_dir().join(format!(
             "openisi_oracle_snlc_{}_{}",
             std::process::id(),
@@ -314,54 +327,25 @@ pub(crate) mod oracle {
         let req_path = work.join("req.json");
         std::fs::write(&req_path, serde_json::to_vec(&req).unwrap()).expect("write request");
 
-        // The SAME bridge.m runs under genuine MATLAB (OPENISI_MATLAB set — closes
-        // the Octave≈MATLAB gap) or Octave (the open fallback). MATLAB's `-batch`
-        // stdout can carry startup noise, so under MATLAB the bridge writes
-        // `response.json` and we read that; the Octave path reads stdout unchanged.
-        let resp: serde_json::Value = if let Ok(matlab_exe) = std::env::var("OPENISI_MATLAB") {
-            // Two invocation forms: a locally-licensed `matlab` takes `-batch <stmt>`;
-            // `matlab-batch` (installed by matlab-actions/setup-matlab for CI) takes
-            // the statement directly and adds `-batch` itself, licensing via
-            // MLM_LICENSE_TOKEN (a free public-repo batch token, set as a secret).
-            let is_batch = std::path::Path::new(&matlab_exe)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.contains("matlab-batch"));
-            let mut cmd = Command::new(&matlab_exe);
-            cmd.current_dir(&snlc_dir).env("OPENISI_ORACLE_REQ", &req_path);
-            if is_batch {
-                cmd.arg("bridge");
-            } else {
-                cmd.args(["-batch", "bridge"]);
-            }
-            let out = cmd
-                .output()
-                .expect("spawn matlab — set OPENISI_MATLAB to the matlab (or matlab-batch) executable");
-            assert!(
-                out.status.success(),
-                "SNLC MATLAB bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr),
-            );
-            let resp_bytes = std::fs::read(work.join("response.json"))
-                .expect("read MATLAB bridge response.json");
-            serde_json::from_slice(&resp_bytes).expect("parse MATLAB response.json")
-        } else {
-            let out = Command::new(octave())
-                .args(["--norc", "-q"])
-                .arg(&bridge)
-                .arg(&req_path)
-                .output()
-                .expect("spawn octave-cli — put it on PATH or set OPENISI_OCTAVE");
-            assert!(
-                out.status.success(),
-                "SNLC oracle bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr),
-            );
-            serde_json::from_slice(&out.stdout).expect("parse bridge stdout JSON")
-        };
-        // Octave's jsonencode emits a single struct as an object, an array of structs
+        // bridge.m runs under genuine MATLAB. `matlab -batch` stdout can carry startup
+        // noise, so the bridge writes `response.json` (in out_dir) and we read that.
+        let out = Command::new(&matlab_exe)
+            .current_dir(&snlc_dir)
+            .env("OPENISI_ORACLE_REQ", &req_path)
+            .args(["-batch", "bridge"])
+            .output()
+            .expect("spawn matlab — set OPENISI_MATLAB to the matlab executable");
+        assert!(
+            out.status.success(),
+            "SNLC MATLAB bridge failed for {func:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let resp_bytes =
+            std::fs::read(work.join("response.json")).expect("read MATLAB bridge response.json");
+        let resp: serde_json::Value =
+            serde_json::from_slice(&resp_bytes).expect("parse MATLAB response.json");
+        // MATLAB's jsonencode emits a single struct as an object, an array of structs
         // as an array — normalise to a slice.
         let outs_val = &resp["outputs"];
         let outs: Vec<&serde_json::Value> = match outs_val {

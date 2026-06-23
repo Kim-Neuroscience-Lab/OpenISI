@@ -2,12 +2,17 @@
 //!
 //! The project validates its Rust pipeline against the field's reference
 //! implementations (the "oracles"): SNLC/Garrett MATLAB (`reference/ISI`, run
-//! under Octave) and Allen/Zhuang Python (`reference/corticalmapping`,
+//! under genuine MATLAB) and Allen/Zhuang Python (`reference/corticalmapping`,
 //! transcribed in the `gen_*_golden.py` scripts). Each oracle is run **offline**
 //! to emit committed golden fixtures (`crates/isi-analysis/tests/golden/
 //! fixtures/*.bin`); the test suite then validates against those committed
 //! blobs, so a normal `cargo test` — and the user/release build — needs no
-//! MATLAB/Octave/Python at all.
+//! MATLAB/Python at all.
+//!
+//! The two `.m` generators (`gen_cortex_full`, `gen_magroi`) call MATLAB IPT, so
+//! regenerating them needs genuine MATLAB (`OPENISI_MATLAB`). When MATLAB is
+//! absent they are SKIPPED with a logged notice (the Python fixtures still
+//! regenerate), and their freshness is covered by the self-hosted MATLAB CI job.
 //!
 //! This binary is the **dev-only** bridge to those oracles, so regeneration is
 //! one command instead of hand-running ~40 scripts and hunting for interpreter
@@ -23,14 +28,14 @@
 //!                                  #   the figure reflects the current code —
 //!                                  #   e.g. render_oracle_state ← oracle_state)
 //!
-//! Interpreter discovery is declared, not guessed: `OPENISI_OCTAVE` /
+//! Interpreter discovery is declared, not guessed: `OPENISI_MATLAB` /
 //! `OPENISI_PYTHON` env vars override; otherwise the PATH and a small set of
 //! known install locations are tried, with an actionable error if absent. See
 //! `tools/golden/README.md` for one-time toolchain setup (`requirements.txt`).
 //!
 //! Build separation: `xtask` is its own workspace member that nothing depends
 //! on, so `cargo build -p isi-analysis` / the Tauri app never compile it and
-//! never acquire a Python/Octave dependency.
+//! never acquire a Python/MATLAB dependency.
 
 use agreement::{Eps, Tol};
 use std::collections::BTreeMap;
@@ -72,7 +77,9 @@ tasks:
   help                         show this message.
 
 toolchain (declared, not guessed):
-  OPENISI_OCTAVE   path to octave-cli (else PATH / known install dirs)
+  OPENISI_MATLAB   path to the matlab executable (else PATH / known install dirs).
+                   Only needed to regenerate the .m generators (cortex_full,
+                   magroi); absent ⇒ those are skipped with a notice.
   OPENISI_PYTHON   path to python with tools/golden/requirements.txt installed
                    (else PATH: python3, python)
 ";
@@ -134,15 +141,47 @@ fn resolve_interpreter(
     ))
 }
 
-fn octave() -> Result<String, String> {
-    resolve_interpreter(
-        "OPENISI_OCTAVE",
-        &["octave-cli", "octave"],
-        &[
-            // Windows default install (versioned dir varies; common cases).
-            "C:/Users/ISI User/AppData/Local/Programs/GNU Octave/Octave-11.2.0/mingw64/bin/octave-cli.exe",
-        ],
-    )
+/// True if a bare executable `prog` resolves on PATH, WITHOUT executing it.
+/// (MATLAB has no portable `--version` flag and an unknown flag can launch the
+/// GUI, so the generic execute-probe in `resolve_interpreter` is unsafe for it.)
+fn exists_on_path(prog: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".bat", ".cmd"]
+    } else {
+        &[""]
+    };
+    std::env::split_paths(&paths)
+        .any(|dir| exts.iter().any(|e| dir.join(format!("{prog}{e}")).is_file()))
+}
+
+/// Resolve genuine MATLAB (the SNLC oracle's only faithful interpreter). Declared,
+/// not guessed: `OPENISI_MATLAB` wins, else a bare `matlab` on PATH, else a known
+/// install dir. `Err` (MATLAB absent) drives the `.m`-generator skip in
+/// `cmd_goldens` — we never probe by executing (no portable version flag).
+fn matlab() -> Result<String, String> {
+    if let Ok(p) = std::env::var("OPENISI_MATLAB") {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    if exists_on_path("matlab") {
+        return Ok("matlab".to_string());
+    }
+    for p in &[
+        // Windows default install (versioned dir varies; common cases).
+        "C:/Program Files/MATLAB/R2025b/bin/matlab.exe",
+        "C:/Program Files/MATLAB/R2025a/bin/matlab.exe",
+    ] {
+        if Path::new(p).exists() {
+            return Ok((*p).to_string());
+        }
+    }
+    Err("could not locate genuine MATLAB. Set OPENISI_MATLAB to the matlab \
+         executable, or put `matlab` on PATH (only the .m generators need it)."
+        .to_string())
 }
 
 fn python() -> Result<String, String> {
@@ -211,7 +250,9 @@ fn force_utf8_stdio(cmd: &mut Command) {
 }
 
 /// Run one generator with its language's interpreter, from the golden dir.
-fn run_generator(gen: &Generator, py: &str, oct: &str) -> Result<(), String> {
+/// `matlab` is `None` only for a pure-Python run set; an `.m` generator is never
+/// reached with `matlab == None` (the caller skips it).
+fn run_generator(gen: &Generator, py: &str, matlab: Option<&str>) -> Result<(), String> {
     let mut cmd = match gen.ext.as_str() {
         "py" => {
             let mut c = Command::new(py);
@@ -220,8 +261,11 @@ fn run_generator(gen: &Generator, py: &str, oct: &str) -> Result<(), String> {
             c
         }
         "m" => {
-            let mut c = Command::new(oct);
-            c.arg("--norc").arg(&gen.path);
+            let exe = matlab.expect("an .m generator must not be run without MATLAB");
+            // `matlab -batch <stem>` runs the script in the cwd (set below) with no
+            // desktop/splash and a non-zero exit on any uncaught error.
+            let mut c = Command::new(exe);
+            c.args(["-batch", &gen.stem]);
             c
         }
         other => return Err(format!("unsupported generator extension {other:?}")),
@@ -294,25 +338,48 @@ fn cmd_goldens(args: &[String]) -> Result<(), String> {
 
     let gens = enumerate_generators(filter)?;
     let py = python()?;
-    let oct = octave()?;
+    // MATLAB is optional — only the two `.m` generators need it. Resolve it lazily so
+    // a host without MATLAB can still regenerate every Python fixture; the `.m` ones
+    // are then SKIPPED with a notice (their freshness is the self-hosted MATLAB CI
+    // job's responsibility). Never guessed: env override / PATH / known install dir.
+    let has_m = gens.iter().any(|g| g.ext == "m");
+    let matlab = if has_m { matlab().ok() } else { None };
     println!(
-        "xtask goldens: {} generator(s){}\n  python = {py}\n  octave = {oct}",
+        "xtask goldens: {} generator(s){}\n  python = {py}\n  matlab = {}",
         gens.len(),
         if check { " [--check: sandbox + diff]" } else { "" },
+        matlab.as_deref().unwrap_or("(absent — .m generators skipped)"),
     );
 
     // For --check, snapshot first so we can diff and restore.
     let before = if check { Some(snapshot_fixtures()?) } else { None };
 
     let mut failures = Vec::new();
+    let mut skipped = Vec::new();
     for gen in &gens {
-        match run_generator(gen, &py, &oct) {
+        if gen.ext == "m" && matlab.is_none() {
+            println!("  ⊘ {} (skipped: genuine MATLAB not available)", gen.stem);
+            skipped.push(gen.stem.clone());
+            continue;
+        }
+        match run_generator(gen, &py, matlab.as_deref()) {
             Ok(()) => println!("  ✓ {}", gen.stem),
             Err(e) => {
                 println!("  ✗ {}", gen.stem);
                 failures.push(e);
             }
         }
+    }
+    if !skipped.is_empty() {
+        // Surface the skip loudly — a silently-unchecked fixture must never read as
+        // "fresh". Their freshness is covered by the self-hosted MATLAB CI job.
+        println!(
+            "\nNOTE: {} .m generator(s) skipped (no genuine MATLAB): {}.\n  \
+             Their fixtures were NOT regenerated on this host — set OPENISI_MATLAB \
+             to check them locally, else the self-hosted MATLAB CI job covers them.",
+            skipped.len(),
+            skipped.join(", "),
+        );
     }
 
     if let Some(before) = before {
@@ -388,8 +455,9 @@ fn cmd_goldens(args: &[String]) -> Result<(), String> {
 //
 // The freshness gate regenerates every fixture on the CURRENT toolchain and
 // compares it to the committed copy. That copy was produced on the dev host, but
-// CI regenerates on a different toolchain (ubuntu apt-Octave / Python), so float
-// results differ at the bit level by legitimate cross-toolchain rounding — a
+// CI regenerates on a different toolchain (hosted Python; genuine MATLAB for the
+// two .m generators), so float results differ at the bit level by legitimate
+// cross-toolchain rounding — a
 // byte-identity check would be a device-identity check, not a validity check. So
 // the comparison goes through the same `agreement::Tol` the goldens and the
 // equivalence harness use.

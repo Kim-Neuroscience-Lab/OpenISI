@@ -111,17 +111,20 @@ mod tests {
     }
 
     /// **Live genuine-oracle, SNLC**: our `SnlcAdaptiveSmoother` vs the GENUINE
-    /// Octave `adaptiveSmoother.m` (`h = fspecial('gaussian', 15, sigma)`),
-    /// executed live. The genuine `.m` is the oracle; the bridge only calls it
-    /// (no `roifilt2`, so it runs shim-free). A structured complex map with
-    /// high-frequency texture (the retired generator's exact scene) makes the
-    /// adaptive, local-variance-aware filter do visibly non-uniform work. f64
-    /// throughout; drift is the 225-tap filter2 sum order + the variance division
-    /// across runtimes (≈30·ε_f64 → K=64). Gated behind `oracle_live`.
+    /// `adaptiveSmoother.m` (`h = fspecial('gaussian', 15, sigma)`), executed live
+    /// under MATLAB. The genuine `.m` is the oracle; the bridge only calls it. A
+    /// structured complex map with high-frequency texture (the retired generator's
+    /// exact scene) makes the adaptive, local-variance-aware filter do visibly
+    /// non-uniform work. f64 throughout; drift is the 225-tap filter2 sum order +
+    /// the variance division across runtimes (≈30·ε_f64 → K=64). Gated behind
+    /// `oracle_live`.
     #[cfg(feature = "oracle_live")]
     #[test]
     fn adaptive_smoother_matches_genuine_snlc_live() {
         use crate::test_support::oracle;
+        if oracle::snlc_skip("adaptive_smoother_matches_genuine_snlc_live") {
+            return;
+        }
         const H: usize = 40;
         const W: usize = 48;
         let sigma = 2.0;

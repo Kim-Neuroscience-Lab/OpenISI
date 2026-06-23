@@ -261,7 +261,7 @@ Open Decisions.
 
 Every author/year-named method is validated by a golden test against its reference
 implementation, across **both** reference ecosystems — Python/scipy
-(`tests/golden/*.py`) and MATLAB via Octave (`tests/golden/*.m`) — with in-crate
+(`tests/golden/*.py`) and genuine MATLAB (`tests/golden/*.m`) — with in-crate
 golden tests in `compute/golden_vfs.rs` and `segmentation/golden_cortex_morph.rs` and
 binary fixtures in `tests/golden/fixtures/`. The net both proves a claimed
 reproduction is faithful and pins the exact defaults the presets need; the live
@@ -274,49 +274,49 @@ after a source must reach **✅ golden** (Tier A) or a documented Tier-B
 validation, or drop the attribution.
 
 Legend: ✅ golden · 🟡 partial · ⬜ gap · — n/a (trivial / our own).
-**Tier A** = runnable reference (Python/scipy, or MATLAB via Octave) → bit/precision golden.
+**Tier A** = runnable reference (Python/scipy, or genuine MATLAB) → bit/precision golden.
 **Tier B** = paper-only → transcription + property/analytic tests + shipped reference outputs (e.g. SNLC `Example Maps` R43).
 
 | stage | method | source | ref/tier | status |
 |---|---|---|---|---|
 Status names the actual validating test (run `cargo test -p isi-analysis`; SNLC
-goldens need the Octave harness, `cargo xtask goldens`). Reconciled against the
+live oracle tests need genuine MATLAB via `OPENISI_MATLAB`). Reconciled against the
 test suite 2026-06-18 — every prior `⬜`/`NOT PORTED` mark was **stale**.
 
 | stage | method | source | ref/tier | status (test) |
 |---|---|---|---|---|
-| complex_maps (F1 DFT) | single-bin DFT | Kalatsky-Stryker 2003 | numpy / A | ✅ `dft_projection_matches_numpy_fft_bin1` |
+| complex_maps (F1 DFT) | single-bin DFT | Kalatsky-Stryker 2003 | numpy / A | ✅ `dft_projection_matches_genuine_numpy_fft_live` |
 | response_normalization | `OpenIsiFractionalDff` | OpenISI default `(F−F0)/F0` | — | — (default; ≈ Allen `normalize_movie` dFoverF) |
 | response_normalization | `OracleAbsoluteDeltaF` | SNLC `Gf1image.m` 72 / Allen `generatePhaseMap2` (`F−F0`, no divide) | internal / A | ✅ `response_normalization_absolute_vs_fractional_phase_equivalence` (`F1_frac·F0 == F1_abs`, 64·ε_f32); `1/F0` amplitude divergence documented |
 | rectification | `None` | Allen `isRectify=False` (default) | — | — |
-| rectification | `AllenZhuang2017ClipNegative` | Allen `HighLevel.getMappingMovies` 607-612 (`isRectify=True`) | Octave/internal / A | ✅ `clip_negative_matches_allen_half_wave_rectify` (0 diff vs `max(x,0)`) |
+| rectification | `AllenZhuang2017ClipNegative` | Allen `HighLevel.getMappingMovies` 607-612 (`isRectify=True`) | internal / A | ✅ `clip_negative_matches_allen_half_wave_rectify` (0 diff vs `max(x,0)`) |
 | direction_smoothing | `None` | OpenISI default (smooth post-combine) | — | — |
-| direction_smoothing | `SnlcAdaptiveSmoother` | SNLC `adaptiveSmoother.m` + `Gprocesskret.m` 36-41 (pre-combine, per-direction) | Octave / A | ✅ `adaptive_smoother_matches_snlc_octave` (64·ε_f64) |
-| cycle_combine | `KalatskyStryker2003DelaySubtraction` | `Gprocesskret.m` 88-99 | Octave / A | ✅ `kalatsky_combine_matches_snlc_gprocesskret` (2.6e-7) |
+| direction_smoothing | `SnlcAdaptiveSmoother` | SNLC `adaptiveSmoother.m` + `Gprocesskret.m` 36-41 (pre-combine, per-direction) | MATLAB / A | ✅ `adaptive_smoother_matches_genuine_snlc_live` (64·ε_f64) |
+| cycle_combine | `KalatskyStryker2003DelaySubtraction` | `Gprocesskret.m` 88-99 | MATLAB / A | ✅ `combine_and_delay_match_genuine_snlc_gprocesskret_live` (2.6e-7) |
 | cycle_combine | `UnweightedCycleAverage` | not published (debug fallback) | — | — |
 | cycle_average | `SimpleComplexAverage` | Allen `get_average_movie` / SNLC `Gf1image` (DFT-linearity) | algebraic / A | ✅ `simple_complex_average_equals_dft_of_averaged_frames` |
 | cycle_average | `PhaseLockedAverage` | OpenISI (no oracle) | — | — (property: `phase_locked_average_preserves_amplitude_under_global_phase_drift`) |
-| phase_smoothing | `SnlcAmpWeightedPhasor` | phase ≡ SNLC complex smooth; amplitude (normalized convolution) is an OpenISI refinement with NO oracle | Octave / A (phase) | 🟡 phase-pinned `amp_weighted_phase_equals_snlc_complex_smoothing`; amplitude is ours by design |
+| phase_smoothing | `SnlcAmpWeightedPhasor` | phase ≡ SNLC complex smooth; amplitude (normalized convolution) is an OpenISI refinement with NO oracle | MATLAB / A (phase) | 🟡 phase-pinned `amp_weighted_phase_equals_snlc_complex_smoothing`; amplitude is ours by design |
 | phase_smoothing | `AllenZhuang2017PositionGaussian` | Allen `_getSignMap` `gaussian_filter(positionMap)` (RM.py) | scipy / A | ✅ `allen_position_gaussian_matches_scalar_gaussian_on_phase` |
-| vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≡ Allen `visualSignMap` on smooth input, stabler at wraps (RM.py 446-478) | Python / A | ✅ `vfs_matches_allen_visual_sign_map_on_smooth_input` (+ `…stable_across_phase_wraps…`) |
-| sign_map_smoothing | `Gaussian` | Allen `_getSignMap` `gaussian_filter` (RM.py) | scipy / A | ✅ `gaussian_smooth_matches_scipy_gaussian_filter` (<1e-6) |
+| vfs_computation | `OpenIsiChainRulePhasorGradient` | ours; ≡ Allen `visualSignMap` on smooth input, stabler at wraps (RM.py 446-478) | Python / A | ✅ `vfs_matches_genuine_nat_visual_sign_map_live` (+ `vfs_stable_across_phase_wraps_where_allen_gradient_spikes`) |
+| sign_map_smoothing | `Gaussian` | Allen `_getSignMap` `gaussian_filter` (RM.py) | scipy / A | ✅ `gaussian_smooth_matches_genuine_scipy_live` (<1e-6) |
 | cortex_source | `Reliability` | OpenISI's own (NO oracle for the mask; Zhuang does no cortex restriction, verified) | regression-lock | — (OpenISI method; property-pinned `cortex_from_reliability_pins_current_threshold_rule`) |
-| cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | Octave / A | ✅ `snlc_cortex_endtoend_matches_octave` (+ 5 morph-op goldens) |
-| cortex_source | `SnlcMagThreshold` | SNLC `overlaymaps.m` 205-215 (`norm(mag^1.1) ≥ .12`) | Octave / A | ✅ `snlc_mag_threshold_roi_matches_overlaymaps` (0 diff) |
+| cortex_source | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` 76-95 | MATLAB / A | ✅ `snlc_cortex_endtoend_matches_reference` (+ live morph-op goldens) |
+| cortex_source | `SnlcMagThreshold` | SNLC `overlaymaps.m` 205-215 (`norm(mag^1.1) ≥ .12`) | MATLAB / A | ✅ `snlc_mag_threshold_roi_matches_overlaymaps` (0 diff) |
 | cortex_source | `NoRestriction` | Allen default (trivial) | — | — |
 | patch_threshold | `AllenZhuang2017FixedSignMapThr` | Allen `_getRawPatchMap` (RM.py, 0.35) | numpy / A | ✅ `patch_threshold_matches_reference` |
 | patch_threshold | `Garrett2014SigmaScaled` | `getMouseAreasX.m` (k·std·0.5, MATLAB N−1 std) | numpy / A | ✅ `patch_threshold_matches_reference` |
-| patch_extraction | `AllenZhuang2017LabelOpenCloseDilate` | Allen RM.py 1089-1210 | scipy / A | 🟡 **component-complete** (`allen_raw_patch_map_matches_scipy`, `allen_cross_morphology_matches_scipy`, `label_4conn_matches_scipy_ndimage_label`, `dilation_patches2_matches_allen`, patch-sign goldens); no single chained-apply golden |
-| patch_refinement | `AllenZhuang2017SplitMerge` | Allen RM.py 1247-1527 | scipy/Python / A | 🟡 **component-complete** (split `split2_matches_allen_watershed_branch`, merge `merge_two_matches_allen_mergepatches`, visual-space `patch_visual_space_matches_allen_get_visual_space`, `sigma_area_matches_allen_get_sigma_area`, `local_min_matches_allen_localmin`); no single chained-apply golden |
-| patch_refinement | `Garrett2014SplitFuse` | SNLC `splitPatchesX.m` / `fusePatchesX.m` | Octave / A | ✅ **end-to-end** `split_patches_x_matches_snlc` + `fuse_patches_x_matches_snlc` (+ 11 atomic SNLC goldens: overRep, watershed, bwdist, interp2-spline, imimposemin, getNLocalMin, …) |
+| patch_extraction | `AllenZhuang2017LabelOpenCloseDilate` | Allen RM.py 1089-1210 | scipy / A | 🟡 **component-complete** (`raw_patch_map_matches_genuine_nat_live`, `cross_morphology_matches_genuine_scipy_live`, `label4conn_matches_genuine_scipy_live`, `dilation_patches2_matches_genuine_nat_live`, `patch_sign_matches_genuine_snlc_getpatchsign_live`); no single chained-apply golden |
+| patch_refinement | `AllenZhuang2017SplitMerge` | Allen RM.py 1247-1527 | scipy/Python / A | 🟡 **component-complete** (split `split2_matches_genuine_nat_live`, merge `merge_two_matches_genuine_nat_live`, visual-space `patch_visual_space_matches_genuine_nat_live`, `sigma_area_matches_genuine_nat_live`, `local_min_matches_genuine_nat_live`); no single chained-apply golden |
+| patch_refinement | `Garrett2014SplitFuse` | SNLC `splitPatchesX.m` / `fusePatchesX.m` | MATLAB / A | ✅ **end-to-end** `split_fuse_match_genuine_snlc_matlab_live` (+ atomic SNLC goldens: `patch_com_matches_genuine_snlc_live`, `watershed_matches_genuine_reference_live`, `bwdist_matches_genuine_reference_live`, `interp2_spline_matches_genuine_reference_live`, `imimposemin_matches_genuine_reference_live`, `fft_gaussian_smooth_matches_genuine_reference_live`, …) |
 | patch_refinement | `None` | — | — | — |
-| eccentricity | `OpenIsiWholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | ✅ `garrett_eccentricity_matches_allen_eccentricitymap` (machine-precision f64) |
-| eccentricity | `SnlcGetAreaBordersV1Center` | SNLC `getAreaBorders.m` (`getV1id` + `getPatchCoM`) | Octave / A | ✅ `compute_eccentricity_snlc_matches_get_area_borders` |
+| eccentricity | `OpenIsiWholeCortexV1` | Allen `eccentricityMap` (RM.py 729-760) | Python / A | ✅ `eccentricity_matches_genuine_nat_eccentricitymap_live` (machine-precision f64) |
+| eccentricity | `SnlcGetAreaBordersV1Center` | SNLC `getAreaBorders.m` (`getV1id` + `getPatchCoM`) | MATLAB / A | ✅ `compute_eccentricity_snlc_matches_get_area_borders` |
 | baseline | `AllenAllFrameMean` | Allen `normalizeMovie('mean')` | numpy / A | ✅ `dff_matches_allen_normalize_movie_mean` |
 | baseline | `AllenAllFrameMedian` | Allen `normalizeMovie('median')` | numpy / A | ✅ `median_baseline_matches_numpy` |
 | baseline | `OpenIsiInterSweep{Mean,Median}` | OpenISI's own (falls back to the goldened all-frame mean when gapless) | — | — |
-| magnification | determinant `\|det J\|` | Allen `_getDeterminantMap` | numpy / A | ✅ `magnification_jacobian_matches_allen_determinant_map` |
-| magnification | anisotropy (axis + distortion) | SNLC `getMagFactors.m` `prefAxisMF` + `Distrtion` | Octave / A | ✅ `magnification_anisotropy_matches_snlc_getmagfactors` (wrap-180 axis, κ-scaled) |
+| magnification | determinant `\|det J\|` | Allen `_getDeterminantMap` | numpy / A | ✅ `magnification_matches_genuine_nat_determinant_map_live` |
+| magnification | anisotropy (axis + distortion) | SNLC `getMagFactors.m` `prefAxisMF` + `Distrtion` | MATLAB / A | ✅ `magnification_anisotropy_matches_snlc_getmagfactors` (wrap-180 axis, κ-scaled) |
 
 **Coverage conclusion (2026-06-18 reconciliation).** *Every source-named method
 reaches an oracle golden.* The only residual is that the two most complex Allen

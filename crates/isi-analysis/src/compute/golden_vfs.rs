@@ -169,12 +169,12 @@ mod tests {
     // (it re-implemented Gprocesskret's lines 88-99 inline — the very self-authored-
     // oracle objective 1 forbids, and the one that hid the post-negation artifact).
     // The live `combine_and_delay_match_genuine_snlc_gprocesskret_live` below drives
-    // the GENUINE Gprocesskret.m via Octave over the full phase circle (incl the
+    // the GENUINE Gprocesskret.m via MATLAB over the full phase circle (incl the
     // delay-flip region), covering both the combine phasor and the (0,π] delay.
 
-    /// **Live genuine-oracle, SNLC/Octave**: our `position_phasor_delay_subtracted`
+    /// **Live genuine-oracle, SNLC**: our `position_phasor_delay_subtracted`
     /// (Kalatsky combine) and `delay_map` vs the GENUINE `Gprocesskret.m`
-    /// (`reference/ISI/ISIAnGUI/F1`), executed live via Octave. Fed fresh fwd/rev
+    /// (`reference/ISI/ISIAnGUI/F1`), executed live via MATLAB. Fed fresh fwd/rev
     /// phase ramps (built into unit phasors exactly as `Complex2::from_phase`
     /// does, matching Gprocesskret's no-smoothing branch). The combine is compared
     /// as a phasor (cos/sin of the oracle kmap, in radians) so ±2π wrap can't
@@ -184,6 +184,9 @@ mod tests {
     #[test]
     fn combine_and_delay_match_genuine_snlc_gprocesskret_live() {
         use crate::test_support::oracle;
+        if oracle::snlc_skip("combine_and_delay_match_genuine_snlc_gprocesskret_live") {
+            return;
+        }
         // Two independent phase ramps over the full circle (the product grid
         // crosses the delay flip region), with an offset so fwd != rev.
         let twopi = 2.0 * std::f64::consts::PI;
@@ -408,7 +411,7 @@ mod tests {
         let input = Array2::from_shape_fn((G, G), |(r, c)| {
             (r as f64 * 0.11).sin() + (c as f64 * 0.07).cos() + 0.01 * (r * c) as f64
         });
-        let genuine = oracle::nat("scipy_gaussian_filter", &[input.clone()], &[("sigma", 4.0)]).remove(0);
+        let genuine = oracle::nat("scipy_gaussian_filter", std::slice::from_ref(&input), &[("sigma", 4.0)]).remove(0);
 
         let f32s: Vec<f32> = input.iter().map(|&v| v as f32).collect();
         let t = Tensor::<Backend, 2>::from_data(TensorData::new(f32s, [G, G]), &device());
@@ -519,18 +522,21 @@ mod tests {
     // golden + its amp_*.bin fixtures + gen_amplitude_golden.py were DELETED.
     // gen_amplitude_golden.py was a TRANSCRIPTION (verbatim numpy magS formula).
     // The live `position_amplitude_matches_genuine_snlc_gprocesskret_live` below
-    // drives the GENUINE Gprocesskret.m magS via Octave on fresh complex fwd/rev
+    // drives the GENUINE Gprocesskret.m magS via MATLAB on fresh complex fwd/rev
     // with varying magnitude + phase.
 
-    /// **Live genuine-oracle, SNLC/Octave**: our `position_amplitude`
+    /// **Live genuine-oracle, SNLC**: our `position_amplitude`
     /// (`0.5·(|fwd|+|rev|)`) vs the GENUINE `Gprocesskret.m` `magS.hor`
-    /// (`(|ang0|+|ang2|)/2`), executed live via Octave. magS is taken from the
+    /// (`(|ang0|+|ang2|)/2`), executed live via MATLAB. magS is taken from the
     /// input magnitudes *before* Gprocesskret's phase negation, so the full
     /// complex fwd/rev are fed directly (no transform). Gated `oracle_live`.
     #[cfg(feature = "oracle_live")]
     #[test]
     fn position_amplitude_matches_genuine_snlc_gprocesskret_live() {
         use crate::test_support::oracle;
+        if oracle::snlc_skip("position_amplitude_matches_genuine_snlc_gprocesskret_live") {
+            return;
+        }
         // Fresh fwd/rev complex with per-pixel varying magnitude AND phase.
         let fwd_re = Array2::from_shape_fn((N, N), |(r, c)| (1.0 + 0.1 * r as f64) * (c as f64 * 0.2).cos());
         let fwd_im = Array2::from_shape_fn((N, N), |(r, c)| (1.0 + 0.1 * r as f64) * (c as f64 * 0.2).sin());

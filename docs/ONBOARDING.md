@@ -37,7 +37,8 @@ cargo xtask goldens --check    # regenerate every fixture from its oracle, diff 
 cargo xtask goldens <name>     # regenerate just the matching generators (then commit the .npy)
 ```
 
-One-time toolchain setup (Octave + a pinned Python env) is in
+One-time toolchain setup (a pinned Python env; genuine MATLAB for the two `.m`
+generators) is in
 [`../tools/golden/README.md`](../tools/golden/README.md). The app/release build needs
 none of it — only this dev harness does.
 
@@ -47,7 +48,8 @@ none of it — only this dev harness does.
 |---|---|
 | `crates/openisi-stimulus` | Stimulus design + the wgpu/WGSL renderer |
 | `crates/openisi-params` | Typed config (serde + schemars + garde) — the parameter SSoT |
-| `crates/isi-analysis` | The analysis pipeline **and** the `.oisi` format I/O (`io.rs`) |
+| `crates/oisi` | The `.oisi` recording format end-to-end — schema (SSoT), HDF5 I/O primitives, contract validation, foreign-format import. No dependency on the analysis compute. |
+| `crates/isi-analysis` | The analysis pipeline + the *analysis-semantic* `.oisi` I/O (`io.rs`) that composes the `oisi` crate's format primitives |
 | `crates/pco-sdk` | PCO camera FFI (libloading over the vendor DLLs) |
 | `src-tauri` | The app: acquisition orchestration, threads, IPC, the headless CLI, capture-write (`export.rs`) |
 

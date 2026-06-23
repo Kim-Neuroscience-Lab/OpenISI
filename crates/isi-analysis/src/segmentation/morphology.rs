@@ -131,7 +131,7 @@ pub(super) fn binary_erosion_disk(mask: &Array2<bool>, radius: i32) -> Array2<bo
         for c in 0..w {
             // out[r,c] = true iff all *in-image* pixels within the disk are
             // true. Out-of-image neighbours are treated as foreground
-            // (MATLAB/Octave `imerode` pads the border with 1s), so the image
+            // (MATLAB `imerode` pads the border with 1s), so the image
             // edge alone never erodes a pixel — required for faithful
             // `strel('disk',R,0)` erosion (golden-tested in
             // `golden_cortex_morph.rs`).
@@ -165,7 +165,7 @@ pub(crate) fn binary_closing_disk(mask: &Array2<bool>, radius: i32) -> Array2<bo
     // Genuine MATLAB `imclose` is NOT a naive `imerode(imdilate(.))`: it pads the
     // image with 0 by the SE radius, composes dilate→erode, then crops. Verified
     // bit-exact against MATLAB R2025b (`imclose == imerode(imdilate(pad0(bw))).crop`);
-    // the naive compose (what Octave does, and what we used to do) differs within
+    // the naive compose (what we used to do) differs within
     // R px of the image edge. Reproduce the genuine MATLAB rule so the cortex
     // segmentation is faithful to the SNLC reference even for border-touching
     // objects. (Interior results are unchanged — the divergence is border-only.)

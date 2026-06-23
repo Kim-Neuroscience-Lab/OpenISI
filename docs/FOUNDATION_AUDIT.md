@@ -1,5 +1,12 @@
 # Foundation audit (2026-06-16)
 
+> **Dated point-in-time snapshot.** Findings, file:line citations, and commit
+> SHAs below record the state at the 2026-06-16 audit commit (`3ca1582`) and are
+> preserved as-is. Some paths/identifiers have since moved (notably the `.oisi`
+> schema + I/O were extracted into the `oisi` crate on 2026-06-19, `9736718`);
+> such drift is flagged inline with "(now …)" notes and does **not** invalidate
+> the finding. Line numbers are as-of the snapshot and are not re-synced.
+
 A bedrock audit of the senior-engineer-required invariants, before stacking more
 features on top. Each finding is evidence-ordered (file:line) and tiered:
 **A** = real foundational gap to fix, **B** = smaller "no silent failure" gap,
@@ -34,13 +41,16 @@ mutation, not stale-cache garbage.
 **FIXED** (`e74362c`): `io::atomic_update(path, mutate)` — copy → mutate temp →
 fsync → atomic rename — now wraps `analyze()`'s entire write block. A crash
 leaves the original intact; output is byte-identical (regression bit-identical).
-Locked by two crash-safety tests in `io.rs`. The provenance `/analysis_params`
+Locked by two crash-safety tests in `io.rs`. (Now: `atomic_update` and those
+two tests live in `crates/oisi/src/io.rs` after the oisi-crate extraction;
+`analyze()` still calls `io::atomic_update` at `lib.rs:475`.) The provenance `/analysis_params`
 stamp was a residual separate in-place write; **also FIXED** (`e932f19`) by
 folding it into the same transaction via `analyze`'s `params_tree` argument.
 
 Secondary, still open (lower severity): 2D `/results` datasets lack the
 `fletcher32` checksums that 1D arrays and acquisition frames get (`io.rs`
-`write_f64`/`write_mask` vs `write_checked_1d`) — a corruption-*detection* gap,
+`write_f64`/`write_mask` — since refactored into `write_results`; cf.
+`write_checked_1d`, now in `crates/oisi/src/io.rs`) — a corruption-*detection* gap,
 not a corruption-*creation* one; disk-full is surfaced (it propagates as a typed
 HDF5/Io error) but not specially classified. See "Residual risk" below.
 
@@ -78,10 +88,11 @@ HDF5/Io error) but not specially classified. See "Residual risk" below.
   same-backend only), not a within-run regression. No fix; the caveat is the
   documented contract.
 - **C3 · Schema drift.** Solved: the `.oisi` layout is declared once in
-  `oisi_schema.rs` (`SCHEMA`), `docs/oisi.schema.json` is generated under a
-  golden test, and a contract test checks real files both ways. The render
-  contract (`io/meta.rs`) is a *parallel* per-dataset source keyed by name — a
-  minor cleanliness item (fold into the `SCHEMA` SSoT), not a foundational gap.
+  `oisi_schema.rs` (`SCHEMA`) (now `crates/oisi/src/schema.rs` post-extraction),
+  `docs/oisi.schema.json` is generated under a golden test, and a contract test
+  checks real files both ways. The render contract (`io/meta.rs`) is a
+  *parallel* per-dataset source keyed by name — a minor cleanliness item (fold
+  into the `SCHEMA` SSoT), not a foundational gap.
 
 ## Status
 
@@ -102,7 +113,8 @@ cargo xtask goldens --check                                             # oracle
 ```
 
 Per-finding evidence the fix holds:
-- **A1 atomicity** — `cargo test -p isi-analysis --lib atomic_update` proves a
+- **A1 atomicity** — `cargo test -p oisi --lib atomic_update` (snapshot-era:
+  `-p isi-analysis`, before the oisi-crate extraction) proves a
   failed mutation leaves the original byte-for-byte intact and cleans the temp,
   and a success publishes atomically. The bit-identical `regression_oisi` proves
   the atomic path didn't move the science.
@@ -117,8 +129,9 @@ Per-finding evidence the fix holds:
 
 - **`fletcher32` on 2D `/results`.** Detection-only gap: a post-write disk bit-rot
   in a result map isn't checksum-flagged on read (1D arrays + frames are). It does
-  not *create* corruption. Add it to `write_f64`/`write_mask` if/when result-map
-  integrity-on-read is required.
+  not *create* corruption. Add it to the 2D result writes in `write_results`
+  (snapshot-era `write_f64`/`write_mask`) if/when result-map integrity-on-read
+  is required.
 - **`capture_baseline` strip-then-reanalyze** does an in-place
   `strip_derived_outputs` before the (atomic) analyze. The window is **dev/baseline
   only** — `capture_baseline` regenerates a throwaway baseline; production

@@ -15,8 +15,9 @@ rayon = "1"
 num-complex = "0.4"
 num-traits = "0.2"
 # FFT for the SNLC/Garrett refinement's circular Gaussian smooth + interp helpers
-# (established tool per the no-hand-rolling principle; matched to Octave at an
-# ε-grounded tolerance since cross-library FFT roundoff precludes bit-equality).
+# (established tool per the no-hand-rolling principle; matched to the genuine
+# MATLAB reference at an ε-grounded tolerance since cross-library FFT roundoff
+# precludes bit-equality).
 rustfft = "6"
 hdf5 = { package = "hdf5-metno", version = "0.12" }
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.11", features = ["static", "zlib"] }
@@ -83,8 +84,9 @@ cuda = ["dep:burn-cuda", "burn-dispatch/cuda"]
 # build their inputs in Rust and call the GENUINE reference code (run in its own
 # uv-locked per-oracle environment under tests/oracle/) live, comparing against
 # its real output — no transcriptions, no frozen fixtures. Off by default so the
-# normal `cargo test` needs no Python/Octave; CI runs `--features oracle_live`.
-# Requires `uv` on PATH (or OPENISI_UV).
+# normal `cargo test` needs no Python/MATLAB; CI runs `--features oracle_live`.
+# The NAT (Python) oracle needs `uv` on PATH (or OPENISI_UV); the SNLC oracle
+# needs genuine MATLAB (OPENISI_MATLAB) and skips cleanly when it is unset.
 oracle_live = []
 
 [dev-dependencies]

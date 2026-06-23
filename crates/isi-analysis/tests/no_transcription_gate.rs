@@ -52,11 +52,12 @@ fn allen_oracle_shim_is_gone() {
     }
 }
 
-/// No generator may use a `roifilt2` shim (objective 3 — no shims). Octave's
-/// `image` package lacks `roifilt2`; the only honest options are to run the
-/// reference shim-free (impossible for these) or drop the golden — never to
-/// author a `roifilt2` stand-in, which would put self-written logic in the oracle
-/// path. The three shim-contaminated SNLC composite goldens were removed; this
+/// No generator may author a `roifilt2` stand-in (objective 3 — no shims). The
+/// genuine `splitPatchesX`/`fusePatchesX` use `roifilt2` (a real MATLAB IPT
+/// function); they are validated LIVE against genuine MATLAB
+/// (`split_fuse_match_genuine_snlc_matlab_live`), never via a frozen fixture made
+/// with a self-authored `roifilt2` stand-in — that would put our own logic in the
+/// oracle path. The three shim-contaminated composite goldens were removed; this
 /// keeps any from returning.
 #[test]
 fn no_generator_uses_a_roifilt2_shim() {
@@ -68,8 +69,9 @@ fn no_generator_uses_a_roifilt2_shim() {
             let src = std::fs::read_to_string(&path).expect("read generator");
             assert!(
                 !src.to_lowercase().contains("roifilt2"),
-                "{name} references roifilt2 — a forbidden shim (Octave lacks it); \
-                 run shim-free or drop the golden, never author a stand-in"
+                "{name} references roifilt2 — a forbidden shim; validate \
+                 splitPatchesX/fusePatchesX live against genuine MATLAB, never \
+                 author a stand-in"
             );
         }
     }
@@ -84,7 +86,7 @@ fn retired_transcription_generators_stay_deleted() {
     // Generators whose expected values came from code WE wrote (inline formula or
     // a scipy/skimage re-implementation of a reference orchestration), now replaced
     // by a live genuine-reference test. NOT in this list: library-primitive
-    // generators (call scipy/skimage/Octave-IPT) and genuine-run `.m` callers, which
+    // generators (call scipy/skimage/MATLAB-IPT) and genuine-run `.m` callers, which
     // are objective-1 compliant even while frozen.
     const RETIRED_TRANSCRIPTIONS: &[&str] = &[
         "gen_combine_golden.m",         // inlined Gprocesskret lines 88-99
@@ -105,9 +107,9 @@ fn retired_transcription_generators_stay_deleted() {
         "gen_local_min_golden.py",
         "gen_merge_two_golden.py",
         "gen_patchsign_majority_golden.py", // inlined majority-sign transcription
-        "gen_patchsign_golden.m",       // dead Octave generator (no consumer)
-        // roifilt2-SHIM-contaminated genuine-run goldens (Octave lacks roifilt2;
-        // their fixtures were generated through a self-authored shim → objective 3):
+        "gen_patchsign_golden.m",       // dead generator (no consumer)
+        // roifilt2-SHIM-contaminated genuine-run goldens (their fixtures were
+        // generated through a self-authored roifilt2 stand-in → objective 3):
         "gen_smoothpatches_golden.m",
         "gen_splitpatchesx_golden.m",
         "gen_fusepatchesx_golden.m",
@@ -120,11 +122,11 @@ fn retired_transcription_generators_stay_deleted() {
         // library-primitive frozen goldens retired for objective 6 (the method is
         // now computed LIVE each run against the genuine reference):
         "gen_reflect_wrap_golden.py",   // -> separable_filter_matches_genuine_scipy_live
-        "gen_fftgauss_golden.m",        // -> fft_gaussian_smooth_matches_genuine_octave_live
-        "gen_cortex_morph_golden.m",    // -> cortex_morphology_matches_genuine_octave_live (top-border scene ported)
+        "gen_fftgauss_golden.m",        // -> fft_gaussian_smooth_matches_genuine_reference_live
+        "gen_cortex_morph_golden.m",    // -> cortex_morphology_matches_genuine_reference_live (top-border scene ported)
         "gen_patch_morph_golden.py",    // dead: read the mask, wrote unconsumed patch_morph_*.bin
         "gen_watershed_markers_golden.py", // wrong-era ws_out.bin (matched ours, NOT locked skimage 0.18.3); -> watershed_from_markers_stress_matches_genuine_skimage_live
-        "gen_adaptsmooth_golden.m",     // genuine-run -> adaptive_smoother_matches_genuine_snlc_octave_live (genuine adaptiveSmoother.m, computed each run)
+        "gen_adaptsmooth_golden.m",     // genuine-run -> adaptive_smoother_matches_genuine_snlc_live (genuine adaptiveSmoother.m, computed each run)
     ];
     let dir = golden_dir();
     let still_present: Vec<&str> = RETIRED_TRANSCRIPTIONS
@@ -143,7 +145,7 @@ fn retired_transcription_generators_stay_deleted() {
 /// construction the suite contains zero generators that re-implement a *runnable*
 /// reference (objective 1). The categories:
 ///   - `LibraryPrimitive`: the expected value IS the output of a stdlib/IPT primitive
-///     (scipy/skimage/numpy/Octave-IPT) called directly; the library is the oracle.
+///     (scipy/skimage/numpy/MATLAB-IPT) called directly; the library is the oracle.
 ///   - `GenuineRun`: calls the genuine vendored `.m` (addpath) and uses its output.
 ///   - `RegressionLock`: pins OpenISI's OWN behaviour (no external reference exists for
 ///     the specific rule); honestly labelled as such at the source.

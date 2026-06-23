@@ -15,8 +15,9 @@
 #   $env:OPENISI_PYTHON = "tools/golden/.venv/Scripts/python.exe"             # Windows
 #   export OPENISI_PYTHON="tools/golden/.venv/bin/python"                     # Unix
 #
-# The Octave toolchain (for the *.m generators) is separate — install Octave
-# and set OPENISI_OCTAVE (or put octave-cli on PATH). See README.md.
+# The two *.m generators (gen_cortex_full, gen_magroi) call MATLAB IPT, so
+# regenerating them needs genuine MATLAB — set OPENISI_MATLAB (or put `matlab`
+# on PATH). Absent MATLAB, those generators are skipped. See README.md.
 
 numpy==2.2.4
 scipy==1.15.3

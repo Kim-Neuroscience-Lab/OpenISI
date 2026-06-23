@@ -2,13 +2,13 @@
 
 OpenISI validates its Rust pipeline against the field's reference
 implementations ("oracles"): the SNLC/Garrett MATLAB code (`reference/ISI`, run
-under **Octave**) and the Allen/Zhuang Python code (`reference/corticalmapping`,
-transcribed in the `gen_*_golden.py` scripts). Each oracle runs **offline** to
-emit committed golden fixtures under
+under **genuine MATLAB**) and the Allen/Zhuang Python code
+(`reference/corticalmapping`, transcribed in the `gen_*_golden.py` scripts). Each
+oracle runs **offline** to emit committed golden fixtures under
 `crates/isi-analysis/tests/golden/fixtures/*.bin`; the test suite validates the
 Rust output against those committed blobs.
 
-**A normal `cargo test`, and every user/release build, needs no MATLAB / Octave
+**A normal `cargo test`, and every user/release build, needs no MATLAB
 / Python** — they only read the committed fixtures. The toolchain here is for
 *dev* regeneration and the freshness gate only.
 
@@ -27,7 +27,15 @@ cargo xtask figures oracle_state  # just the oracle-state gallery
 ```
 
 `xtask` is its own workspace member that nothing depends on, so the app/release
-build never compiles it and never acquires a Python/Octave dependency.
+build never compiles it and never acquires a Python/MATLAB dependency.
+
+Most generators are Python (`gen_*_golden.py`, run via `OPENISI_PYTHON`). Two are
+MATLAB — `gen_cortex_full_golden.m` and `gen_magroi_golden.m` — which call MATLAB
+Image Processing Toolbox functions and so run under genuine MATLAB (the harness
+invokes `matlab -batch <stem>`, selected via `OPENISI_MATLAB`). When MATLAB is
+absent, `cargo xtask goldens` **skips the two `.m` generators with a logged
+notice** and still regenerates/checks every Python fixture; the `.m` fixtures'
+freshness is then covered by the self-hosted MATLAB CI job (see [CI](#ci)).
 
 ### The oracle-state gallery
 
@@ -74,11 +82,16 @@ tools/golden/.venv/bin/pip install -r tools/golden/requirements.txt
 export OPENISI_PYTHON="tools/golden/.venv/bin/python"
 ```
 
-**Octave** (for the `*.m` generators): install GNU Octave, then either put
-`octave-cli` on `PATH` or set `OPENISI_OCTAVE` to its full path.
+**MATLAB** (for the `*.m` generators): install MATLAB with the Image Processing
+Toolbox, then either put `matlab` on `PATH` or set `OPENISI_MATLAB` to its full
+path (e.g. `C:/Program Files/MATLAB/R2025b/bin/matlab.exe`). If MATLAB is absent,
+the harness skips the two `.m` generators with a logged notice (their freshness
+is covered by the self-hosted MATLAB CI job).
 
-The harness discovers interpreters in this order: `OPENISI_OCTAVE` /
-`OPENISI_PYTHON` → `PATH` → known install locations → actionable error.
+The harness discovers interpreters in this order:
+`OPENISI_MATLAB` env override → bare `matlab` on `PATH` → known install locations
+(e.g. `C:/Program Files/MATLAB/R2025b/bin/matlab.exe`); and `OPENISI_PYTHON` →
+`python3` / `python` on `PATH` → actionable error.
 
 ## Why pin the toolchain
 
@@ -90,6 +103,9 @@ regenerating and reviewing fixtures — the same discipline as editing an oracle
 
 ## CI
 
-`.github/workflows/goldens.yml` installs this toolchain on Linux and runs
+`.github/workflows/goldens.yml` installs the Python toolchain on Linux and runs
 `cargo xtask goldens --check` so fixture/generator drift is caught
-automatically, while the main hermetic test job stays toolchain-free.
+automatically, while the main hermetic test job stays toolchain-free. This job
+runs without MATLAB, so it covers every Python fixture and skips the two `.m`
+generators. Their freshness is covered by the self-hosted MATLAB CI job
+(`goldens-matlab`), gated on the repo variable `SELF_HOSTED_MATLAB=true`.

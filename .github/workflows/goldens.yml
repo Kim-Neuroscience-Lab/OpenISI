@@ -1,24 +1,25 @@
 name: Golden freshness
 
-# Oracle golden-fixture freshness gate. Regenerates every golden fixture from
-# its oracle generator (SNLC/Garrett under Octave, Allen/Zhuang transcriptions
-# under Python) and asserts AGREEMENT with the committed copies — catching the
-# case where a generator is edited but its fixture isn't regenerated. Agreement
-# is tolerance-based, not byte-identity: this runner's toolchain differs from the
-# dev host that committed the fixtures, so float results round differently, and
+# Oracle golden-fixture freshness gate. Regenerates every golden fixture from its
+# oracle generator and asserts AGREEMENT with the committed copies — catching the
+# case where a generator is edited but its fixture isn't regenerated. Agreement is
+# tolerance-based, not byte-identity: this runner's toolchain differs from the dev
+# host that committed the fixtures, so float results round differently, and
 # device-identity is not a validity check. Discrete fixtures (masks/labels/raw
 # frames) are held bit-exact; float fixtures are compared through the project's
 # ε-grounded comparator (crates/agreement), with the measured cross-toolchain
-# drift logged each run. See xtask `build_freshness_report` / `FIXTURE_DTYPES`.
+# drift logged each run. See xtask `build_freshness_report` / `FLOAT_K`.
+#
+# TWO jobs split by interpreter:
+#   * `goldens` (hosted) — the Python generators. The two `.m` generators
+#     (cortex_full, magroi) call MATLAB IPT, so with no MATLAB on a hosted runner
+#     xtask SKIPS them with a logged notice; their fixtures are checked by:
+#   * `goldens-matlab` (self-hosted, MATLAB machine) — regenerates the `.m`
+#     fixtures under genuine MATLAB. Gated on `SELF_HOSTED_MATLAB == 'true'`.
 #
 # Kept SEPARATE from the main `Test` workflow (which stays hermetic and
-# toolchain-free): only this job installs Octave + the pinned Python toolchain,
-# and only when oracle/fixture/harness files change.
-#
-# Runs on ubuntu (cheap, reliable apt-Octave). The committed fixtures must be
-# reproducible on this toolchain; if a float-valued fixture proves OS-sensitive,
-# regenerate it on this runner (or pin the toolchain to its origin) — the gate
-# documenting that is the gate working.
+# toolchain-free): only this workflow provisions the oracle toolchains, and only
+# when oracle/fixture/harness files change.
 
 on:
   push:
@@ -37,12 +38,11 @@ on:
 
 jobs:
   goldens:
-    # Pinned Ubuntu (fixed Octave version) — see oracle.yml. The freshness gate
-    # regenerates fixtures on THIS runner's Octave/Python, which differ at the bit
-    # level from the dev host (Octave 11.2.0) that committed them; the comparison
-    # is therefore tolerance-based (ε-grounded, via crates/agreement), so the gate
-    # is device-independent. Pinning the runner fixes the Octave version so the
-    # measured drift the gate logs is stable and auditable across runs.
+    # Pinned Ubuntu — the freshness gate regenerates the PYTHON fixtures on this
+    # runner's Python, which differs at the bit level from the dev host that
+    # committed them; the comparison is therefore tolerance-based (ε-grounded, via
+    # crates/agreement), so the gate is device-independent. The two `.m` generators
+    # are skipped here (no MATLAB) with a logged notice — `goldens-matlab` covers them.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -56,14 +56,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # octave-image supplies the IPT functions the .m generators `pkg load image`
-      # (e.g. gen_cortex_full_golden's morphology) — same as oracle.yml. Without it
-      # those generators error before the freshness comparison runs.
-      - name: Install Octave + image package (oracle .m generators)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y octave octave-image
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -72,8 +64,37 @@ jobs:
       - name: Install pinned Python oracle toolchain
         run: python -m pip install -r tools/golden/requirements.txt
 
-      - name: Golden freshness gate
+      # OPENISI_MATLAB unset → the .m generators (cortex_full, magroi) are skipped
+      # with a logged NOTE; the Python fixtures are regenerated and checked.
+      - name: Golden freshness gate (Python fixtures; .m skipped without MATLAB)
         env:
           OPENISI_PYTHON: python
-          OPENISI_OCTAVE: octave-cli
+        run: cargo xtask goldens --check
+
+  # ── .m-generator freshness — SELF-HOSTED runner (the lab's licensed MATLAB) ──
+  # The cortex_full + magroi fixtures are produced by MATLAB IPT, so only genuine
+  # MATLAB can regenerate-and-check them. SKIPPED (not failed) until the lab
+  # registers a `self-hosted,matlab` runner and sets repo variable
+  # `SELF_HOSTED_MATLAB=true` (same runner as oracle.yml's oracle-matlab job).
+  goldens-matlab:
+    if: ${{ vars.SELF_HOSTED_MATLAB == 'true' }}
+    runs-on: [self-hosted, matlab]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialise pinned oracle reference (byte-pristine)
+        run: bash tools/oracle/fetch-reference.sh
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pinned Python oracle toolchain
+        run: python -m pip install -r tools/golden/requirements.txt
+      # Both interpreters present → every generator (Python AND .m) regenerates and
+      # is checked; the .m fixtures' freshness is validated under genuine MATLAB.
+      - name: Golden freshness gate (all fixtures, incl. .m under genuine MATLAB)
+        env:
+          OPENISI_PYTHON: python
+          OPENISI_MATLAB: matlab
         run: cargo xtask goldens --check

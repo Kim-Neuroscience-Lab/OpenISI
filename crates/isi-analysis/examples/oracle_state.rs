@@ -500,13 +500,13 @@ fn dump_r43() {
     g.finish();
 
     // Export the inputs the TRUE SNLC oracle consumes (figdata_oracle_state_snlc.m
-    // runs the real getMouseAreasX segmentation on these under Octave): R43's
+    // runs the real getMouseAreasX segmentation on these under genuine MATLAB): R43's
     // azimuth/altitude POSITION maps (degrees) + pixels-per-mm calibration.
     export_snlc_oracle_inputs(&candidate);
 }
 
 /// Write R43's azimuth/altitude position maps (degrees) + `pixpermm` so the
-/// Octave figure-data generator can run the SNLC segmentation oracle on the real
+/// MATLAB figure-data generator can run the SNLC segmentation oracle on the real
 /// recording. `pixpermm = 1000 / um_per_pixel`, read from the file's
 /// `/rig_params` (default 20 µm/px if absent — surfaced, since the SNLC
 /// patch-area criteria in split/fuse are scale-dependent).

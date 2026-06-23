@@ -8,22 +8,19 @@
 %
 % This transcribes the *orchestration* of `reference/ISI/getMouseAreasX.m`
 % (verbatim, minus the figure/plot calls) but calls the REAL SNLC functions on
-% the Octave path — crucially `splitPatchesX` / `fusePatchesX` (the patch
+% the MATLAB path — crucially `splitPatchesX` / `fusePatchesX` (the patch
 % refinement OpenISI never ported to Rust), plus `getPatchSign` / `getPatchCoM`
 % / `getV1id`. So column 1 of the r43_oracle figure is genuine oracle output,
 % not OpenISI's own baseline.
 %
 % Outputs: target/oracle_state/r43_oracle/{snlc_vfs,snlc_areas}.oracle.bin
-% Run via: cargo xtask figures oracle_state   (Octave resolved by the harness)
-
-pkg load image;
+% Run via genuine MATLAB:  matlab -batch figdata_oracle_state_snlc
 
 here = fileparts(mfilename('fullpath'));
 root = fullfile(here, '..', '..', '..', '..');
 addpath(fullfile(root, 'reference', 'ISI'));            % the SNLC oracle source
-addpath(fullfile(root, 'tools', 'octave_shims'));       % faithful shims for MATLAB
-                                                        % IPT primitives Octave lacks
-                                                        % (roifilt2) — oracle stays pristine
+% IPT (imopen/imclose/imfill/imdilate/bwlabel/bwmorph) and roifilt2 (used by
+% splitPatchesX/fusePatchesX) are built into MATLAB — no packages, no shims.
 
 ind  = fullfile(root, 'target', 'oracle_state', 'r43', 'oracle_in');
 outd = fullfile(root, 'target', 'oracle_state', 'r43_oracle');
@@ -32,7 +29,7 @@ if ~exist(outd, 'dir'); mkdir(outd); end
 meta = jsondecode(fileread(fullfile(ind, 'meta.json')));
 H = meta.h; W = meta.w; pixpermm = meta.pixpermm;
 
-% Row-major f64 on disk → H×W Octave matrix (reshape is column-major, so transpose).
+% Row-major f64 on disk → H×W MATLAB matrix (reshape is column-major, so transpose).
 fid = fopen(fullfile(ind, 'kmap_hor.bin'),  'r'); kmap_hor  = reshape(fread(fid, H*W, 'double'), W, H)'; fclose(fid);
 fid = fopen(fullfile(ind, 'kmap_vert.bin'), 'r'); kmap_vert = reshape(fread(fid, H*W, 'double'), W, H)'; fclose(fid);
 
@@ -108,5 +105,5 @@ patchmask = double(im > 0);
 % ── outputs (row-major on disk: transpose so column-major fwrite emits row-major) ─
 fid = fopen(fullfile(outd, 'snlc_vfs.oracle.bin'),   'w'); fwrite(fid, VFS',       'double'); fclose(fid);
 fid = fopen(fullfile(outd, 'snlc_areas.oracle.bin'), 'w'); fwrite(fid, patchmask', 'double'); fclose(fid);
-printf('SNLC oracle on R43: %d px in patches, VFS range [%.3f %.3f]\n', ...
-       sum(patchmask(:)), min(VFS(:)), max(VFS(:)));
+fprintf('SNLC oracle on R43: %d px in patches, VFS range [%.3f %.3f]\n', ...
+        sum(patchmask(:)), min(VFS(:)), max(VFS(:)));

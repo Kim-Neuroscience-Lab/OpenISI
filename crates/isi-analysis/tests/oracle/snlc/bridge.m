@@ -1,28 +1,15 @@
 % PRISTINE bridge to the GENUINE SNLC / Garrett MATLAB reference (reference/ISI),
-% executed via the genuine reference — MATLAB authoritative, Octave the open cross-check. This is the ONE place the Rust tests reach the SNLC oracle.
+% executed under genuine MATLAB. This is the ONE place the Rust tests reach the SNLC
+% oracle. SNLC is MATLAB code, so genuine MATLAB is the authoritative reference.
 % It contains NO oracle algorithm: only (a) array marshalling across the process
 % boundary and (b) a dispatch table mapping a function id to a DIRECT call of the
 % genuine reference `.m` (addpath'd, byte-pristine). No per-golden scripts, no
 % frozen fixtures — the oracle is computed live on every run.
 %
-% Irreducible gap (stated, not assumed away): Octave is not MATLAB. Octave's IPT
-% functions match MATLAB to high precision but are not bit-identical; this is the
-% SNLC oracle's analogue of NAT's period-correct-reconstruction caveat.
-%
-% Invoke:  octave-cli --norc -q bridge.m <request.json>
+% Invoke:  matlab -batch bridge   (with OPENISI_ORACLE_REQ pointing at request.json)
 % Protocol mirrors the NAT Python bridge (raw little-endian f64 + a JSON request).
 
-% Dual-runtime: this bridge runs under BOTH Octave (the open fallback) and the
-% genuine MATLAB (closes the Octave≈MATLAB gap). The dispatch arms below are pure
-% MATLAB/Octave-common calls of the reference; only the entry/env differs.
-is_octave = exist('OCTAVE_VERSION', 'builtin') ~= 0;
-
-if is_octave
-  args = argv();
-  reqpath = args{1};                 % Octave: `octave-cli bridge.m <req.json>`
-else
-  reqpath = getenv('OPENISI_ORACLE_REQ');  % MATLAB: `matlab -batch bridge` (no argv)
-end
+reqpath = getenv('OPENISI_ORACLE_REQ');
 req = jsondecode(fileread(reqpath));
 
 here = fileparts(mfilename('fullpath'));
@@ -32,16 +19,11 @@ repo = fullfile(here, '..', '..', '..', '..', '..');
 % ISI_Processing = shadow, …) resolve too. The reference tree stays byte-pristine;
 % we only add it to the search path.
 addpath(genpath(fullfile(repo, 'reference', 'ISI')));   % genuine SNLC .m, pristine
-
-% The SNLC reference uses Image Processing Toolbox functions (bwlabel, imopen/
-% imclose/imfill/imdilate, fspecial, watershed, bwdist). In Octave these live in
-% the `image` package (loaded here); MATLAB has the IPT built in (no pkg load).
-if is_octave
-  pkg load image;
-end
+% The SNLC reference uses Image Processing Toolbox functions (bwlabel, imopen/imclose/
+% imfill/imdilate, fspecial, watershed, bwdist, roifilt2) — all built into MATLAB.
 
 % --- load inputs ---------------------------------------------------------------
-% Rust writes row-major (C-order) f64; Octave is column-major, so read the flat
+% Rust writes row-major (C-order) f64; MATLAB is column-major, so read the flat
 % buffer into [W H] and transpose to recover the HxW matrix exactly.
 x = {};
 for i = 1:numel(req.inputs)
@@ -53,8 +35,8 @@ for i = 1:numel(req.inputs)
   x{i} = reshape(buf, [W, H])';
 end
 
-% --- dispatch: each arm is a DIRECT call of the genuine reference (inlined so
-% Octave parses it as plain script code, no local-function lookup) -------------
+% --- dispatch: each arm is a DIRECT call of the genuine reference (inlined as
+% plain script code, no local-function lookup) ---------------------------------
 p = req.params;
 switch req.fn
   case 'identity'        % de-risk: marshalling must round-trip exactly
@@ -69,12 +51,12 @@ switch req.fn
     [patchSign, ~] = getPatchSign(x{1}, x{2});
     outs = {patchSign};
   case 'watershed'       % raw IPT builtin: watershed(A, conn={4,8})
-    % The oracle is the genuine watershed; our watershed_octave{4,8}
+    % The oracle is the genuine watershed; our watershed_meyer{4,8}
     % wraps exactly this. conn passed as a param. Labels returned as double.
     L = watershed(x{1}, p.conn);
     outs = {double(L)};
   case 'bwdist'          % raw IPT builtin: bwdist(seeds) Euclidean DT
-    % Octave bwdist returns SINGLE; widening single->double here is exact, so the
+    % MATLAB bwdist returns SINGLE; widening single->double here is exact, so the
     % Rust f64 side compares to f32 precision (the documented oracle dtype).
     D = bwdist(logical(x{1}));
     outs = {double(D)};
@@ -138,8 +120,7 @@ switch req.fn
     outs = {magS.hor};
   case 'splitpatchesx'   % genuine SNLC splitPatchesX(im,kmap_hor,kmap_vert,kmap_rad,pixpermm)
     % The over-representation split. figTag=0 (no plotting). smoothPatchesX uses
-    % roifilt2 (MATLAB Image Processing Toolbox — ABSENT in Octave), so this arm is
-    % MATLAB-ONLY; the Rust test skips it under Octave. x{1}=im (binary patch map),
+    % roifilt2 (MATLAB Image Processing Toolbox). x{1}=im (binary patch map),
     % x{2}=kmap_hor (azimuth deg), x{3}=kmap_vert (altitude deg), x{4}=kmap_rad
     % (eccentricity deg). Returns the refined binary patch map.
     outs = {double(splitPatchesX(logical(x{1}), x{2}, x{3}, x{4}, p.pixpermm))};
@@ -164,9 +145,8 @@ for i = 1:numel(outs)
   meta(i) = struct('file', fpath, 'dtype', '<f8', 'shape', [oh, ow]);
 end
 resp = jsonencode(struct('outputs', meta));
-% stdout for the Octave path (read directly); response.json for the MATLAB path
-% (`matlab -batch` stdout can carry startup noise, so the harness reads the file).
-fprintf('%s', resp);   % fprintf, not printf — defined in both Octave and MATLAB
+% The harness reads response.json (a file) — `matlab -batch` stdout can carry
+% startup noise, so we never rely on stdout for the payload.
 rfid = fopen(fullfile(req.out_dir, 'response.json'), 'w');
 fprintf(rfid, '%s', resp);
 fclose(rfid);

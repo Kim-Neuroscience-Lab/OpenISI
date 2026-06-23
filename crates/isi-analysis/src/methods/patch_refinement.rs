@@ -1146,7 +1146,7 @@ mod allen {
             let cases: [(&Array2<f64>, usize); 3] = [(&big, 15), (&big, 10), (&small, 5)];
             for (a, size) in cases {
                 let n = a.dim().0;
-                let genuine = oracle::nat("scipy_uniform_filter", &[a.clone()], &[("size", size as f64)])
+                let genuine = oracle::nat("scipy_uniform_filter", std::slice::from_ref(a), &[("size", size as f64)])
                     .remove(0);
                 let ours = uniform_filter_finite(a, size as i32);
                 // f64 box filter vs genuine scipy.uniform_filter; near-zero pixels
@@ -1181,8 +1181,8 @@ mod allen {
             // the frozen `watershed_from_markers_matches_skimage` golden, which is
             // a LIBRARY-PRIMITIVE pin against skimage, not a transcription.)
             let elevation = Array2::from_shape_fn((N, N), |(r, c)| {
-                let d1 = (((r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2)) as f64).sqrt();
-                let d2 = (((r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2)) as f64).sqrt();
+                let d1 = ((r as f64 - 6.0).powi(2) + (c as f64 - 6.0).powi(2)).sqrt();
+                let d2 = ((r as f64 - 17.0).powi(2) + (c as f64 - 17.0).powi(2)).sqrt();
                 d1.min(d2)
             });
             let mut markers = Array2::<i32>::zeros((N, N));
@@ -1373,7 +1373,7 @@ mod allen {
             ];
             let mut total = 0usize;
             for (name, ecc) in &scenes {
-                let genuine = oracle::nat_raw("localMin", &[ecc.clone()], &[("binSize", 0.5)])
+                let genuine = oracle::nat_raw("localMin", std::slice::from_ref(ecc), &[("binSize", 0.5)])
                     .remove(0)
                     .i32();
                 let ours = local_min_markers(ecc, 0.5);
@@ -1577,7 +1577,7 @@ mod allen {
 //
 // Parallel to `mod allen`. Built bedrock-up from the shared visual-space
 // coverage primitive `overRep` (the SNLC analog of Allen's `patch_visual_space`),
-// each step validated atomistically against the verbatim genuine reference (MATLAB authoritative; Octave the open cross-check).
+// each step validated atomistically against the verbatim genuine MATLAB reference.
 
 // Shared, golden-validated MATLAB-op host helpers (used by the SNLC split/fuse
 // refinement here AND by the pre-combine `direction_smoothing` adaptiveSmoother):
@@ -1799,7 +1799,7 @@ mod garrett {
     /// SNLC `getCenterPatch` (`splitPatchesX.m` subfunction): the patch region
     /// within `r_lim` degrees of the visual-field center, cleaned by a disk-2
     /// opening + 3×3 median. Verbatim port; golden-validated as a unit (the
-    /// `imopen`/`medfilt2` run as the real Octave ops in the fixture).
+    /// `imopen`/`medfilt2` run as the real MATLAB IPT ops in the fixture).
     pub(super) fn get_center_patch(
         kmap_rad: &Array2<f64>,
         im: &Array2<bool>,
@@ -1838,17 +1838,17 @@ mod garrett {
     }
 
     // -------------------------------------------------------------------------
-    // Octave `watershed(·, 4)` — Meyer flooding, 4-connected, watershed-line=0.
-    // A faithful port of Octave image's `watershed.cc` (a DIFFERENT oracle from
-    // the Allen lineage's skimage 8-connected `watershed_from_markers`). Used by
-    // `resetPatch`. Golden-validated against Octave's own `watershed.cc-tst`
-    // vectors by `watershed_octave4_matches_octave`.
+    // `watershed(·, 4)` — Meyer flooding (F. Meyer 1994), 4-connected,
+    // watershed-line=0. This is the algorithm MATLAB's IPT `watershed` implements
+    // (a DIFFERENT oracle from the Allen lineage's skimage 8-connected
+    // `watershed_from_markers`). Used by `resetPatch`. Validated live against the
+    // genuine MATLAB `watershed` by `watershed_matches_genuine_reference_live`.
     // -------------------------------------------------------------------------
 
     /// 4-connected neighbour offsets (N/S/W/E). (The SNLC `watershed(·,4)`.)
     const N4: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-    /// 8-connected neighbour offsets — the Octave `watershed`/`imregionalmin`
+    /// 8-connected neighbour offsets — the MATLAB `watershed`/`imregionalmin`
     /// DEFAULT (used by `getNlocalmin`: `imregionalmin(rad,8)` + `watershed(rad2)`).
     #[rustfmt::skip]
     const N8: [(i32, i32); 8] = [
@@ -1916,7 +1916,7 @@ mod garrett {
     }
 
     /// `conn`-connected labelling in **column-major** first-encounter order
-    /// (matching Octave `bwlabeln`, so the watershed's label numbers match it).
+    /// (matching MATLAB `bwlabeln`, so the watershed's label numbers match it).
     fn label_colmajor(mask: &Array2<bool>, offs: &[(i32, i32)]) -> Array2<i32> {
         let (h, w) = mask.dim();
         let in_bounds = |r: i32, c: i32| r >= 0 && r < h as i32 && c >= 0 && c < w as i32;
@@ -1947,7 +1947,7 @@ mod garrett {
     }
 
     /// A queued voxel. The priority queue pops the lowest `val`, ties broken by
-    /// lowest `pos` (insertion order = FIFO), exactly as Octave's `Voxel`.
+    /// lowest `pos` (insertion order = FIFO), as Meyer flooding's priority queue.
     struct Vox {
         val: f64,
         pos: u64,
@@ -1975,16 +1975,16 @@ mod garrett {
         }
     }
 
-    pub(super) fn watershed_octave4(im: &Array2<f64>) -> Array2<i32> {
-        watershed_octave(im, &N4)
+    pub(super) fn watershed_meyer4(im: &Array2<f64>) -> Array2<i32> {
+        watershed_meyer(im, &N4)
     }
-    pub(super) fn watershed_octave8(im: &Array2<f64>) -> Array2<i32> {
-        watershed_octave(im, &N8)
+    pub(super) fn watershed_meyer8(im: &Array2<f64>) -> Array2<i32> {
+        watershed_meyer(im, &N8)
     }
 
-    /// `watershed(im, conn)` — Octave's Meyer flooding. Returns labels with
-    /// watershed-line pixels at 0. Verbatim port of `watershed.cc`.
-    fn watershed_octave(im: &Array2<f64>, offs: &[(i32, i32)]) -> Array2<i32> {
+    /// `watershed(im, conn)` — Meyer flooding (the algorithm MATLAB's IPT
+    /// `watershed` implements). Returns labels with watershed-line pixels at 0.
+    fn watershed_meyer(im: &Array2<f64>, offs: &[(i32, i32)]) -> Array2<i32> {
         use std::collections::BinaryHeap;
         let (h, w) = im.dim();
         let in_bounds = |r: i32, c: i32| r >= 0 && r < h as i32 && c >= 0 && c < w as i32;
@@ -2056,7 +2056,7 @@ mod garrett {
     /// updated patch image (`q` replaced by its split, or unchanged if no split).
     ///
     /// Verbatim port — every step is a golden'd primitive: `bwdist`, the
-    /// `watershed_octave4`, `phi` (= `max(·,0)`), and the disk-1 cross
+    /// `watershed_meyer4`, `phi` (= `max(·,0)`), and the disk-1 cross
     /// morphology. The `-inf` barrier outside the dilated patch and the `0`
     /// forced minima at the center components reproduce the oracle exactly.
     pub(super) fn reset_patch(
@@ -2088,7 +2088,7 @@ mod garrett {
                 }
             }
         }
-        let wshed = watershed_octave4(&imdist);
+        let wshed = watershed_meyer4(&imdist);
         // sign(phi(wshed-1)): label 1 = the `-inf` surround, 0 = watershed lines,
         // ≥2 = the seed basins → keep only the seed-basin interiors.
         let basins = Array2::from_shape_fn((h, w), |(r, c)| wshed[[r, c]] >= 2);
@@ -2167,8 +2167,9 @@ mod garrett {
 
     /// The fft-based circular Gaussian smooth `splitPatchesX` applies to the
     /// position maps: `real(ifft2( fft2(map) .* abs(fft2(fspecial_gaussian)) ))`
-    /// — a zero-phase circular blur. FFT via `rustfft`; matched to Octave at an
-    /// ε-grounded tolerance (cross-library FFT roundoff ⇒ not bit-exact).
+    /// — a zero-phase circular blur. FFT via `rustfft`; matched to the genuine
+    /// MATLAB reference at an ε-grounded tolerance (cross-library FFT roundoff ⇒
+    /// not bit-exact).
     pub(super) fn fft_gaussian_smooth(map: &Array2<f64>, sigma: f64) -> Array2<f64> {
         let (h, w) = map.dim();
         let hh = fspecial_gaussian(h, w, sigma);
@@ -2205,7 +2206,7 @@ mod garrett {
         out
     }
 
-    /// 1-D **not-a-knot** cubic spline (Octave `spline.m`, the default end
+    /// 1-D **not-a-knot** cubic spline (MATLAB `spline`'s default end
     /// condition). Returns per-interval pp coefficients `(a, b, c, d)` (length
     /// n−1); on interval `i`, value at `t = q − x[i]` is `a+b·t+c·t²+d·t³`.
     fn spline_not_a_knot(x: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -2249,7 +2250,7 @@ mod garrett {
     }
 
     /// Evaluate the spline pp at `q` (extrapolating via the boundary interval's
-    /// polynomial outside `[x0, xn]`, as Octave's spline does).
+    /// polynomial outside `[x0, xn]`, as MATLAB's spline does).
     fn ppval(x: &[f64], a: &[f64], b: &[f64], c: &[f64], d: &[f64], q: f64) -> f64 {
         let n = x.len();
         // Interval i with x[i] <= q <= x[i+1]; clamp at the ends.
@@ -2263,9 +2264,9 @@ mod garrett {
     }
 
     /// `interp2(x, y, z, xi, yi, 'spline')` — tensor-product not-a-knot cubic
-    /// spline (Octave's `__splinen__`): spline along x (rows), then along y
-    /// (columns). `z` is indexed `[row=y, col=x]`. Matched to Octave at an
-    /// ε-grounded tolerance.
+    /// spline (MATLAB's `interp2` spline method): spline along x (rows), then along
+    /// y (columns). `z` is indexed `[row=y, col=x]`. Matched to the genuine MATLAB
+    /// reference at an ε-grounded tolerance.
     pub(super) fn interp2_spline(
         x: &[f64],
         y: &[f64],
@@ -2356,7 +2357,7 @@ mod garrett {
     // ── getNlocalmin toolbox: grayscale morphology, prctile, imimposemin ─────
 
     /// Grayscale erosion with a disk SE — local min over the SE (out-of-bounds
-    /// ignored, = Octave's `imerode` of a flat SE, which pads with +Inf).
+    /// ignored, = MATLAB's `imerode` of a flat SE, which pads with +Inf).
     fn gray_erode_disk(im: &Array2<f64>, radius: i32) -> Array2<f64> {
         let (h, w) = im.dim();
         let offs = disk_offsets(radius);
@@ -2416,7 +2417,7 @@ mod garrett {
         })
     }
 
-    /// `prctile(data, p)` — Octave's default (quantile method 5 / Hazen):
+    /// `prctile(data, p)` — MATLAB's definition (quantile method 5 / Hazen):
     /// piecewise-linear through `((k-0.5)/n, x_(k))`.
     fn prctile(data: &[f64], p: f64) -> f64 {
         let n = data.len();
@@ -2584,7 +2585,7 @@ mod garrett {
                 }
             }
         }
-        let ws = watershed_octave8(&rad2);
+        let ws = watershed_meyer8(&rad2);
         let newpatches = Array2::from_shape_fn((h, w), |(r, c)| ws[[r, c]] > 1);
         (nmin, newpatches)
     }
@@ -3001,7 +3002,7 @@ mod garrett {
         // genuine getPatchCoM.m live.
 
         /// **Live genuine-oracle, SNLC**: our `patch_com` vs the GENUINE
-        /// `getPatchCoM.m` (`reference/ISI`), executed live via Octave. Three
+        /// `getPatchCoM.m` (`reference/ISI`), executed live via MATLAB. Three
         /// rectangles → centroids are each exactly on-patch (no snap-correction
         /// tie ambiguity — that path stays covered by the frozen fixture). MATLAB
         /// `bwlabel` is column-major vs our row-major `label_4conn`, so the centroid
@@ -3010,6 +3011,9 @@ mod garrett {
         #[test]
         fn patch_com_matches_genuine_snlc_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("patch_com_matches_genuine_snlc_live") {
+                return;
+            }
             const H: usize = 40;
             const W: usize = 48;
             let mut im_f = Array2::<f64>::zeros((H, W));
@@ -3055,24 +3059,19 @@ mod garrett {
         }
 
 
-        // (Cutover, objective 1) The frozen `watershed_octave_matches_octave`
-        // golden + its ws4_*/ws8_*.bin fixtures + gen_watershed4_golden.m were
-        // DELETED: the live `watershed_octave_matches_genuine_reference_live` above was
-        // enriched to cover the same topology classes (monotonic ramp = single
-        // basin, two-basin, four-well multi-basin stress) × conn {4,8} against the
-        // the genuine `watershed` live, exact i32 labels.
-
-        /// **Live library-primitive oracle**: our `watershed_octave{4,8}`
-        /// vs the GENUINE IPT `watershed(A, conn)`, executed live. the genuine
+        /// **Live library-primitive oracle**: our `watershed_meyer{4,8}`
+        /// vs the GENUINE IPT `watershed(A, conn)`, executed live. The genuine
         /// watershed IS the oracle; the bridge only calls it. Exact i32 catchment
         /// labels (incl. watershed-line 0s and the reference's label numbering) across
-        /// the topologies the retired frozen golden held: a monotonic ramp (single
-        /// basin), two basins (one ridge), and a four-well stress (multi-basin).
-        /// Gated behind `oracle_live`.
+        /// three topologies: a monotonic ramp (single basin), two basins (one ridge),
+        /// and a four-well stress (multi-basin). Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn watershed_octave_matches_genuine_reference_live() {
+        fn watershed_matches_genuine_reference_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("watershed_matches_genuine_reference_live") {
+                return;
+            }
             const N: usize = 24;
             let well = |r: usize, c: usize, cr: f64, cc: f64| (r as f64 - cr).powi(2) + (c as f64 - cc).powi(2);
             let ramp = Array2::from_shape_fn((N, N), |(r, c)| (r + c) as f64);
@@ -3085,8 +3084,8 @@ mod garrett {
             });
             let scenes = [("ramp", ramp), ("two_basins", two_basins), ("four_wells", four_wells)];
             for (name, elev) in &scenes {
-                for (conn, ours) in [(4.0_f64, watershed_octave4(elev)), (8.0, watershed_octave8(elev))] {
-                    let genuine = oracle::snlc("watershed", &[elev.clone()], &[("conn", conn)]).remove(0);
+                for (conn, ours) in [(4.0_f64, watershed_meyer4(elev)), (8.0, watershed_meyer8(elev))] {
+                    let genuine = oracle::snlc("watershed", std::slice::from_ref(elev), &[("conn", conn)]).remove(0);
                     let mut diff = 0usize;
                     for r in 0..N {
                         for c in 0..N {
@@ -3096,25 +3095,23 @@ mod garrett {
                         }
                     }
                     eprintln!("watershed{} {name} vs GENUINE reference (live): diff={diff}", conn as i32);
-                    assert_eq!(diff, 0, "watershed_octave {name} diverges from the genuine watershed");
+                    assert_eq!(diff, 0, "watershed_meyer {name} diverges from the genuine watershed");
                 }
             }
         }
 
-        // (Cutover, objective 1) The frozen `bwdist_matches_octave` golden + its
-        // bwdist_*.bin fixtures + gen_bwdist_golden.m were DELETED: the live
-        // `bwdist_matches_genuine_reference_live` computes the genuine `bwdist`
-        // on scattered seeds (same semantic; f32 single-precision tolerance) live.
-
         /// **Live library-primitive oracle**: our `bwdist` vs the GENUINE
         /// IPT `bwdist`, executed live. The IPT bwdist is the oracle; the
-        /// bridge only calls it. Octave returns SINGLE, so the comparison is to f32
-        /// precision (the documented oracle dtype). Scattered seeds. Gated
+        /// bridge only calls it. MATLAB `bwdist` returns SINGLE, so the comparison is
+        /// to f32 precision (the documented oracle dtype). Scattered seeds. Gated
         /// behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn bwdist_matches_genuine_reference_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("bwdist_matches_genuine_reference_live") {
+                return;
+            }
             const H: usize = 20;
             const W: usize = 28;
             let mut seeds_f = Array2::<f64>::zeros((H, W));
@@ -3147,6 +3144,9 @@ mod garrett {
         #[test]
         fn fft_gaussian_smooth_matches_genuine_reference_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("fft_gaussian_smooth_matches_genuine_reference_live") {
+                return;
+            }
             const H: usize = 40;
             const W: usize = 48;
             let sigma = 2.0;
@@ -3156,7 +3156,7 @@ mod garrett {
                     - 0.25 * r as f64
             });
 
-            let genuine = oracle::snlc("fft_gaussian", &[map.clone()], &[("sigma", sigma)]).remove(0);
+            let genuine = oracle::snlc("fft_gaussian", std::slice::from_ref(&map), &[("sigma", sigma)]).remove(0);
             let ours = fft_gaussian_smooth(&map, sigma);
             Tol::rel(64, Eps::F64, 64).assert(
                 "fft_gaussian_smooth vs GENUINE reference (live)",
@@ -3165,12 +3165,6 @@ mod garrett {
             );
             eprintln!("fft_gaussian_smooth vs GENUINE reference (live): matched");
         }
-
-        // (Cutover, objective 1) The frozen `interp2_spline_matches_octave` golden
-        // + its i2s_*.bin fixtures + gen_interp2spline_golden.m were DELETED: the
-        // live `interp2_spline_matches_genuine_reference_live` below builds the
-        // identical scene (same smooth non-separable Z, U=3 upsample) and computes
-        // the genuine `interp2(...,'spline')` live.
 
         /// **Live library-primitive oracle**: our `interp2_spline`
         /// (ported not-a-knot tensor-product cubic spline) vs the GENUINE reference
@@ -3181,6 +3175,9 @@ mod garrett {
         #[test]
         fn interp2_spline_matches_genuine_reference_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("interp2_spline_matches_genuine_reference_live") {
+                return;
+            }
             const H: usize = 12;
             const W: usize = 15;
             const U: usize = 3;
@@ -3218,6 +3215,9 @@ mod garrett {
         #[test]
         fn imimposemin_matches_genuine_reference_live() {
             use crate::test_support::oracle;
+            if oracle::snlc_skip("imimposemin_matches_genuine_reference_live") {
+                return;
+            }
             const N: usize = 20;
             let im = Array2::from_shape_fn((N, N), |(r, c)| {
                 (r as f64 * 0.4).sin() + (c as f64 * 0.3).cos() + 0.02 * (r * c) as f64
@@ -3238,36 +3238,23 @@ mod garrett {
         // (Cutover, objective 1) over_rep / get_center_patch / reset_patch /
         // get_nlocalmin frozen goldens DELETED: gen_{overrep,centerpatch,
         // resetpatch,getnlocalmin} VERBATIM-transcribe splitPatchesX.m's
-        // FILE-LOCAL subfunctions (not separately callable; the parent
-        // splitPatchesX needs roifilt2 → can't run shim-free), so there is no
+        // FILE-LOCAL subfunctions (not separately callable), so there is no
         // genuine separable reference to call — they were self-authored oracles.
         // The frozen imimposemin golden was also dropped (the live
         // imimposemin_matches_genuine_reference_live supersedes it).
-
-
-        // The smooth/split/fuse composites were once "irreducible gaps" ONLY because
-        // Octave lacks `roifilt2` (so `smoothPatchesX` couldn't run, and we refused to
-        // author a shim). That was an OCTAVE limit, not a true gap: genuine MATLAB has
-        // `roifilt2`, so `splitPatchesX`/`fusePatchesX` run live under it. The test
-        // below closes the gap — the authoritative oracle for these is genuine MATLAB
-        // (SNLC is MATLAB code), and it skips cleanly under Octave.
 
         /// **Live genuine-MATLAB oracle**: our SNLC Garrett split→fuse refinement
         /// (`split_patches_x` then `fuse_patches_x`) vs the GENUINE `splitPatchesX.m`
         /// / `fusePatchesX.m`, executed live under real MATLAB. These bundle
         /// `smoothPatchesX`, which calls `roifilt2` (a MATLAB Image Processing Toolbox
-        /// function ABSENT in Octave) — so they cannot run under Octave; this is the
-        /// one method-coverage gap that was "irreducible" only because of Octave.
-        /// MATLAB-only: skipped unless `OPENISI_MATLAB` is set. Gated `oracle_live`.
+        /// function). SNLC is MATLAB code, so genuine MATLAB is the authoritative
+        /// oracle. MATLAB-only: skipped unless `OPENISI_MATLAB` is set. Gated
+        /// `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
         fn split_fuse_match_genuine_snlc_matlab_live() {
             use crate::test_support::{count_differing, oracle};
-            if std::env::var("OPENISI_MATLAB").is_err() {
-                eprintln!(
-                    "SKIP split_fuse_match_genuine_snlc_matlab_live: needs genuine MATLAB \
-                     (splitPatchesX/fusePatchesX use roifilt2, absent in Octave)"
-                );
+            if oracle::snlc_skip("split_fuse_match_genuine_snlc_matlab_live") {
                 return;
             }
             const N: usize = 64;
@@ -3289,7 +3276,7 @@ mod garrett {
             // split
             let g_split = oracle::snlc(
                 "splitpatchesx",
-                &[im.mapv(|b| f64::from(b)), azi.clone(), alt.clone(), ecc.clone()],
+                &[im.mapv(f64::from), azi.clone(), alt.clone(), ecc.clone()],
                 &[("pixpermm", pixpermm)],
             )
             .remove(0);

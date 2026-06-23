@@ -41,42 +41,42 @@ variants (`PIPELINE_METHODS.md` §2). Agreement is the asserted bound.
 |---|---|---|---|---|
 | 0 baseline | `temporal_mean_baseline` + ΔF/F | Allen `ImageAnalysis.normalizeMovie('mean')` | `dff_matches_allen_normalize_movie_mean` | F0 1e-9; dF/F 1e-5 |
 | 0 baseline | `temporal_median_baseline` | numpy `np.median(axis=0)` (even-N convention) | `median_baseline_matches_numpy` | 1e-9 |
-| 0 DFT | `dft_projection_at_freq` (F1 complex) | numpy `np.fft.fft(...)[1]` | `dft_projection_matches_numpy_fft_bin1` | 1e-3 (f32) |
+| 0 DFT | `dft_projection_at_freq` (F1 complex) | numpy `np.fft.fft(...)[1]` | `dft_projection_matches_genuine_numpy_fft_live` | 1e-3 (f32) |
 | 0 cycle-avg | `SimpleComplexAverage` | DFT-of-averaged-frames identity | `simple_complex_average_equals_dft_of_averaged_frames` | property |
 | 0 cycle-avg | `PhaseLockedAverage` | amplitude-preservation under global phase drift | `phase_locked_average_preserves_amplitude...` | property |
-| 1 cycle-combine | `KalatskyStryker2003DelaySubtraction` | SNLC `Gprocesskret.m` 88-99 (Octave) | `kalatsky_combine_matches_snlc_gprocesskret` | 1e-5 |
+| 1 cycle-combine | `KalatskyStryker2003DelaySubtraction` | SNLC `Gprocesskret.m` 88-99 (genuine MATLAB) | `combine_and_delay_match_genuine_snlc_gprocesskret_live` | 1e-5 |
 | 2 phase-smooth | `SnlcAmpWeightedPhasor` | SNLC complex-F1 smoothing (phase identity) | `amp_weighted_phase_equals_snlc_complex_smoothing` | 1e-5 |
 | 2 phase-smooth | `AllenZhuang2017PositionGaussian` | Allen `_getSignMap` `gaussian_filter(positionMap)` | `allen_position_gaussian_matches_scalar_gaussian_on_phase` (transitive via scipy gaussian golden) | 1e-5 |
-| 3 VFS | `OpenIsiChainRulePhasorGradient` | Allen `visualSignMap` (RM.py 446-478) | `vfs_matches_allen_visual_sign_map_on_smooth_input` + `..._stable_across_phase_wraps...` | 1.3e-5 + wrap-stable |
-| 4 sign-smooth | `Gaussian` (`gaussian_smooth_f64` / tensor) | scipy `gaussian_filter` (reflect, 4σ) | `gaussian_smooth_matches_scipy_gaussian_filter`, `tensor_gaussian_smooth_matches_scipy` | 2.2e-15 (f64) / 1e-4 (f32) |
-| 5 cortex | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` strel seq (Octave) | `cortex_morphology_matches_octave_strel_ops`, `snlc_cortex_endtoend_matches_octave` | 0 diff |
+| 3 VFS | `OpenIsiChainRulePhasorGradient` | Allen `visualSignMap` (RM.py 446-478) | `vfs_matches_genuine_nat_visual_sign_map_live` + `vfs_stable_across_phase_wraps_where_allen_gradient_spikes` | 1.3e-5 + wrap-stable |
+| 4 sign-smooth | `Gaussian` (`gaussian_smooth_f64` / tensor) | scipy `gaussian_filter` (reflect, 4σ) | `gaussian_smooth_matches_genuine_scipy_live`, `tensor_gaussian_smooth_matches_genuine_scipy_live` | 2.2e-15 (f64) / 1e-4 (f32) |
+| 5 cortex | `SnlcGarrett2014ImBound` | `getMouseAreasX.m` strel seq (genuine MATLAB) | `cortex_morphology_matches_genuine_reference_live`, `snlc_cortex_endtoend_matches_reference` | 0 diff |
 | 5 cortex | largest 4-conn CC (first-max tie) | SNLC `argmax` / `getMouseAreasX.m` | `keep_largest_component_tiebreak_matches_snlc_argmax` | 0 |
 | 6 patch-thr | `AllenZhuang2017FixedSignMapThr` | Allen `_getRawPatchMap` (\|signMapf\|≥0.35) | `patch_threshold_matches_reference` | 0 |
 | 6 patch-thr | `Garrett2014SigmaScaled` | Garrett `k·std·0.5`, MATLAB N−1 std | `patch_threshold_matches_reference` | 0 |
-| 7 patch-extract | `raw_patch_map_allen` | Allen scipy.ndimage (verbatim) | `allen_raw_patch_map_matches_scipy` | 0 |
-| 7 patch-extract | `dilation_patches2_allen` | Allen scipy + skimage (verbatim) | `dilation_patches2_matches_allen` | 0 |
-| 7 patch-extract | `skeletonize` | skimage `_fast_skeletonize` LUT | `skeletonize_matches_skimage` | 0 |
-| 7 patch-extract | `is_adjacent` | Allen scipy `binary_dilation` | `is_adjacent_matches_allen` | 40/40 |
-| 7 patch-extract | `label_4conn` | scipy.ndimage `label` (4-conn) | `label_4conn_matches_scipy_ndimage_label` | 0 |
-| 7 patch-extract | cross-iter open (thr-only path) | Allen scipy cross-iterated-3 | `segment_threshold_only_opening_matches_allen` | 0 |
-| 7 patch-extract | majority patch sign | SNLC `getPatchSign` (except sign(0)) | `patch_sign_majority_matches_snlc_except_zero_mean` | 0 (zero-mean = documented +1) |
-| 8 patch-refine | `watershed_from_markers` | skimage `segmentation.watershed` | `watershed_from_markers_matches_skimage` | 0 |
-| 8 patch-refine | `split2` | Allen `Patch.split2` (verbatim) | `split2_matches_allen_watershed_branch` | 0 |
-| 8 patch-refine | `local_min_markers` | Allen `localMin` | `local_min_matches_allen_localmin` | 0 |
-| 8 patch-refine | `merge_two` | Allen `mergePatches` | `merge_two_matches_allen_mergepatches` | 0 |
-| 8 patch-refine | `uniform_filter` | scipy `uniform_filter` (reflect) | `uniform_filter_matches_scipy_reflect` | 1e-14 |
-| 8 patch-refine | `sigma_area` (NaN-propagating) | Allen `getSigmaArea` | `sigma_area_matches_allen_get_sigma_area` | NaN-exact |
-| 8 patch-refine | `patch_visual_space` / center | Allen `getVisualSpace` (verbatim) | `patch_visual_space_matches_allen...`, `eccentricity_full_image_and_center_match_allen` | 1e-15 |
-| 9 ecc | `OpenIsiWholeCortexV1` per-pixel formula | Allen `eccentricityMap` (RM.py 729-760) | `garrett_eccentricity_matches_allen_eccentricitymap` | 1e-9 |
+| 7 patch-extract | `raw_patch_map_allen` | Allen scipy.ndimage (verbatim) | `raw_patch_map_matches_genuine_nat_live` | 0 |
+| 7 patch-extract | `dilation_patches2_allen` | Allen scipy + skimage (verbatim) | `dilation_patches2_matches_genuine_nat_live` | 0 |
+| 7 patch-extract | `skeletonize` | skimage `_fast_skeletonize` LUT | `skeletonize_matches_genuine_skimage_live` | 0 |
+| 7 patch-extract | `is_adjacent` | Allen scipy `binary_dilation` | `is_adjacent_matches_genuine_nat_live` | 40/40 |
+| 7 patch-extract | `label_4conn` | scipy.ndimage `label` (4-conn) | `label4conn_matches_genuine_scipy_live` | 0 |
+| 7 patch-extract | cross-iter open (thr-only path) | Allen scipy cross-iterated-3 | `cross_morphology_matches_genuine_scipy_live` <!-- STALE: dedicated `segment_threshold_only_opening_matches_allen` was a deleted transcription; the cross-iterated-3 opening primitive is now validated live here --> | 0 |
+| 7 patch-extract | majority patch sign | SNLC `getPatchSign` (except sign(0)) | `patch_sign_matches_genuine_snlc_getpatchsign_live` | 0 (zero-mean = documented +1) |
+| 8 patch-refine | `watershed_from_markers` | skimage `segmentation.watershed` | `watershed_from_markers_matches_genuine_skimage_live` | 0 |
+| 8 patch-refine | `split2` | Allen `Patch.split2` (verbatim) | `split2_matches_genuine_nat_live` | 0 |
+| 8 patch-refine | `local_min_markers` | Allen `localMin` | `local_min_matches_genuine_nat_live` | 0 |
+| 8 patch-refine | `merge_two` | Allen `mergePatches` | `merge_two_matches_genuine_nat_live` | 0 |
+| 8 patch-refine | `uniform_filter` | scipy `uniform_filter` (reflect) | `uniform_filter_matches_genuine_scipy_live` | 1e-14 |
+| 8 patch-refine | `sigma_area` (NaN-propagating) | Allen `getSigmaArea` | `sigma_area_matches_genuine_nat_live` | NaN-exact |
+| 8 patch-refine | `patch_visual_space` / center | Allen `getVisualSpace` (verbatim) | `patch_visual_space_matches_genuine_nat_live`, `eccentricity_full_image_and_center_match_genuine_nat_live` | 1e-15 |
+| 9 ecc | `OpenIsiWholeCortexV1` per-pixel formula | Allen `eccentricityMap` (RM.py 729-760) | `eccentricity_matches_genuine_nat_eccentricitymap_live` | 1e-9 |
 | 9 ecc | `SnlcGetAreaBordersV1Center` | SNLC `getAreaBorders`/`getV1id`/`getPatchCoM` (verbatim) | `compute_eccentricity_snlc_matches_get_area_borders` | machine-precision (f64) |
-| — magnification | `compute_magnification_jacobian` (\|det J\| = `magnification_raw`) | Allen `_getDeterminantMap` (\|det J\|) — Allen stops here, it NEVER inverts | `magnification_jacobian_matches_allen_determinant_map` (\|det J\| vs Allen) | 1e-3 |
+| — magnification | `compute_magnification_jacobian` (\|det J\| = `magnification_raw`) | Allen `_getDeterminantMap` (\|det J\|) — Allen stops here, it NEVER inverts | `magnification_matches_genuine_nat_determinant_map_live` (\|det J\| vs Allen) | 1e-3 |
 | — magnification (display) | `magnification` leaf = `1/max(\|det J\|, eps)` | **OpenISI display transform, no oracle** — the physiological CMF direction; tail at near-singular px is an inversion artifact handled by the renderer (no cap — see `math.rs::cortical_magnification_factor`) | same test, CMF-vs-own-golden branch | 1e-2 (own golden) |
-| — amplitude | `position_amplitude` | SNLC `Gprocesskret.m` `magS` | `position_amplitude_matches_snlc_mags` | 1e-5 |
+| — amplitude | `position_amplitude` | SNLC `Gprocesskret.m` `magS` | `position_amplitude_matches_genuine_snlc_gprocesskret_live` | 1e-5 |
 | — reliability | `responsiveness::reliability` (coherence) | Engel 1994 / Zhuang 2017 `\|ΣZ\|/Σ\|Z\|` | `reliability_matches_coherence_formula` | 1e-5 |
 | — responsiveness | `allen_spectral_power_snr_mask` | Allen `corticalmapping` `generatePhaseMap` (power) | `allen_power_snr_mask_matches_corticalmapping` (+`..._thresholded...`, `..._device...`) | 0 / f32 |
 | — responsiveness | spectral SNR (multi-bin rule) | documented rule (numpy transcription) | `spectral_snr_matches_documented_bin_rule` | 1e-6 |
-| — morphology | binary open/close/fill/dilate (disk/cross) | Octave `imerode/dilate/open/close/fill`, scipy | `allen_cross_morphology_matches_scipy`, cortex goldens | 0 |
-| — separable | `reflect` separable, radius > n | scipy `mode='reflect'` | `reflect_and_separable_match_scipy_large_radius` | ~1e-16 |
+| — morphology | binary open/close/fill/dilate (disk/cross) | MATLAB `imerode/dilate/open/close/fill`, scipy | `cross_morphology_matches_genuine_scipy_live`, cortex goldens | 0 |
+| — separable | `reflect` separable, radius > n | scipy `mode='reflect'` | `separable_filter_matches_genuine_scipy_live` | ~1e-16 |
 
 ## Tier 2 — full-composition vs analytic ground truth (`synthetic_ground_truth.rs`)
 
@@ -110,7 +110,7 @@ pending review.
 | Item | The choice | Why it's open | Lock |
 |---|---|---|---|
 | Visual-space grid | rig-adaptive data bbox **vs** Allen-fixed `[-40,60]×[-20,120]` | code comment marks the deviation intentional ("adapts to the rig") | `derive_visual_grid_is_openisi_data_bbox_not_allen_fixed_range` |
-| Patch sign | collapsed `±1` **vs** three-valued `sign(mean)` incl. 0 | differs only at exact-zero-mean (measure-zero on smoothed VFS) | `patch_sign_majority_matches_snlc_except_zero_mean` |
+| Patch sign | collapsed `±1` **vs** three-valued `sign(mean)` incl. 0 | differs only at exact-zero-mean (measure-zero on smoothed VFS) | `patch_sign_matches_genuine_snlc_getpatchsign_live` |
 | V1 ecc center | Allen-convention CoM (`OpenIsiWholeCortexV1`) **vs** SNLC `getAreaBorders` (`SnlcGetAreaBordersV1Center`) | the two references genuinely conflict (cos·altitude vs cos·azimuth; imopen pre-step); both variants now exist and each is golden-pinned to its own oracle, so this is a default-selection choice, not a gap | `compute_eccentricity_v1_center_pins_current_allen_convention` |
 
 ## NOT YET VALIDATED (no legitimate external oracle)
@@ -120,7 +120,7 @@ are **regression-locks on our own current behaviour only**.
 
 | Method | Status | Note |
 |---|---|---|
-| **Reliability cortex** (`CortexSource::Reliability` → `cortex_from_reliability`) | **OpenISI's own — no oracle for the mask** | The cross-cycle *coherence* metric IS golden (`reliability_matches_coherence_formula`, Engel 1994 / Zhuang 2017). The cortex-MASK derivation on top (min-over-directions threshold → largest-CC → fill) has NO oracle: Zhuang `RetinotopicMapping.py` uses no power/coherence ROI mask and segments full-frame (verified from source 2026-06-16). Pinned only by `cortex_from_reliability_pins_current_threshold_rule`. Threshold is `>=` (inclusive), following the reference's own threshold convention (`signMapf >= signMapThr`); KimLabISI (our predecessor, not an oracle) also used `>=`. |
+| **Reliability cortex** (`CortexSource::Reliability` → `cortex_from_reliability`) | **OpenISI's own — no oracle for the mask** | The cross-cycle *coherence* metric IS golden (`reliability_matches_coherence_formula`, Engel 1994 / Zhuang 2017). The cortex-MASK derivation on top (min-over-directions threshold → largest-CC → fill) has NO oracle: Zhuang `RetinotopicMapping.py` uses no power/coherence ROI mask and segments full-frame (verified from source 2026-06-16). Pinned only by `cortex_from_reliability_pins_current_threshold_rule`. Threshold is `>=` (inclusive), following the reference's own threshold convention (`signMapf >= signMapThr`). |
 | `CortexSource::NoRestriction` | n/a | trivial pass-through — no oracle applies. |
 | `PatchRefinement::None` | n/a | identity pass-through (`none_passes_through_unchanged`). |
 

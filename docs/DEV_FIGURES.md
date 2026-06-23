@@ -9,11 +9,14 @@ anatomical as grayscale.
 repo root, separate from the user's data directory so dev artifacts don't
 intermingle with real recordings. `dev_figures/` is gitignored.
 
-**Run tag.** `<baseline_mode>-<device>-<UTC-timestamp>`, e.g.
-`allframes-cuda-20260603T1145`. Tag components are pulled from
-`params.baseline_mode`, `compute::device_tag()` after resolution, and the
-current UTC minute. Different runs never overwrite each other; side-by-side
-comparison across baseline modes or devices is `ls dev_figures/<stem>/`.
+**Run tag.** `<device>-<UTC-timestamp>`, e.g. `cuda-20260603T1145`. Tag
+components are pulled from `compute::device_tag()` after resolution (`cuda` /
+`cpu`) and the current UTC minute (`default_figures_dir` in
+`src-tauri/src/bin/headless/figures.rs`). Runs that differ by device or
+minute land in distinct directories; side-by-side comparison across devices is
+`ls dev_figures/<stem>/`. (Two runs that differ only in baseline mode within
+the same UTC minute share a tag — use an explicit `--figures <path>` to keep
+them separate.)
 
 **meta.json.** Each run directory contains a JSON file recording the full
 reproduction context. Uses portable identifiers from the `.oisi` root
@@ -28,8 +31,6 @@ attributes (`animal_id`, `created_at`), not absolute paths, so a
     "created_at": "1778801597"
   },
   "device": "CUDA (Burn dispatch)",
-  "baseline_mode": "OutsideSweepWindows",
-  "baseline_frame_count": 250,
   "git_sha": "350aa2d",
   "git_dirty": true,
   "git_branch": "main",

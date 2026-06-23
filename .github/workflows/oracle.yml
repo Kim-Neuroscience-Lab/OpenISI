@@ -2,17 +2,18 @@ name: Genuine-oracle validation
 
 # Runs the live oracle suite on a CLEAN runner from committed lockfiles alone — the
 # "reproduces on a second machine" gate (objective 7). TWO jobs with different
-# fidelity, labelled honestly:
+# coverage, labelled honestly:
 #
-#   * `oracle` (hosted, always-on) — the NAT/Allen Python oracle is GENUINE here
-#     (CPython, uv-locked, the real reference interpreter). The SNLC side runs the
-#     real `.m` under **Octave**, which is a re-implementation of the MATLAB
-#     *language* — so for SNLC this is an OPEN CROSS-CHECK, not the genuine MATLAB
-#     oracle (Octave ≠ MATLAB; see the imclose-border + split/fuse divergences).
-#   * `oracle-matlab` (self-hosted, MATLAB machine) — SNLC under GENUINE MATLAB, the
-#     authoritative oracle. Free hosted MATLAB-in-Actions can't reach our cargo-
-#     spawned matlab-batch (action-scoped licence, see that job), so this needs a
-#     self-hosted runner; it also runs locally on the dev host.
+#   * `oracle` (hosted, always-on) — validates the NAT/Allen Python half GENUINELY
+#     (CPython, uv-locked, the real reference interpreter). The SNLC half needs
+#     genuine MATLAB, which a hosted runner does not have, so those tests SKIP
+#     cleanly here (each prints a SKIP line and passes). This job is therefore the
+#     genuine NAT gate + a compile/skip check of the SNLC tests on a second machine.
+#   * `oracle-matlab` (self-hosted, MATLAB machine) — the FULL gate: NAT genuine +
+#     SNLC under GENUINE MATLAB, the authoritative oracle (SNLC is MATLAB code, so
+#     only genuine MATLAB faithfully validates it). Free hosted MATLAB-in-Actions
+#     can't reach our cargo-spawned matlab-batch (action-scoped licence, see that
+#     job), so this needs a self-hosted runner; it also runs locally on the dev host.
 #
 # Kept separate from the hermetic `Test` workflow; only this workflow provisions the
 # oracle toolchains, and only when oracle / harness / reference files change.
@@ -38,12 +39,9 @@ on:
 
 jobs:
   oracle:
-    # Pinned Ubuntu (NOT ubuntu-latest) so the SNLC oracle's Octave version is
-    # fixed — Ubuntu does not bump Octave's major/minor within a release, so the
-    # env can't silently drift when the `-latest` alias advances. The exact version
-    # is logged each run (below) for an auditable record. (For a fully digest-locked
-    # Octave, a `container:` image would be the next step; ubuntu-24.04 + the version
-    # log is the practical lock and the suite reproduces green on it.)
+    # Pinned Ubuntu (NOT ubuntu-latest) so the NAT oracle env is reproduced on a
+    # stable base image. The NAT half is validated genuinely here; the SNLC half
+    # skips (no MATLAB on a hosted runner) and is covered by `oracle-matlab`.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -67,34 +65,20 @@ jobs:
         # committed lock alone, not from whatever happens to resolve today.
         run: uv sync --project crates/isi-analysis/tests/oracle/nat --locked
 
-      # --- SNLC oracle: Octave + the image package -------------------------------
-      # Octave version is fixed by the pinned ubuntu-24.04 runner (above). It differs
-      # from the dev host's Octave 11.2.0, but the Octave≈MATLAB gap is an already-
-      # flagged, ε-tolerated approximation (see tests/oracle/snlc/README.md) and the
-      # version difference is a sub-case of it — the live suite reproduces GREEN here
-      # within those bounds (tolerance-based validity, not bit-identity). The exact
-      # version is recorded each run so any future drift is visible, not assumed away.
-      - name: Install Octave + image package (SNLC oracle env)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y octave octave-image
-          echo "::notice title=SNLC oracle Octave::$(octave-cli --version | head -1)"
-          octave-cli --version | head -1
-
-      # --- the genuine-oracle suite, live ----------------------------------------
-      - name: Genuine-oracle suite (live, against the real references)
+      # --- the live oracle suite -------------------------------------------------
+      # OPENISI_MATLAB is deliberately UNSET: the NAT/Python tests run genuinely
+      # against the uv-locked reference, while the SNLC tests skip cleanly (each
+      # prints a SKIP line and passes). The SNLC half is validated under genuine
+      # MATLAB by the self-hosted `oracle-matlab` job below.
+      - name: Genuine-oracle suite (NAT live; SNLC skips without MATLAB)
         env:
           OPENISI_UV: uv
-          OPENISI_OCTAVE: octave-cli
         run: cargo test -p isi-analysis --lib --features oracle_live
 
   # ── Genuine MATLAB SNLC oracle — SELF-HOSTED runner (the lab's licensed MATLAB) ──
-  # SNLC is MATLAB code, so genuine MATLAB is the ONLY faithful oracle for it: Octave
-  # is a re-implementation of the MATLAB *language*, so running the `.m` under Octave
-  # validates against Octave's interpretation, NOT the reference the field used (the
-  # imclose-border + split/fuse divergences are direct proof). The `oracle` job above
-  # is therefore an OPEN CROSS-CHECK (genuine NAT/Python + Octave-SNLC), not the
-  # genuine MATLAB-SNLC gate.
+  # SNLC is MATLAB code, so genuine MATLAB is the ONLY faithful oracle for it. The
+  # hosted `oracle` job above validates the NAT/Python half and SKIPS the SNLC tests
+  # (no MATLAB on a hosted runner); this job is the authoritative SNLC gate.
   #
   # Free MATLAB-in-Actions for public repos is real, but its licence is ACTION-SCOPED:
   # it licenses only the matlab the matlab-actions run-* actions launch, and does NOT
@@ -103,9 +87,9 @@ jobs:
   # run-command wrapping cargo) — all fail "Unable to find a license" (Error -1.2),
   # the nested matlab-batch falling through to a license-FILE search. So genuine-MATLAB
   # CI needs a SELF-HOSTED runner on a MATLAB-licensed machine (the lab workstation has
-  # R2025b). It runs the SAME suite as the Octave job but with SNLC under genuine
-  # MATLAB — the authoritative oracle (imclose border exact, split/fuse runnable) and
-  # a faithful objective-7 "second machine".
+  # R2025b). It runs the SAME suite as the hosted `oracle` job but with SNLC LIVE under
+  # genuine MATLAB — the authoritative oracle (imclose border exact, split/fuse
+  # runnable) and a faithful objective-7 "second machine".
   #
   # SKIPPED (not failed) until the lab registers a runner labelled `self-hosted,matlab`
   # (with MATLAB R2025b + IPT on its PATH) and sets repo variable

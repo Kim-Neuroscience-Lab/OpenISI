@@ -32,8 +32,8 @@ mod tests {
     const N: usize = 96;
 
     /// `SnlcMagThreshold` (the `overlaymaps.m` response-magnitude ROI gate)
-    /// matches the verbatim Octave lines: `mag = magf.^1.1; mag = mag − min; mag
-    /// = mag/max; magROI = mag ≥ .12`. Boolean mask ⇒ exact match. Fixtures from
+    /// matches the verbatim `overlaymaps.m` lines: `mag = magf.^1.1; mag = mag − min;
+    /// mag = mag/max; magROI = mag ≥ .12`. Boolean mask ⇒ exact match. Fixtures from
     /// `gen_magroi_golden.m` (40×48).
     #[test]
     fn snlc_mag_threshold_roi_matches_overlaymaps() {
@@ -50,9 +50,9 @@ mod tests {
         assert_eq!(d, 0, "mag-threshold ROI diverged from overlaymaps.m");
     }
 
-    // (Cutover, objective 6) The frozen `cortex_morphology_matches_octave_strel_ops`
+    // (Cutover, objective 6) The frozen `cortex_morphology_matches_strel_ops`
     // golden + its six `cortex_morph_*.bin` fixtures + BOTH owning generators
-    // (gen_cortex_morph_golden.m, which wrote the input mask + five Octave op
+    // (gen_cortex_morph_golden.m, which wrote the input mask + five IPT op
     // outputs, and the now-dead gen_patch_morph_golden.py, which read the mask and
     // wrote unconsumed patch_morph_*.bin) were DELETED. Every op it checked is
     // validated LIVE each run: the four disk-strel ops by
@@ -77,6 +77,9 @@ mod tests {
         };
         use crate::test_support::oracle;
         use ndarray::Array2;
+        if oracle::snlc_skip("cortex_morphology_matches_genuine_reference_live") {
+            return;
+        }
         const N: usize = 64;
         // A blob with a thin spur (opening trims), a notch + interior hole
         // (closing/fill act), near another blob (dilation bridges).
@@ -103,7 +106,7 @@ mod tests {
         }
         // Blob straddling the TOP border (row 0) — exercises edge padding for
         // imopen/imclose/imdilate/imfill (the curated stress case the retired
-        // frozen `cortex_morphology_matches_octave_strel_ops` golden held; ported
+        // frozen `cortex_morphology_matches_strel_ops` golden held; ported
         // here so the live oracle covers it, no blind coverage loss).
         for r in 0..6 {
             for c in 6..18 {
@@ -118,13 +121,9 @@ mod tests {
             ("imdilate_disk", 3.0, binary_dilation_disk(&mask, 3)),
             ("imfill_holes", 0.0, binary_fill_holes(&mask)),
         ];
-        // `imclose` is the one genuine Octave≈MATLAB divergence: MATLAB `imclose`
-        // pads the image with 0 by the SE radius (verified bit-exact vs R2025b), so
-        // our `binary_closing_disk` now matches genuine MATLAB; Octave does the naive
-        // `dilate→erode`, differing ONLY within `radius` px of the image edge. So
-        // against genuine MATLAB the match is exact; against the Octave approximation
-        // the divergence is confined to the border (a real INTERIOR bug still fails).
-        let on_matlab = std::env::var("OPENISI_MATLAB").is_ok();
+        // All four are bit-exact against genuine MATLAB, including `imclose`: MATLAB
+        // `imclose` pads the image with 0 by the SE radius (verified vs R2025b), and
+        // our `binary_closing_disk` mirrors that padding, so the border matches too.
         for (fname, radius, ours) in &cases {
             let params: Vec<(&str, f64)> = if *fname == "imfill_holes" {
                 vec![]
@@ -132,32 +131,16 @@ mod tests {
                 vec![("radius", *radius)]
             };
             let genuine = oracle::snlc(fname, &[f.clone()], &params).remove(0);
-            let rr = *radius as usize;
-            let (mut total, mut off_border) = (0usize, 0usize);
+            let mut total = 0usize;
             for r in 0..N {
                 for c in 0..N {
                     if (ours[[r, c]] as i32) != genuine[[r, c]].round() as i32 {
                         total += 1;
-                        if r >= rr && r < N - rr && c >= rr && c < N - rr {
-                            off_border += 1;
-                        }
                     }
                 }
             }
-            if *fname == "imclose_disk" && !on_matlab {
-                eprintln!(
-                    "  imclose_disk  vs GENUINE reference (live): {total} px differ \
-                     (off-border={off_border}; documented Octave≈MATLAB pad-0-crop gap)"
-                );
-                assert_eq!(
-                    off_border, 0,
-                    "imclose diverges from Octave OFF the border — a real interior bug, \
-                     not the pad-0-crop gap"
-                );
-            } else {
-                eprintln!("  {fname:14} vs GENUINE reference (live): differing px = {total}");
-                assert_eq!(total, 0, "{fname} diverges from the genuine reference");
-            }
+            eprintln!("  {fname:14} vs GENUINE reference (live): differing px = {total}");
+            assert_eq!(total, 0, "{fname} diverges from the genuine reference");
         }
     }
 
@@ -168,12 +151,12 @@ mod tests {
     /// defining it (`getMouseAreasX.m` is the GUI pipeline). Each *primitive* in
     /// the sequence IS validated live (`cortex_morphology_matches_genuine_reference_live`
     /// and `keep_largest_component_tiebreak_*`); this frozen golden pins only the
-    /// orchestration order, against a one-off Octave run of the same sequence.
+    /// orchestration order, against a one-off genuine-MATLAB run of the same sequence.
     /// End-to-end: the real `CortexSourceMethod::resolve` for `SnlcGarrett2014ImBound`
     /// on a |VFS| field. Input has a wide threshold margin so the std N-vs-(N−1)
     /// convention cannot flip a pixel — this pins the orchestration.
     #[test]
-    fn snlc_cortex_endtoend_matches_octave() {
+    fn snlc_cortex_endtoend_matches_reference() {
         let vfs_flat = load_f64(include_bytes!("../../tests/golden/fixtures/cortex_full_vfs.npy"));
         assert_eq!(vfs_flat.len(), N * N);
         let vfs = Array2::from_shape_fn((N, N), |(r, c)| vfs_flat[r * N + c]);
@@ -194,7 +177,7 @@ mod tests {
 
         let d = count_differing(&cortex, &golden);
         eprintln!("  SNLC cortex end-to-end: differing px = {d}");
-        assert_eq!(d, 0, "SNLC cortex orchestration diverges from Octave");
+        assert_eq!(d, 0, "SNLC cortex orchestration diverges from the genuine-MATLAB reference");
     }
 
     // (Cutover, objective 6) The frozen `allen_cross_morphology_matches_scipy`
@@ -299,7 +282,7 @@ mod tests {
 
     /// **Live genuine-oracle, SNLC**: our per-patch sign assignment vs the
     /// GENUINE SNLC `getPatchSign` (`sign(mean(imsign over patch))`), executed live
-    /// via Octave. Tested on non-zero-mean patches (where they agree). The
+    /// via MATLAB. Tested on non-zero-mean patches (where they agree). The
     /// zero-mean case is a documented deviation — MATLAB `sign(0)=0` (undefined
     /// patch sign) vs our deterministic `+1` tie-break — recorded in the ledger,
     /// not silently reconciled. Gated behind `oracle_live`.
@@ -309,6 +292,9 @@ mod tests {
         use crate::segmentation::connectivity::{label_4conn, patches_from_labels_majority_sign};
         use crate::test_support::oracle;
         use ndarray::Array2;
+        if oracle::snlc_skip("patch_sign_matches_genuine_snlc_getpatchsign_live") {
+            return;
+        }
         const M: usize = 32;
         let mut im = Array2::<f64>::zeros((M, M));
         let mut sgn = Array2::<f64>::zeros((M, M));
@@ -393,7 +379,7 @@ mod tests {
             x + 0.5 * y
                 + (-(((r as f64 - 30.0).powi(2) + (c as f64 - 40.0).powi(2)) / 100.0)).exp()
         });
-        let genuine = oracle::nat("scipy_gaussian_filter", &[input.clone()], &[("sigma", 4.0)]).remove(0);
+        let genuine = oracle::nat("scipy_gaussian_filter", std::slice::from_ref(&input), &[("sigma", 4.0)]).remove(0);
         let ours = gaussian_smooth_f64(&input, 4.0);
         // f64 separable Gaussian vs genuine scipy.ndimage.gaussian_filter. The
         // smoothed field has near-zero pixels (the low corner) → an ABSOLUTE
@@ -441,7 +427,7 @@ mod tests {
         // not bit-identical label integers.
         let partition_mismatches = |f: &Array2<f64>| -> usize {
             let mask = f.mapv(|v| v != 0.0);
-            let genuine = oracle::nat_raw("scipy_label", &[f.clone()], &[]).remove(0).i32();
+            let genuine = oracle::nat_raw("scipy_label", std::slice::from_ref(f), &[]).remove(0).i32();
             let (ours, _n) = label_4conn(&mask);
             let mut o2g: HashMap<i32, i32> = HashMap::new();
             let mut g2o: HashMap<i32, i32> = HashMap::new();
@@ -525,7 +511,7 @@ mod tests {
         let mut halo = Array2::<f64>::zeros((M, M));
         for r in 10..54 {
             for c in 10..54 {
-                let on_border = r < 18 || r >= 46 || c < 18 || c >= 46;
+                let on_border = !(18..46).contains(&r) || !(18..46).contains(&c);
                 if on_border {
                     halo[[r, c]] = 1.0;
                 }
@@ -548,7 +534,7 @@ mod tests {
         let cases = [("block", block), ("halo", halo), ("barbell", barbell)];
         let mut total = 0usize;
         for (name, f) in &cases {
-            let genuine = oracle::nat_raw("skimage_skeletonize", &[f.clone()], &[])
+            let genuine = oracle::nat_raw("skimage_skeletonize", std::slice::from_ref(f), &[])
                 .remove(0)
                 .bool();
             let ours = binary_skeletonize_skimage(&f.mapv(|v| v != 0.0));

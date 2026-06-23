@@ -1,7 +1,7 @@
 //! Synthetic ground-truth retinotopy test — recovery of a KNOWN map.
 //!
 //! Every per-stage golden pins one method to an external reference (scipy /
-//! Octave / numpy). This test is the complementary tier: it validates the
+//! MATLAB / numpy). This test is the complementary tier: it validates the
 //! *composition* of the retinotopy stages end-to-end against **analytic
 //! truth computed in-process**, with no captured fixture. We forward-model a
 //! retinotopy whose phase fields and visual-field-sign structure are known by

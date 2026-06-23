@@ -8,7 +8,7 @@ function save_npy(filename, arr, descr)
 %
 % The committed golden fixtures are .npy so the dtype + shape travel WITH the
 % data (self-describing), and the Rust readers verify the dtype on load. This is
-% the Octave counterpart of numpy's `np.save`. Octave stores column-major, so a
+% the MATLAB counterpart of numpy's `np.save`. MATLAB stores column-major, so a
 % 2-D array is transposed before writing to land the data in C (row-major) order
 % -- matching `fortran_order: False` in the header and the row-major order the
 % Rust `load_*` helpers (and numpy) expect.
@@ -23,14 +23,21 @@ function save_npy(filename, arr, descr)
     data = tarr(:);                % → C-order bytes
   end
 
-  hdr = sprintf("{'descr': '%s', 'fortran_order': False, 'shape': %s, }", descr, shape_str);
+  % Single-quoted format (doubled inner quotes) so MATLAB returns a CHAR row vector,
+  % not a string scalar — a string would coerce the concatenation below into a
+  % nonscalar string array and break `fwrite(..., 'uint8')`.
+  hdr = sprintf('{''descr'': ''%s'', ''fortran_order'': False, ''shape'': %s, }', descr, shape_str);
   % Pad with spaces + a trailing newline so (10 prelude + header length) is a
   % multiple of 64, per the .npy spec alignment requirement.
   prelude = 10;                    % 6 magic + 2 version + 2 header-length
   pad = mod(64 - mod(prelude + numel(hdr) + 1, 64), 64);
   hdr = [hdr repmat(' ', 1, pad) char(10)];
 
-  fid = fopen(filename, 'wb');
+  % Latin-1 (ISO-8859-1) file encoding maps char code N → byte N for 0..255, so
+  % `char(147)` in the magic writes as the single byte 0x93. MATLAB's DEFAULT file
+  % encoding is UTF-8, which would emit 0x93 as the two bytes 0xC2 0x93 and corrupt
+  % the .npy magic — hence the explicit byte-preserving encoding here.
+  fid = fopen(filename, 'wb', 'n', 'ISO-8859-1');
   if fid < 0
     error('save_npy: cannot open %s', filename);
   end

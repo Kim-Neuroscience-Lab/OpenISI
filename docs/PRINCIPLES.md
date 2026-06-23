@@ -25,6 +25,49 @@ stimulus display in real time, and captures experimental data that cannot be
 re-taken. Every decision is therefore simultaneously a *data-integrity*, an
 *adoption*, and a *trust* decision.
 
+## Scientific motivation
+
+*Why the invariants below are non-negotiable rather than aspirational.*
+
+**The measurement.** OpenISI computes phase-encoded retinotopy from
+intrinsic-signal movies: Fourier phase at the stimulus frequency encodes
+visual-field position, forward/reverse sweeps cancel the hemodynamic delay, and
+the azimuth × altitude maps yield the **visual field sign** whose reversals
+parcellate visual cortex into distinct areas (V1, LM, AL, …). These areal maps are
+the coordinate system the rest of mouse-vision neuroscience is done in — targeting
+recordings to identified areas, and comparing areal organization across animals,
+development, and disease.
+
+**The problem it exists to fix.** Today this foundational measurement is not
+trustworthy *as a measurement*. Each lab runs its own inherited scripts
+(Garrett/SNLC MATLAB, Allen/Zhuang Python, home-brew) — un-interoperable,
+unvalidated against one another, full of undocumented magic numbers and silent
+conventions. Two labs analyzing the *same* recording can draw *different* area
+boundaries, with no principled way to tell a real methodological disagreement from
+a toolchain artifact.
+
+**The vision.** Make areal analysis a **calibrated, shared, auditable
+instrument**: a result is a property of *(the data, an explicitly-specified,
+faithfully-implemented method)* and nothing else — not the operator, not the
+machine, not the library version. That is what "the field's reference tool" means
+here, and it is *why* faithfulness (Inv. 1), oracle validation (Inv. 3), and
+reproducibility-by-record (Inv. 5) are correctness requirements, not features.
+
+**The load-bearing principle — a grounded tolerance is the operational definition
+of "a real difference."** An instrument's defining capability is to separate
+signal from its own noise. Here that line is numerical: the floating-point floor
+(`K·ε`, grounded in IEEE-754 machine epsilon — never an eyeballed literal) is
+exactly the boundary between *"these two results are numerically identical"* and
+*"they differ by orders of magnitude above the floor → a genuine, attributable
+effect."* This is what lets the tool **adjudicate** — validate against the field's
+oracles, compare method forks side-by-side (DoD cond. 1), and certify that a
+difference is biology/method, not silicon. A loose magic-number tolerance
+*dissolves that boundary* and turns validation into theater — a test that cannot
+distinguish a correct implementation from a subtly-broken one is not validating
+anything. This is why every numerical comparison is grounded in a typed,
+self-describing tolerance (`crates/agreement`), and why grounding is a correctness
+invariant (Inv. 2/3), not a matter of taste.
+
 ## Architecture: a self-contained core, a standard at the boundary
 
 The system has a **hot core that must be bulletproof and self-contained** and a
@@ -167,9 +210,16 @@ Grouped by concern; each is non-negotiable.
     machine-readable codes *and* messages a non-coder can act on; the UI is
     discoverable; failure is explained, not dumped. The tool assumes its user is a
     scientist.
-18. **Extensible without forking.** New analysis methods plug in through the typed
-    stage enums; new hardware (camera, display) plugs in through a platform/hardware
-    abstraction. The community extends OpenISI in-tree, not by maintaining a fork.
+18. **Extensible without forking; rig-agnostic by construction.** New analysis
+    methods plug in through the typed stage enums; **every piece of rig hardware —
+    camera, stimulus monitor, light source, DAQ/TTL, photodiode, any peripheral —
+    plugs in through a platform/hardware abstraction.** OpenISI must run on **any
+    lab's rig, on any OS, with any vendor's hardware** — not just the one it was
+    developed on. The rig it is built against (e.g. a pco.panda camera, an Excelitas
+    X-Cite light, an Arduino DAQ) is a **reference instance behind the abstraction,
+    never an assumption baked into the format, analysis, or schema**: device
+    identity is recorded as generic, self-describing metadata, not a vendor-specific
+    layout. The community extends OpenISI in-tree, not by maintaining a fork.
 19. **Documented as a deliverable.** A user guide, the `.oisi` + NWB format spec,
     install instructions, and API docs ship with the tool and stay current — a
     standard nobody can learn to use is not a standard.
@@ -326,7 +376,8 @@ cross-platform breadth, hardware abstraction, signed multi-OS installers, govern
 ### Tier 3 — Ready to be adopted by the field  *(the living standard)*
 
 The six conditions in full, as a *living, extensible, open* state — second-lab
-self-contained install, a **camera/display abstraction** (not PCO-hardcoded), GPU-CPU
+self-contained install, a **rig-hardware abstraction** for camera, display, light
+source, and DAQ/TTL (not PCO/X-Cite/Arduino-hardcoded; Invariant 18), GPU-CPU
 agreement gate-tested, multi-GB datasets streamed without OOM, a cross-platform analysis
 CI matrix, **docs that ship and stay current**, **observability** sufficient to diagnose
 a remote field failure, **semantic versioning** (software + on-disk format with a

@@ -129,11 +129,12 @@ use parking_lot::Mutex;   // no poisoning → infallible lock
 
 pub struct AppState {
     pub threads:     ThreadHandles,                  // immutable after startup — no lock
+    pub monitors:    Arc<Vec<MonitorInfo>>,          // write-once at launch — no lock
+    pub config:      Arc<Mutex<ConfigStore>>,        // config commands lock it directly
+    pub session:     Arc<Mutex<Session>>,            // hardware/display/camera session state
     pub capture:     Arc<Mutex<Capture>>,            // latest_frame + timing_ring + acquisition
-    pub session:     Arc<Mutex<Session>>,            // session + monitors
     pub handoff:     Arc<Mutex<Handoff>>,            // pending_save + last_summary + anatomical
     pub active_oisi: Arc<Mutex<Option<PathBuf>>>,    // independent
-    pub config:      Arc<Mutex<ConfigStore>>,        // config commands lock it directly
 }
 ```
 
@@ -231,8 +232,9 @@ first dirtied stage rather than from scratch. The incremental cache (fingerprint
 // crates/isi-analysis/src/lib.rs — each variant carries a strum-derived stable code
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
-    #[error("I/O error: {0}")]          Io(#[from] std::io::Error),  // E_IO
-    #[error("HDF5 error: {0}")]         Hdf5(String),                // E_HDF5
+    #[error("I/O error: {0}")]          Io(#[from] std::io::Error),     // E_IO
+    #[error("HDF5 error ({context}): {source}")]                        // E_HDF5
+    Hdf5 { context: String, #[source] source: hdf5::Error },         // source preserved, never stringified
     #[error("Invalid .oisi file: {0}")] InvalidPackage(String),      // E_INVALID_PACKAGE
     #[error("Missing data: {0}")]       MissingData(String),         // E_MISSING_DATA
     #[error("Compute: {0}")]            Compute(String),             // E_COMPUTE
@@ -297,7 +299,7 @@ during benchmark runs until Burn ships a hook.
 | Wait on multiple channels | `crossbeam_channel::select!` (not poll-with-sleep) |
 | Shared mutable state | purpose-scoped `parking_lot::Mutex` with a small critical section (not a god-mutex) |
 | Reference-counted shared immutable | `Arc<T>` (not `Arc<Mutex<T>>` for immutable data) |
-| Atomic flags / cancellation | `std::sync::atomic::AtomicBool`, wrapped in a `CancelToken` newtype |
+| Atomic flags / cancellation | `std::sync::atomic::AtomicBool` — owned `Arc<AtomicBool>` on the analysis thread, borrowed as `&AtomicBool` through the pipeline |
 | Parallel CPU work | `rayon` (not manual thread spawning) |
 | DAG + toposort | `petgraph::Graph` + `petgraph::algo::toposort` |
 | Content hashing | `blake3` |
