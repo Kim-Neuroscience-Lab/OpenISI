@@ -1577,7 +1577,7 @@ mod allen {
 //
 // Parallel to `mod allen`. Built bedrock-up from the shared visual-space
 // coverage primitive `overRep` (the SNLC analog of Allen's `patch_visual_space`),
-// each step validated atomistically against the verbatim oracle under Octave.
+// each step validated atomistically against the verbatim genuine reference (MATLAB authoritative; Octave the open cross-check).
 
 // Shared, golden-validated MATLAB-op host helpers (used by the SNLC split/fuse
 // refinement here AND by the pre-combine `direction_smoothing` adaptiveSmoother):
@@ -2983,7 +2983,7 @@ mod garrett {
         Ok(patches_from_labels_majority_sign(&labels, n, &sereno))
     }
 
-    // Every test in this module drives the GENUINE Octave/scipy reference live, so
+    // Every test in this module drives the GENUINE reference live, so
     // the whole module is gated behind `oracle_live` (the default `cargo test` stays
     // interpreter-free). Once the last frozen golden here became live, no non-gated
     // test remained.
@@ -3000,7 +3000,7 @@ mod garrett {
         // tie) to exercise the same snap-to-nearest-pixel correction against the
         // genuine getPatchCoM.m live.
 
-        /// **Live genuine-oracle, SNLC/Octave**: our `patch_com` vs the GENUINE
+        /// **Live genuine-oracle, SNLC**: our `patch_com` vs the GENUINE
         /// `getPatchCoM.m` (`reference/ISI`), executed live via Octave. Three
         /// rectangles → centroids are each exactly on-patch (no snap-correction
         /// tie ambiguity — that path stays covered by the frozen fixture). MATLAB
@@ -3057,21 +3057,21 @@ mod garrett {
 
         // (Cutover, objective 1) The frozen `watershed_octave_matches_octave`
         // golden + its ws4_*/ws8_*.bin fixtures + gen_watershed4_golden.m were
-        // DELETED: the live `watershed_octave_matches_genuine_octave_live` above was
+        // DELETED: the live `watershed_octave_matches_genuine_reference_live` above was
         // enriched to cover the same topology classes (monotonic ramp = single
         // basin, two-basin, four-well multi-basin stress) × conn {4,8} against the
-        // genuine Octave `watershed` live, exact i32 labels.
+        // the genuine `watershed` live, exact i32 labels.
 
-        /// **Live library-primitive oracle, Octave**: our `watershed_octave{4,8}`
-        /// vs the GENUINE Octave IPT `watershed(A, conn)`, executed live. Octave's
+        /// **Live library-primitive oracle**: our `watershed_octave{4,8}`
+        /// vs the GENUINE IPT `watershed(A, conn)`, executed live. the genuine
         /// watershed IS the oracle; the bridge only calls it. Exact i32 catchment
-        /// labels (incl. watershed-line 0s and Octave's own label numbering) across
+        /// labels (incl. watershed-line 0s and the reference's label numbering) across
         /// the topologies the retired frozen golden held: a monotonic ramp (single
         /// basin), two basins (one ridge), and a four-well stress (multi-basin).
         /// Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn watershed_octave_matches_genuine_octave_live() {
+        fn watershed_octave_matches_genuine_reference_live() {
             use crate::test_support::oracle;
             const N: usize = 24;
             let well = |r: usize, c: usize, cr: f64, cc: f64| (r as f64 - cr).powi(2) + (c as f64 - cc).powi(2);
@@ -3095,25 +3095,25 @@ mod garrett {
                             }
                         }
                     }
-                    eprintln!("watershed{} {name} vs GENUINE Octave (live): diff={diff}", conn as i32);
-                    assert_eq!(diff, 0, "watershed_octave {name} diverges from genuine Octave watershed");
+                    eprintln!("watershed{} {name} vs GENUINE reference (live): diff={diff}", conn as i32);
+                    assert_eq!(diff, 0, "watershed_octave {name} diverges from the genuine watershed");
                 }
             }
         }
 
         // (Cutover, objective 1) The frozen `bwdist_matches_octave` golden + its
         // bwdist_*.bin fixtures + gen_bwdist_golden.m were DELETED: the live
-        // `bwdist_matches_genuine_octave_live` computes the genuine Octave `bwdist`
+        // `bwdist_matches_genuine_reference_live` computes the genuine `bwdist`
         // on scattered seeds (same semantic; f32 single-precision tolerance) live.
 
-        /// **Live library-primitive oracle, Octave**: our `bwdist` vs the GENUINE
-        /// Octave IPT `bwdist`, executed live. Octave's bwdist is the oracle; the
+        /// **Live library-primitive oracle**: our `bwdist` vs the GENUINE
+        /// IPT `bwdist`, executed live. The IPT bwdist is the oracle; the
         /// bridge only calls it. Octave returns SINGLE, so the comparison is to f32
         /// precision (the documented oracle dtype). Scattered seeds. Gated
         /// behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn bwdist_matches_genuine_octave_live() {
+        fn bwdist_matches_genuine_reference_live() {
             use crate::test_support::oracle;
             const H: usize = 20;
             const W: usize = 28;
@@ -3126,18 +3126,18 @@ mod garrett {
             let genuine = oracle::snlc("bwdist", &[seeds_f], &[]).remove(0);
             let ours = bwdist(&seeds);
             Tol::rel(2, Eps::F32, 2).assert(
-                "bwdist vs GENUINE Octave (single-precision oracle)",
+                "bwdist vs GENUINE reference (single-precision oracle)",
                 ours.as_slice().expect("contiguous"),
                 genuine.as_slice().expect("contiguous"),
             );
-            eprintln!("bwdist vs GENUINE Octave (live): matched to f32");
+            eprintln!("bwdist vs GENUINE reference (live): matched to f32");
         }
 
 
-        /// **Live library-primitive oracle, Octave**: our `fft_gaussian_smooth`
+        /// **Live library-primitive oracle**: our `fft_gaussian_smooth`
         /// (the SNLC fft-based circular Gaussian blur,
         /// `real(ifft2(fft2(map).*abs(fft2(fspecial('gaussian',size,sigma)))))`)
-        /// vs the GENUINE Octave computation, executed live. Octave's
+        /// vs the GENUINE reference computation, executed live. the genuine
         /// `fspecial`/`fft2`/`ifft2` are the oracle; the bridge only calls them.
         /// A smooth non-separable map, sigma=2 (the kmap-smoothing case).
         /// Cross-library FFT roundoff (rustfft vs FFTW) precludes bit-equality; a
@@ -3145,7 +3145,7 @@ mod garrett {
         /// grounding. Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn fft_gaussian_smooth_matches_genuine_octave_live() {
+        fn fft_gaussian_smooth_matches_genuine_reference_live() {
             use crate::test_support::oracle;
             const H: usize = 40;
             const W: usize = 48;
@@ -3159,27 +3159,27 @@ mod garrett {
             let genuine = oracle::snlc("fft_gaussian", &[map.clone()], &[("sigma", sigma)]).remove(0);
             let ours = fft_gaussian_smooth(&map, sigma);
             Tol::rel(64, Eps::F64, 64).assert(
-                "fft_gaussian_smooth vs GENUINE Octave (live)",
+                "fft_gaussian_smooth vs GENUINE reference (live)",
                 ours.as_slice().expect("contiguous"),
                 genuine.as_slice().expect("contiguous"),
             );
-            eprintln!("fft_gaussian_smooth vs GENUINE Octave (live): matched");
+            eprintln!("fft_gaussian_smooth vs GENUINE reference (live): matched");
         }
 
         // (Cutover, objective 1) The frozen `interp2_spline_matches_octave` golden
         // + its i2s_*.bin fixtures + gen_interp2spline_golden.m were DELETED: the
-        // live `interp2_spline_matches_genuine_octave_live` below builds the
+        // live `interp2_spline_matches_genuine_reference_live` below builds the
         // identical scene (same smooth non-separable Z, U=3 upsample) and computes
-        // the genuine Octave `interp2(...,'spline')` live.
+        // the genuine `interp2(...,'spline')` live.
 
-        /// **Live library-primitive oracle, Octave**: our `interp2_spline`
-        /// (ported not-a-knot tensor-product cubic spline) vs the GENUINE Octave
-        /// `interp2(...,'spline')`, executed live. Octave's spline is the oracle;
+        /// **Live library-primitive oracle**: our `interp2_spline`
+        /// (ported not-a-knot tensor-product cubic spline) vs the GENUINE reference
+        /// `interp2(...,'spline')`, executed live. the genuine spline is the oracle;
         /// the bridge only calls it. A smooth non-separable Z, U=3 upsample (the
         /// splitPatchesX case). Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn interp2_spline_matches_genuine_octave_live() {
+        fn interp2_spline_matches_genuine_reference_live() {
             use crate::test_support::oracle;
             const H: usize = 12;
             const W: usize = 15;
@@ -3201,22 +3201,22 @@ mod garrett {
             let genuine = oracle::snlc("interp2_spline", &[z.clone(), xi_row, yi_row], &[]).remove(0);
             let ours = interp2_spline(&x, &y, &z, &xi, &yi);
             Tol::rel(64, Eps::F64, 64).assert(
-                "interp2_spline vs GENUINE Octave (live)",
+                "interp2_spline vs GENUINE reference (live)",
                 ours.as_slice().expect("contiguous"),
                 genuine.as_slice().expect("contiguous"),
             );
-            eprintln!("interp2_spline vs GENUINE Octave (live): matched");
+            eprintln!("interp2_spline vs GENUINE reference (live): matched");
         }
 
 
 
-        /// **Live library-primitive oracle, Octave**: our `imimposemin` vs the
-        /// GENUINE Octave IPT `imimposemin`, executed live. Octave's morphological
+        /// **Live library-primitive oracle**: our `imimposemin` vs the
+        /// GENUINE IPT `imimposemin`, executed live. the IPT morphological
         /// reconstruction is the oracle; the bridge only calls it. A bumpy field
         /// with two marker minima. Gated behind `oracle_live`.
         #[cfg(feature = "oracle_live")]
         #[test]
-        fn imimposemin_matches_genuine_octave_live() {
+        fn imimposemin_matches_genuine_reference_live() {
             use crate::test_support::oracle;
             const N: usize = 20;
             let im = Array2::from_shape_fn((N, N), |(r, c)| {
@@ -3228,11 +3228,11 @@ mod garrett {
             let genuine = oracle::snlc("imimposemin", &[im.clone(), bw_f], &[]).remove(0);
             let ours = imimposemin(&im, &bw);
             Tol::rel(64, Eps::F64, 64).assert(
-                "imimposemin vs GENUINE Octave (live)",
+                "imimposemin vs GENUINE reference (live)",
                 ours.as_slice().expect("contiguous"),
                 genuine.as_slice().expect("contiguous"),
             );
-            eprintln!("imimposemin vs GENUINE Octave (live): matched");
+            eprintln!("imimposemin vs GENUINE reference (live): matched");
         }
 
         // (Cutover, objective 1) over_rep / get_center_patch / reset_patch /
@@ -3242,7 +3242,7 @@ mod garrett {
         // splitPatchesX needs roifilt2 → can't run shim-free), so there is no
         // genuine separable reference to call — they were self-authored oracles.
         // The frozen imimposemin golden was also dropped (the live
-        // imimposemin_matches_genuine_octave_live supersedes it).
+        // imimposemin_matches_genuine_reference_live supersedes it).
 
 
         // The smooth/split/fuse composites were once "irreducible gaps" ONLY because

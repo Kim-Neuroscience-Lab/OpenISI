@@ -1,5 +1,5 @@
 % PRISTINE bridge to the GENUINE SNLC / Garrett MATLAB reference (reference/ISI),
-% executed via Octave. This is the ONE place the Rust tests reach the SNLC oracle.
+% executed via the genuine reference — MATLAB authoritative, Octave the open cross-check. This is the ONE place the Rust tests reach the SNLC oracle.
 % It contains NO oracle algorithm: only (a) array marshalling across the process
 % boundary and (b) a dispatch table mapping a function id to a DIRECT call of the
 % genuine reference `.m` (addpath'd, byte-pristine). No per-golden scripts, no
@@ -68,32 +68,32 @@ switch req.fn
     % dependency), which is what we compare against.
     [patchSign, ~] = getPatchSign(x{1}, x{2});
     outs = {patchSign};
-  case 'watershed'       % raw Octave IPT builtin: watershed(A, conn={4,8})
-    % The genuine oracle is Octave's own watershed; our watershed_octave{4,8}
+  case 'watershed'       % raw IPT builtin: watershed(A, conn={4,8})
+    % The oracle is the genuine watershed; our watershed_octave{4,8}
     % wraps exactly this. conn passed as a param. Labels returned as double.
     L = watershed(x{1}, p.conn);
     outs = {double(L)};
-  case 'bwdist'          % raw Octave IPT builtin: bwdist(seeds) Euclidean DT
+  case 'bwdist'          % raw IPT builtin: bwdist(seeds) Euclidean DT
     % Octave bwdist returns SINGLE; widening single->double here is exact, so the
     % Rust f64 side compares to f32 precision (the documented oracle dtype).
     D = bwdist(logical(x{1}));
     outs = {double(D)};
-  case 'imimposemin'     % raw Octave IPT builtin: imimposemin(I, BW)
+  case 'imimposemin'     % raw IPT builtin: imimposemin(I, BW)
     % Morphological reconstruction imposing regional minima at BW. Genuine oracle
-    % is Octave's own imimposemin; our imimposemin mirrors it.
+    % is the genuine imimposemin; our imimposemin mirrors it.
     R = imimposemin(x{1}, logical(x{2}));
     outs = {double(R)};
-  case 'imopen_disk'     % raw Octave IPT: imopen(mask, strel('disk',R,0))
+  case 'imopen_disk'     % raw IPT: imopen(mask, strel('disk',R,0))
     outs = {double(imopen(logical(x{1}), strel('disk', p.radius, 0)))};
-  case 'imclose_disk'    % raw Octave IPT: imclose(mask, strel('disk',R,0))
+  case 'imclose_disk'    % raw IPT: imclose(mask, strel('disk',R,0))
     outs = {double(imclose(logical(x{1}), strel('disk', p.radius, 0)))};
-  case 'imdilate_disk'   % raw Octave IPT: imdilate(mask, strel('disk',R,0))
+  case 'imdilate_disk'   % raw IPT: imdilate(mask, strel('disk',R,0))
     outs = {double(imdilate(logical(x{1}), strel('disk', p.radius, 0)))};
-  case 'imfill_holes'    % raw Octave IPT: imfill(mask, 'holes')
+  case 'imfill_holes'    % raw IPT: imfill(mask, 'holes')
     outs = {double(imfill(logical(x{1}), 'holes'))};
-  case 'fft_gaussian'    % Octave fft-based circular Gaussian blur (the SNLC smoother)
+  case 'fft_gaussian'    % fft-based circular Gaussian blur (the SNLC smoother)
     % mapS = real(ifft2(fft2(map) .* abs(fft2(fspecial('gaussian',size,sigma))))).
-    % Octave's fspecial/fft are the oracle; the bridge only calls them.
+    % the reference's fspecial/fft are the oracle; the bridge only calls them.
     hh = fspecial('gaussian', size(x{1}), p.sigma);
     outs = {real(ifft2(fft2(x{1}) .* abs(fft2(hh))))};
   case 'adaptive_smoother'  % genuine SNLC adaptiveSmoother.m (Wiener-type adaptive filter)
@@ -104,8 +104,8 @@ switch req.fn
     h = fspecial('gaussian', 15, p.sigma);
     f = adaptiveSmoother(gcomp, h);
     outs = {real(f), imag(f)};
-  case 'interp2_spline'  % raw Octave builtin: interp2(1:W,1:H,Z,XI,YI,'spline')
-    % The genuine oracle is Octave's own not-a-knot tensor-product cubic spline.
+  case 'interp2_spline'  % raw builtin: interp2(1:W,1:H,Z,XI,YI,'spline')
+    % The oracle is the genuine not-a-knot tensor-product cubic spline.
     % x{1}=Z (HxW), x{2}=xi (1 x U*W), x{3}=yi (1 x U*H). Unit-spaced source grid
     % (the spline is affine-invariant in x/y, as splitPatchesX relies on).
     Z = x{1};

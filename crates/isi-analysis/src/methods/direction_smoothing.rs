@@ -120,7 +120,7 @@ mod tests {
     /// across runtimes (≈30·ε_f64 → K=64). Gated behind `oracle_live`.
     #[cfg(feature = "oracle_live")]
     #[test]
-    fn adaptive_smoother_matches_genuine_snlc_octave_live() {
+    fn adaptive_smoother_matches_genuine_snlc_live() {
         use crate::test_support::oracle;
         const H: usize = 40;
         const W: usize = 48;
@@ -145,15 +145,15 @@ mod tests {
         let got_re: Vec<f64> = out.iter().map(|z| z.re).collect();
         let got_im: Vec<f64> = out.iter().map(|z| z.im).collect();
         Tol::rel(64, Eps::F64, 64).assert(
-            "adaptiveSmoother real vs GENUINE Octave (live)",
+            "adaptiveSmoother real vs GENUINE reference (live)",
             &got_re,
             g_re.as_slice().expect("contiguous"),
         );
         Tol::rel(64, Eps::F64, 64).assert(
-            "adaptiveSmoother imag vs GENUINE Octave (live)",
+            "adaptiveSmoother imag vs GENUINE reference (live)",
             &got_im,
             g_im.as_slice().expect("contiguous"),
         );
-        eprintln!("adaptiveSmoother vs GENUINE Octave (live): matched re+im");
+        eprintln!("adaptiveSmoother vs GENUINE reference (live): matched re+im");
     }
 }

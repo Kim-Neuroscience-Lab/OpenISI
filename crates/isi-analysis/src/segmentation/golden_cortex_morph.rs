@@ -1,13 +1,13 @@
 //! Live cross-validation of the SNLC-cortex binary morphology against the
-//! genuine Octave Image Processing Toolbox, computed each run.
+//! the genuine Image Processing Toolbox, computed each run.
 //!
 //! `SnlcGarrett2014ImBound` is a *faithful-reproduction* claim of
 //! `getMouseAreasX.m`, built from `imopen(disk2)`, `imclose(disk10)`,
 //! `imfill('holes')`, `imdilate(disk3)`, and the largest 4-connected
 //! component. The disk structuring element is bit-identical to
-//! `strel('disk',R,0)`; `cortex_morphology_matches_genuine_octave_live` confirms
+//! `strel('disk',R,0)`; `cortex_morphology_matches_genuine_reference_live` confirms
 //! each *operation* — including border padding (erode pads 1, dilate pads 0) and
-//! hole-fill semantics — against genuine Octave on a scene that stresses borders,
+//! hole-fill semantics — against the genuine reference on a scene that stresses borders,
 //! holes, and gap-bridging, and `keep_largest_component_tiebreak_*` covers the
 //! largest-CC tie-break. (The former frozen `gen_cortex_morph_golden.m` golden was
 //! retired once every op had a live counterpart.)
@@ -56,22 +56,22 @@ mod tests {
     // outputs, and the now-dead gen_patch_morph_golden.py, which read the mask and
     // wrote unconsumed patch_morph_*.bin) were DELETED. Every op it checked is
     // validated LIVE each run: the four disk-strel ops by
-    // `cortex_morphology_matches_genuine_octave_live` (genuine Octave
+    // `cortex_morphology_matches_genuine_reference_live` (genuine reference
     // imopen/imclose/imdilate/imfill — its scene now includes the top-border blob
     // the frozen golden curated, so edge-padding coverage is preserved), and
     // `keep_largest_component` by `keep_largest_component_tiebreak_matches_snlc_argmax`.
 
-    /// **Live library-primitive oracle, Octave**: our disk-strel morphology
+    /// **Live library-primitive oracle**: our disk-strel morphology
     /// (`binary_opening_disk`, `binary_closing_disk`, `binary_dilation_disk`,
-    /// `binary_fill_holes`) vs the GENUINE Octave IPT `imopen`/`imclose`/
-    /// `imdilate`(`strel('disk',R,0)`)/`imfill('holes')`, executed live. Octave's
+    /// `binary_fill_holes`) vs the GENUINE IPT `imopen`/`imclose`/
+    /// `imdilate`(`strel('disk',R,0)`)/`imfill('holes')`, executed live. the genuine
     /// IPT is the oracle; the bridge only calls it. (`keep_largest_component`'s
     /// `max`-first-index tie-break is a language guarantee, not a code oracle — it
     /// stays a regression-lock, excluded here.) `strel('disk',R,0)` is the exact
     /// Euclidean disk (N=0, no approximation). Gated behind `oracle_live`.
     #[cfg(feature = "oracle_live")]
     #[test]
-    fn cortex_morphology_matches_genuine_octave_live() {
+    fn cortex_morphology_matches_genuine_reference_live() {
         use crate::segmentation::morphology::{
             binary_closing_disk, binary_dilation_disk, binary_fill_holes, binary_opening_disk,
         };
@@ -146,7 +146,7 @@ mod tests {
             }
             if *fname == "imclose_disk" && !on_matlab {
                 eprintln!(
-                    "  imclose_disk  vs GENUINE Octave (live): {total} px differ \
+                    "  imclose_disk  vs GENUINE reference (live): {total} px differ \
                      (off-border={off_border}; documented Octave≈MATLAB pad-0-crop gap)"
                 );
                 assert_eq!(
@@ -166,7 +166,7 @@ mod tests {
     /// SEQUENCE (threshold → imopen2 → imclose10 → fill → imdilate3 → fill →
     /// largest 4-CC) is OpenISI's composition — there is no single SNLC `.m`
     /// defining it (`getMouseAreasX.m` is the GUI pipeline). Each *primitive* in
-    /// the sequence IS validated live (`cortex_morphology_matches_genuine_octave_live`
+    /// the sequence IS validated live (`cortex_morphology_matches_genuine_reference_live`
     /// and `keep_largest_component_tiebreak_*`); this frozen golden pins only the
     /// orchestration order, against a one-off Octave run of the same sequence.
     /// End-to-end: the real `CortexSourceMethod::resolve` for `SnlcGarrett2014ImBound`
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(d, 0, "raw_patch_map_allen diverges from genuine NAT _getRawPatchMap");
     }
 
-    /// **Live genuine-oracle, SNLC/Octave**: our per-patch sign assignment vs the
+    /// **Live genuine-oracle, SNLC**: our per-patch sign assignment vs the
     /// GENUINE SNLC `getPatchSign` (`sign(mean(imsign over patch))`), executed live
     /// via Octave. Tested on non-zero-mean patches (where they agree). The
     /// zero-mean case is a documented deviation — MATLAB `sign(0)=0` (undefined
@@ -729,7 +729,7 @@ mod tests {
     // (a transcription) were DELETED, along with the DEAD gen_patchsign_golden.m
     // (its patchsign_*.bin outputs were read by no test). The live
     // `patch_sign_matches_genuine_snlc_getpatchsign_live` above now carries BOTH the
-    // genuine ±1 agreement (region-wise vs Octave getPatchSign) AND the documented
+    // genuine ±1 agreement (region-wise vs the genuine getPatchSign) AND the documented
     // zero-mean tie-break deviation as a regression-lock (genuine sign(0)=0, ours +1).
 
     /// UNVALIDATED (regression-lock only). The cross-cycle reliability
